@@ -241,6 +241,13 @@ jobs:
           cargo test -p openjd-${{ matrix.crate }} || \
             echo "::warning::pre-existing test failures in openjd-${{ matrix.crate }}; the eval must report them"
 
+      # The Maintainability section requires measured complexity, not estimated,
+      # so the tool has to be present before the agent runs. Pinned: an eval is
+      # a record, and the numbers in it should not move because a dependency
+      # released overnight.
+      - name: Install the complexity measurement tool
+        run: python3 -m pip install --disable-pip-version-check 'lizard==1.23.0'
+
       # ---- Bedrock auth: the same shape as the org's review workflow ----
       - name: Check out workflow tooling (pinned requirements)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.0
@@ -284,8 +291,8 @@ jobs:
             Run the `eval-crate` skill for the crate `${{ matrix.crate }}`.
 
             Your cwd is the workspace root, NOT the crate. `cd openjd-rs` first;
-            every path below is relative to that directory, as are all cargo
-            invocations.
+            every path below is relative to that directory, as are all cargo and
+            lizard invocations.
 
             The skill is at skills/eval-crate/SKILL.md. Follow its Evaluation
             Procedure in full -- this is a comprehensive evaluation, not a skim.
@@ -368,7 +375,7 @@ jobs:
           #     dated name sidesteps both: the path never already exists.
           claude_args: |
             --model us.anthropic.claude-opus-5
-            --allowedTools "Task,Read,Glob,Grep,Write,Edit,Bash(cd openjd-rs:*),Bash(cargo build:*),Bash(cargo test:*),Bash(cargo clippy:*),Bash(cargo fmt:*),Bash(python3:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(ls:*),Bash(diff:*),Bash(cp:*),Bash(mv:*),Bash(find:*),Bash(rm crates/:*),Bash(rm -f crates/:*),Bash(rm openjd-rs/crates/:*),Bash(rm -f openjd-rs/crates/:*),Bash(rm /tmp/:*),Bash(rm -f /tmp/:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git checkout --:*),Bash(git -C openjd-rs status:*),Bash(git -C openjd-rs diff:*),Bash(git -C openjd-rs log:*),Bash(git -C openjd-rs checkout --:*)"
+            --allowedTools "Task,Read,Glob,Grep,Write,Edit,Bash(cd openjd-rs:*),Bash(cargo build:*),Bash(cargo test:*),Bash(cargo clippy:*),Bash(cargo fmt:*),Bash(lizard:*),Bash(python3:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(ls:*),Bash(diff:*),Bash(cp:*),Bash(mv:*),Bash(find:*),Bash(rm crates/:*),Bash(rm -f crates/:*),Bash(rm openjd-rs/crates/:*),Bash(rm -f openjd-rs/crates/:*),Bash(rm /tmp/:*),Bash(rm -f /tmp/:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git checkout --:*),Bash(git -C openjd-rs status:*),Bash(git -C openjd-rs diff:*),Bash(git -C openjd-rs log:*),Bash(git -C openjd-rs checkout --:*)"
 
       # ---- outputs ------------------------------------------------------------
 
