@@ -77,6 +77,40 @@ The evaluation checks that all three artifacts are aligned:
 5. **Specification compliance**: For `expr`, `model`, and `sessions`, the implementation MUST comply with the formal specifications and conformance tests in `openjd-specifications` (see Specification References table). Review the relevant specification documents and verify the implementation conforms.
 6. **Rust best practices**: Follow Rust idioms where it makes sense. No `O(N²)` algorithms when `O(N)` is possible. Balance performance with readability.
 7. **Python comparison**: Where the crate has a Python equivalent (see branch table above), compare both implementation algorithms and tests. Note meaningful divergences in behavior, error messages, and API design. Check whether there are Rust tests covering every Python test case.
+8. **Maintainability**: The crate SHOULD be readable, changeable, and debuggable by someone who did not write it. See "Complexity and Maintainability".
+
+### Complexity and Maintainability
+
+Budgets. Targets, not gates: crossing one is a prompt to justify, not a finding.
+
+| Unit | Target | Justify | Restructure |
+|-------|--------|---------|-------------|
+| Function length | 40 lines | >60 | >100 |
+| Cyclomatic complexity | 10 | >10 | >15 |
+| Parameters | 4 | >5 | >7 |
+| Nesting depth | 3 | >4 | >5 |
+
+Complexity figures MUST be measured, not estimated:
+`lizard crates/openjd-<crate-name>/src -s cyclomatic_complexity`. Two known tool
+errors MUST be corrected before a figure is quoted: `?` is counted as a decision
+point, and function extents are mis-attributed around raw strings (`r#"..."#`).
+Verify any implausible figure against the source.
+
+Trace the crate's call paths from its public entry points to the lowest execution
+layer. Complexity compounds along a path only where caller and callee share
+mutable state; behind a value-returning contract it does not. Report which paths
+compound, and the `&mut` out-params that make them.
+
+Findings MUST take the form **Problem → Why it is hard → What we can do**, with a
+`file:line` and the measured figures. The middle part is required: a measurement
+is not a reason.
+
+The remedy MUST remove complexity rather than relocate it — splitting a function
+into halves that only run in sequence does not count. Stage anything large. Name
+what must not break; ~1170 conformance fixtures pin error strings and paths, so
+an extraction that preserves them is provably behaviour-preserving. Behaviour
+changes belong in their own commit with their own fixtures. Say where the code is
+correct as it stands.
 
 ### Claim Verification
 
@@ -125,10 +159,11 @@ Findings MUST be verified in a pass separate from the one that generated them.
 4. **Read and understand the tests** in the crate source and `crates/openjd-<crate-name>/tests/`.
 5. **Compare with the Python reference** (see Python Reference Branch table) where applicable.
 6. **Build and test**: Run `cargo build -p openjd-<crate-name>` and `cargo test -p openjd-<crate-name>`. Confirm clean compilation (no errors or warnings) and all tests pass.
-7. **Exploratory testing**: Actively try to find bugs. Look for edge cases, boundary conditions, and unusual inputs that might cause undefined behavior, crashes, or logic errors. Write failing tests that demonstrate any issues found. Include these in the report.
-8. **Verify every finding** per "Claim Verification" and "Verification with Subagents". Drop the withdrawn and label the plausible before writing.
-9. **Write the report** to `reports/<crate-name>-quality-evaluation-report-<YYYY-MM-DD>.md`.
-10. **Write the run summary** to `reports/<crate-name>-eval-summary-<YYYY-MM-DD>.json`:
+7. **Measure complexity and trace the call paths** per "Complexity and Maintainability".
+8. **Exploratory testing**: Actively try to find bugs. Look for edge cases, boundary conditions, and unusual inputs that might cause undefined behavior, crashes, or logic errors. Write failing tests that demonstrate any issues found. Include these in the report.
+9. **Verify every finding** per "Claim Verification" and "Verification with Subagents". Drop the withdrawn and label the plausible before writing.
+10. **Write the report** to `reports/<crate-name>-quality-evaluation-report-<YYYY-MM-DD>.md`.
+11. **Write the run summary** to `reports/<crate-name>-eval-summary-<YYYY-MM-DD>.json`:
 
     ```json
     {
@@ -144,7 +179,7 @@ Findings MUST be verified in a pass separate from the one that generated them.
     ```
 
     Counts MUST match the report body, and MUST keep the `CONFIRMED`/`PLAUSIBLE`
-    split from step 8 — a flat total reads as though everything were verified.
+    split from step 9 — a flat total reads as though everything were verified.
     `sections_incomplete` names any section cut short, so a truncated run is not
     mistaken for a clean one.
 
@@ -178,25 +213,29 @@ Itemized review of source files: correctness, ergonomics, naming, performance.
 ## 4. Test Review
 Coverage assessment, organization, happy path vs edge cases.
 
-## 5. Python Comparison
+## 5. Complexity and Maintainability
+Measured baseline, the call paths where complexity compounds, and findings in
+Problem → Why it is hard → What we can do form. Include what is correct as it stands.
+
+## 6. Python Comparison
 Behavioral differences, error message comparison, API design divergences.
 
-## 6. Build and Test Results
+## 7. Build and Test Results
 Compilation output, test results, any warnings.
 
-## 7. Exploratory Findings
+## 8. Exploratory Findings
 Bugs found, failing tests written, undefined behavior discovered.
 
-## 8. Verification
+## 9. Verification
 How findings were verified: the subagent slices and angles used, and per finding
 its label (CONFIRMED with the repro / PLAUSIBLE / WITHDRAWN with the reason).
 State the withdrawn count and what could not be verified, and why.
 
-## 9. Recommendations
+## 10. Recommendations
 Prioritized list of improvements.
 ```
 
-Every finding in sections 1–7 MUST be tagged `[CONFIRMED]` or `[PLAUSIBLE]`.
+Every finding in sections 1–8 MUST be tagged `[CONFIRMED]` or `[PLAUSIBLE]`.
 An untagged finding is a defect in the report.
 
 ## Quick Reference
