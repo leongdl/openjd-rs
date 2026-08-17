@@ -340,6 +340,36 @@ impl MergedParameterDefinition {
     }
 
     /// Check a coerced value against the merged constraints.
+    /// Shared length-bounds check for `check_constraints`. `what` names the
+    /// measured quantity in the error message ("value length", "list length",
+    /// "item[N] length"). `len` is bytes for scalar strings and element/char
+    /// counts elsewhere — pre-existing behavior, preserved verbatim.
+    fn check_len_bounds(
+        &self,
+        len: usize,
+        min: Option<usize>,
+        max: Option<usize>,
+        what: &str,
+    ) -> Result<(), ModelError> {
+        if let Some(min) = min {
+            if len < min {
+                return Err(ModelError::DecodeValidation(format!(
+                    "Parameter '{}': {what} {len} is less than minimum {min}",
+                    self.name
+                )));
+            }
+        }
+        if let Some(max) = max {
+            if len > max {
+                return Err(ModelError::DecodeValidation(format!(
+                    "Parameter '{}': {what} {len} exceeds maximum {max}",
+                    self.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub fn check_constraints(&self, value: &openjd_expr::ExprValue) -> Result<(), ModelError> {
         match value {
             openjd_expr::ExprValue::Int(v) => {
@@ -396,24 +426,9 @@ impl MergedParameterDefinition {
                 }
             }
             openjd_expr::ExprValue::String(v) | openjd_expr::ExprValue::Path { value: v, .. } => {
-                if let Some(min) = self.min_length {
-                    if v.len() < min {
-                        return Err(ModelError::DecodeValidation(format!(
-                            "Parameter '{}': value length {} is less than minimum {min}",
-                            self.name,
-                            v.len()
-                        )));
-                    }
-                }
-                if let Some(max) = self.max_length {
-                    if v.len() > max {
-                        return Err(ModelError::DecodeValidation(format!(
-                            "Parameter '{}': value length {} exceeds maximum {max}",
-                            self.name,
-                            v.len()
-                        )));
-                    }
-                }
+                // NOTE: byte length (pre-existing; the byte-vs-char
+                // divergence from the survey is a separate behavior change).
+                self.check_len_bounds(v.len(), self.min_length, self.max_length, "value length")?;
                 if let Some(allowed) = &self.allowed_values_str {
                     if !allowed.iter().any(|a| a == v) {
                         return Err(ModelError::DecodeValidation(format!(
@@ -424,44 +439,20 @@ impl MergedParameterDefinition {
                 }
             }
             openjd_expr::ExprValue::ListBool(items) => {
-                if let Some(min) = self.min_length {
-                    if items.len() < min {
-                        return Err(ModelError::DecodeValidation(format!(
-                            "Parameter '{}': list length {} is less than minimum {min}",
-                            self.name,
-                            items.len()
-                        )));
-                    }
-                }
-                if let Some(max) = self.max_length {
-                    if items.len() > max {
-                        return Err(ModelError::DecodeValidation(format!(
-                            "Parameter '{}': list length {} exceeds maximum {max}",
-                            self.name,
-                            items.len()
-                        )));
-                    }
-                }
+                self.check_len_bounds(
+                    items.len(),
+                    self.min_length,
+                    self.max_length,
+                    "list length",
+                )?;
             }
             openjd_expr::ExprValue::ListInt(items) => {
-                if let Some(min) = self.min_length {
-                    if items.len() < min {
-                        return Err(ModelError::DecodeValidation(format!(
-                            "Parameter '{}': list length {} is less than minimum {min}",
-                            self.name,
-                            items.len()
-                        )));
-                    }
-                }
-                if let Some(max) = self.max_length {
-                    if items.len() > max {
-                        return Err(ModelError::DecodeValidation(format!(
-                            "Parameter '{}': list length {} exceeds maximum {max}",
-                            self.name,
-                            items.len()
-                        )));
-                    }
-                }
+                self.check_len_bounds(
+                    items.len(),
+                    self.min_length,
+                    self.max_length,
+                    "list length",
+                )?;
                 for (i, v) in items.iter().enumerate() {
                     if let Some(min) = self.item_min_value_i64 {
                         if *v < min {
@@ -490,24 +481,12 @@ impl MergedParameterDefinition {
                 }
             }
             openjd_expr::ExprValue::ListFloat(items) => {
-                if let Some(min) = self.min_length {
-                    if items.len() < min {
-                        return Err(ModelError::DecodeValidation(format!(
-                            "Parameter '{}': list length {} is less than minimum {min}",
-                            self.name,
-                            items.len()
-                        )));
-                    }
-                }
-                if let Some(max) = self.max_length {
-                    if items.len() > max {
-                        return Err(ModelError::DecodeValidation(format!(
-                            "Parameter '{}': list length {} exceeds maximum {max}",
-                            self.name,
-                            items.len()
-                        )));
-                    }
-                }
+                self.check_len_bounds(
+                    items.len(),
+                    self.min_length,
+                    self.max_length,
+                    "list length",
+                )?;
                 for (i, v) in items.iter().enumerate() {
                     let f = v.value();
                     if let Some(min) = self.item_min_value_f64 {
@@ -538,42 +517,20 @@ impl MergedParameterDefinition {
             }
             openjd_expr::ExprValue::ListString(items, _)
             | openjd_expr::ExprValue::ListPath(items, _, _) => {
-                if let Some(min) = self.min_length {
-                    if items.len() < min {
-                        return Err(ModelError::DecodeValidation(format!(
-                            "Parameter '{}': list length {} is less than minimum {min}",
-                            self.name,
-                            items.len()
-                        )));
-                    }
-                }
-                if let Some(max) = self.max_length {
-                    if items.len() > max {
-                        return Err(ModelError::DecodeValidation(format!(
-                            "Parameter '{}': list length {} exceeds maximum {max}",
-                            self.name,
-                            items.len()
-                        )));
-                    }
-                }
+                self.check_len_bounds(
+                    items.len(),
+                    self.min_length,
+                    self.max_length,
+                    "list length",
+                )?;
                 for (i, s) in items.iter().enumerate() {
                     let char_len = s.chars().count();
-                    if let Some(min) = self.item_min_length {
-                        if char_len < min {
-                            return Err(ModelError::DecodeValidation(format!(
-                                "Parameter '{}': item[{i}] length {char_len} is less than minimum {min}",
-                                self.name
-                            )));
-                        }
-                    }
-                    if let Some(max) = self.item_max_length {
-                        if char_len > max {
-                            return Err(ModelError::DecodeValidation(format!(
-                                "Parameter '{}': item[{i}] length {char_len} exceeds maximum {max}",
-                                self.name
-                            )));
-                        }
-                    }
+                    self.check_len_bounds(
+                        char_len,
+                        self.item_min_length,
+                        self.item_max_length,
+                        &format!("item[{i}] length"),
+                    )?;
                     if let Some(allowed) = &self.item_allowed_values_str {
                         if !allowed.iter().any(|a| a == s) {
                             return Err(ModelError::DecodeValidation(format!(
@@ -585,44 +542,20 @@ impl MergedParameterDefinition {
                 }
             }
             openjd_expr::ExprValue::ListList(items, _, _) => {
-                if let Some(min) = self.min_length {
-                    if items.len() < min {
-                        return Err(ModelError::DecodeValidation(format!(
-                            "Parameter '{}': list length {} is less than minimum {min}",
-                            self.name,
-                            items.len()
-                        )));
-                    }
-                }
-                if let Some(max) = self.max_length {
-                    if items.len() > max {
-                        return Err(ModelError::DecodeValidation(format!(
-                            "Parameter '{}': list length {} exceeds maximum {max}",
-                            self.name,
-                            items.len()
-                        )));
-                    }
-                }
+                self.check_len_bounds(
+                    items.len(),
+                    self.min_length,
+                    self.max_length,
+                    "list length",
+                )?;
                 for (i, inner) in items.iter().enumerate() {
                     if let openjd_expr::ExprValue::ListInt(ints) = inner {
-                        if let Some(min) = self.item_min_length {
-                            if ints.len() < min {
-                                return Err(ModelError::DecodeValidation(format!(
-                                    "Parameter '{}': item[{i}] length {} is less than minimum {min}",
-                                    self.name,
-                                    ints.len()
-                                )));
-                            }
-                        }
-                        if let Some(max) = self.item_max_length {
-                            if ints.len() > max {
-                                return Err(ModelError::DecodeValidation(format!(
-                                    "Parameter '{}': item[{i}] length {} exceeds maximum {max}",
-                                    self.name,
-                                    ints.len()
-                                )));
-                            }
-                        }
+                        self.check_len_bounds(
+                            ints.len(),
+                            self.item_min_length,
+                            self.item_max_length,
+                            &format!("item[{i}] length"),
+                        )?;
                         for (j, v) in ints.iter().enumerate() {
                             if let Some(min) = self.item_item_min_value_i64 {
                                 if *v < min {
@@ -652,7 +585,20 @@ impl MergedParameterDefinition {
                     }
                 }
             }
-            _ => {} // BOOL, RANGE_EXPR — no cross-template mergeable constraints
+            // No cross-template mergeable constraints for these.
+            openjd_expr::ExprValue::Null
+            | openjd_expr::ExprValue::Bool(_)
+            | openjd_expr::ExprValue::RangeExpr(_)
+            | openjd_expr::ExprValue::Unresolved(_) => {}
+            // ExprValue is #[non_exhaustive], so the compiler cannot reject a
+            // future variant here; fail closed instead of silently accepting.
+            other => {
+                return Err(ModelError::DecodeValidation(format!(
+                    "Parameter '{}': cannot check constraints for unsupported value type {}",
+                    self.name,
+                    other.expr_type()
+                )));
+            }
         }
         Ok(())
     }
@@ -830,6 +776,87 @@ impl<'a> PathParameterOptions<'a> {
 /// Preconditions that prevent any per-parameter work — a non-absolute
 /// `job_template_dir` and structural failures from
 /// [`merge_job_parameter_definitions`] — still fail fast.
+/// Resolve a caller-provided PATH parameter value: URI gating (EXPR) and
+/// relative-path joining against the current working directory.
+/// `Err` carries the validation message; the caller records it and skips.
+fn resolve_path_input_value(
+    param_name: &str,
+    input_val: &openjd_expr::ExprValue,
+    has_expr: bool,
+    allow_uri_path_values: bool,
+    current_working_dir: &str,
+    path_format: openjd_expr::path_mapping::PathFormat,
+) -> Result<openjd_expr::ExprValue, String> {
+    let s = input_val.as_str_repr();
+    if !s.is_empty() && has_expr && openjd_expr::uri_path::is_uri(&s) {
+        // EXPR extension: URI handling depends on allow_uri_path_values
+        if !allow_uri_path_values {
+            return Err(format!(
+                "Parameter '{param_name}': URI path values are not permitted. Got '{s}'"
+            ));
+        }
+        return Ok(input_val.clone());
+    }
+    if !(s.is_empty() || is_absolute_for_format_no_uri(&s, path_format)) {
+        // Relative path: join with current_working_dir if non-empty.
+        if current_working_dir.is_empty() {
+            return Ok(input_val.clone());
+        }
+        return Ok(openjd_expr::ExprValue::String(
+            openjd_expr::functions::path::non_uri_join(current_working_dir, &s, path_format),
+        ));
+    }
+    Ok(input_val.clone())
+}
+
+/// Resolve a PATH parameter's non-empty default: URI gating (EXPR), the
+/// absolute-default rejection, and joining/normalizing against the job
+/// template directory with the walk-up containment policy.
+/// `Err` carries the validation message; the caller records it and skips.
+fn resolve_path_default(
+    param_name: &str,
+    default: &str,
+    has_expr: bool,
+    allow_uri_path_values: bool,
+    allow_job_template_dir_walk_up: bool,
+    job_template_dir: &str,
+    path_format: openjd_expr::path_mapping::PathFormat,
+) -> Result<String, String> {
+    if has_expr && openjd_expr::uri_path::is_uri(default) {
+        if allow_uri_path_values {
+            // EXPR + allow: URI preserved as-is
+            return Ok(default.to_string());
+        }
+        return Err(format!(
+            "Parameter '{param_name}': URI path values are not permitted in defaults. Got '{default}'"
+        ));
+    }
+    if is_absolute_for_format_no_uri(default, path_format) {
+        if !allow_job_template_dir_walk_up {
+            return Err(format!(
+                "The default value of PATH parameter {param_name} is an absolute path. Default paths must be relative, and are joined to the job template's directory."
+            ));
+        }
+        return Ok(default.to_string());
+    }
+    if !allow_job_template_dir_walk_up && is_absolute_for_format(job_template_dir, path_format) {
+        let joined = join_for_format(job_template_dir, default, path_format);
+        let normalized = normalize_path_str(&joined, path_format);
+        let normalized_dir = normalize_path_str(job_template_dir, path_format);
+        if !path_is_within(&normalized, &normalized_dir, path_format) {
+            return Err(format!(
+                "The default value of PATH parameter {param_name} references a path outside of the template directory. Walking up from the template directory is not permitted."
+            ));
+        }
+        return Ok(normalized);
+    }
+    if is_absolute_for_format(job_template_dir, path_format) {
+        let joined = join_for_format(job_template_dir, default, path_format);
+        return Ok(normalize_path_str(&joined, path_format));
+    }
+    Ok(default.to_string())
+}
+
 pub fn preprocess_job_parameters(
     job_template: &JobTemplate,
     input_values: &JobParameterInputValues,
@@ -870,40 +897,24 @@ pub fn preprocess_job_parameters(
     for param in &merged {
         let param_type = param.param_type;
         if let Some(input_val) = input_values.get(&param.name) {
-            let coerced_opt: Option<openjd_expr::ExprValue> =
-                if param.param_type == JobParameterType::Path {
-                    let s = input_val.as_str_repr();
-                    if !s.is_empty() && has_expr && openjd_expr::uri_path::is_uri(&s) {
-                        // EXPR extension: URI handling depends on allow_uri_path_values
-                        if !allow_uri_path_values {
-                            errors.push(format!(
-                                "Parameter '{}': URI path values are not permitted. Got '{}'",
-                                param.name, s
-                            ));
-                            None
-                        } else {
-                            Some(input_val.clone())
-                        }
-                    } else if !(s.is_empty() || is_absolute_for_format_no_uri(&s, path_format)) {
-                        // Relative path: join with current_working_dir if non-empty.
-                        if current_working_dir.is_empty() {
-                            Some(input_val.clone())
-                        } else {
-                            Some(openjd_expr::ExprValue::String(
-                                openjd_expr::functions::path::non_uri_join(
-                                    current_working_dir,
-                                    &s,
-                                    path_format,
-                                ),
-                            ))
-                        }
-                    } else {
-                        Some(input_val.clone())
+            let coerced = if param.param_type == JobParameterType::Path {
+                match resolve_path_input_value(
+                    &param.name,
+                    input_val,
+                    has_expr,
+                    allow_uri_path_values,
+                    current_working_dir,
+                    path_format,
+                ) {
+                    Ok(v) => v,
+                    Err(msg) => {
+                        errors.push(msg);
+                        continue;
                     }
-                } else {
-                    Some(input_val.clone())
-                };
-            let Some(coerced) = coerced_opt else { continue };
+                }
+            } else {
+                input_val.clone()
+            };
             match coerce_to_type(&coerced, param_type) {
                 Ok(expr_value) => {
                     if let Err(e) = param.check_constraints(&expr_value) {
@@ -923,57 +934,24 @@ pub fn preprocess_job_parameters(
                 }
             }
         } else if let Some(default) = &param.default {
-            let value_str_opt: Option<String> = if param.param_type == JobParameterType::Path
-                && !default.is_empty()
-            {
-                if has_expr && allow_uri_path_values && openjd_expr::uri_path::is_uri(default) {
-                    // EXPR + allow: URI preserved as-is
-                    Some(default.clone())
-                } else if has_expr
-                    && !allow_uri_path_values
-                    && openjd_expr::uri_path::is_uri(default)
-                {
-                    errors.push(format!(
-                        "Parameter '{}': URI path values are not permitted in defaults. Got '{}'",
-                        param.name, default
-                    ));
-                    None
-                } else if is_absolute_for_format_no_uri(default, path_format) {
-                    if !allow_job_template_dir_walk_up {
-                        errors.push(format!(
-                            "The default value of PATH parameter {} is an absolute path. Default paths must be relative, and are joined to the job template's directory.",
-                            param.name
-                        ));
-                        None
-                    } else {
-                        Some(default.clone())
+            let value_str = if param.param_type == JobParameterType::Path && !default.is_empty() {
+                match resolve_path_default(
+                    &param.name,
+                    default,
+                    has_expr,
+                    allow_uri_path_values,
+                    allow_job_template_dir_walk_up,
+                    job_template_dir,
+                    path_format,
+                ) {
+                    Ok(v) => v,
+                    Err(msg) => {
+                        errors.push(msg);
+                        continue;
                     }
-                } else if !allow_job_template_dir_walk_up
-                    && is_absolute_for_format(job_template_dir, path_format)
-                {
-                    let joined = join_for_format(job_template_dir, default, path_format);
-                    let normalized = normalize_path_str(&joined, path_format);
-                    let normalized_dir = normalize_path_str(job_template_dir, path_format);
-                    if !path_is_within(&normalized, &normalized_dir, path_format) {
-                        errors.push(format!(
-                            "The default value of PATH parameter {} references a path outside of the template directory. Walking up from the template directory is not permitted.",
-                            param.name
-                        ));
-                        None
-                    } else {
-                        Some(normalized)
-                    }
-                } else if is_absolute_for_format(job_template_dir, path_format) {
-                    let joined = join_for_format(job_template_dir, default, path_format);
-                    Some(normalize_path_str(&joined, path_format))
-                } else {
-                    Some(default.clone())
                 }
             } else {
-                Some(default.clone())
-            };
-            let Some(value_str) = value_str_opt else {
-                continue;
+                default.clone()
             };
             match coerce_from_str(&value_str, param_type) {
                 Ok(expr_value) => {

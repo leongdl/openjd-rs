@@ -501,29 +501,10 @@ impl<'a> Evaluator<'a> {
                     return Err(ExpressionError::float_error("Float operation produced NaN"));
                 }
                 // Preserve original source text for passthrough (e.g., "1.5e3", "3.500")
-                let original = self.expr_source.as_ref().and_then(|src| {
-                    // AST offsets are relative to the parsed text; multi-line
-                    // sources were wrapped in "(...)" before parsing, shifting
-                    // every offset by 1 (same compensation as error.rs carets).
-                    let shift = usize::from(src.contains('\n'));
-                    let start = n.range.start().to_usize().checked_sub(shift)?;
-                    let end = n.range.end().to_usize().checked_sub(shift)?;
-                    let s = src.get(start..end)?;
-                    // Don't preserve malformed forms like "3." or ".5" or
-                    // underscore-containing. Requiring the slice to round-trip
-                    // to the value is a backstop against any offset mismatch:
-                    // a bad slice falls back to default formatting instead of
-                    // silently displaying the wrong text.
-                    if s.ends_with('.')
-                        || s.starts_with('.')
-                        || s.contains('_')
-                        || s.parse::<f64>().ok() != Some(*f)
-                    {
-                        None
-                    } else {
-                        Some(s.to_string())
-                    }
-                });
+                let original = self
+                    .expr_source
+                    .as_ref()
+                    .and_then(|src| float_passthrough_text(src, n.range, *f));
                 self.track(ExprValue::Float(if let Some(s) = original {
                     Float64::with_str(*f, s)?
                 } else {
@@ -1122,16 +1103,7 @@ impl<'a> Evaluator<'a> {
         l: &ast::ExprList,
         target: Option<&crate::types::ExprType>,
     ) -> Result<ExprValue, ExpressionError> {
-        // RFC 0005: elements derive their target from a `list[T]` parent
-        // target (the element type T); any other target shape gives the
-        // elements no constraint.
-        let list_elem_target = target.and_then(|tt| {
-            if tt.code() == crate::types::TypeCode::List && tt.params().len() == 1 {
-                Some(tt.params()[0].clone())
-            } else {
-                None
-            }
-        });
+        let list_elem_target = list_element_target(target);
 
         let mut elements = Vec::new();
         for elt in &l.elts {
@@ -1142,69 +1114,11 @@ impl<'a> Evaluator<'a> {
             elements.push(val);
         }
 
-        // Check nesting depth — max 2 levels (list[list[T]] ok, list[list[list[T]]] not)
-        for e in &elements {
-            let t = e.expr_type();
-            if let Some(inner) = t.list_element_type() {
-                if inner.list_element_type().is_some() {
-                    return Err(ExpressionError::new(
-                        "Lists may be nested at most 2 levels deep",
-                    ));
-                }
-            }
-        }
+        check_list_nesting(&elements)?;
+
         if elements.iter().any(|e| e.is_unresolved()) {
-            // Check type compatibility even with unresolved elements
-            if !elements.is_empty() {
-                let first_type = unwrap_unresolved(&elements[0].expr_type());
-                for (_i, e) in elements.iter().enumerate().skip(1) {
-                    let t = unwrap_unresolved(&e.expr_type());
-                    // Allow int/float and path/string mixing
-                    if (first_type == ExprType::INT && t == ExprType::FLOAT)
-                        || (first_type == ExprType::FLOAT && t == ExprType::INT)
-                        || (first_type == ExprType::PATH && t == ExprType::STRING)
-                        || (first_type == ExprType::STRING && t == ExprType::PATH)
-                    {
-                        continue;
-                    }
-                    if t.code() == crate::types::TypeCode::Unresolved
-                        || first_type.code() == crate::types::TypeCode::Unresolved
-                    {
-                        continue;
-                    }
-                    if t != first_type {
-                        return Err(ExpressionError::new(format!(
-                            "List literal contains incompatible types: {first_type}, {t}"
-                        )));
-                    }
-                }
-            }
-            let elem_type = if elements.is_empty() {
-                ExprType::NULLTYPE
-            } else {
-                // Compute coerced element type: int+float→float, path+string→string
-                let mut result = unwrap_unresolved(&elements[0].expr_type());
-                for e in elements.iter().skip(1) {
-                    let t = unwrap_unresolved(&e.expr_type());
-                    if t.code() == crate::types::TypeCode::Unresolved {
-                        continue;
-                    }
-                    if result.code() == crate::types::TypeCode::Unresolved {
-                        result = t;
-                        continue;
-                    }
-                    if (result == ExprType::INT && t == ExprType::FLOAT)
-                        || (result == ExprType::FLOAT && t == ExprType::INT)
-                    {
-                        result = ExprType::FLOAT;
-                    } else if (result == ExprType::PATH && t == ExprType::STRING)
-                        || (result == ExprType::STRING && t == ExprType::PATH)
-                    {
-                        result = ExprType::STRING;
-                    }
-                }
-                result
-            };
+            check_unresolved_list_types(&elements)?;
+            let elem_type = unresolved_list_elem_type(&elements);
             return self.track(ExprValue::unresolved(ExprType::list(elem_type)));
         }
         // If we have a list element target, coerce each element and skip homogeneity check
@@ -1219,51 +1133,7 @@ impl<'a> Evaluator<'a> {
             let list = ExprValue::make_list_checked(self, coerced?, elem_t.clone())?;
             return self.track(list);
         }
-        // Check type consistency
-        if !elements.is_empty() {
-            let mut seen_types: Vec<ExprType> = Vec::new();
-            for e in elements.iter() {
-                let t = e.expr_type();
-                if !seen_types.contains(&t) {
-                    seen_types.push(t);
-                }
-            }
-            // Check compatibility: allow int/float mixing and path/string mixing
-            let dominated: Vec<&ExprType> = seen_types
-                .iter()
-                .filter(|t| {
-                    // nulltype is compatible with anything
-                    t.code() == crate::types::TypeCode::NullType ||
-                // int is compatible if float is also present (promotion)
-                (**t == ExprType::INT && seen_types.contains(&ExprType::FLOAT)) ||
-                // float is compatible if int is also present (promotion)
-                (**t == ExprType::FLOAT && seen_types.contains(&ExprType::INT)) ||
-                // path is compatible if string is also present
-                (**t == ExprType::PATH && seen_types.contains(&ExprType::STRING)) ||
-                // string is compatible if path is also present
-                (**t == ExprType::STRING && seen_types.contains(&ExprType::PATH))
-                })
-                .collect();
-            // If all types are in compatible pairs, it's fine; otherwise error
-            let compatible = dominated.len() == seen_types.len() ||
-                seen_types.len() == 1 ||
-                // All list types are compatible (make_list handles inner promotion)
-                seen_types.iter().all(|t| t.code() == crate::types::TypeCode::List || t.code() == crate::types::TypeCode::NullType);
-            if !compatible {
-                let type_strs: Vec<String> = seen_types.iter().map(|t| t.to_string()).collect();
-                let msg = if type_strs.len() == 2 {
-                    format!(
-                        "List literal contains incompatible types: {} and {}",
-                        type_strs[0], type_strs[1]
-                    )
-                } else {
-                    let last = type_strs.last().unwrap();
-                    let rest = type_strs[..type_strs.len() - 1].join(", ");
-                    format!("List literal contains incompatible types: {rest}, and {last}")
-                };
-                return Err(ExpressionError::new(msg));
-            }
-        }
+        check_resolved_list_types(&elements)?;
         let elem_type = if elements.is_empty() {
             ExprType::NULLTYPE
         } else {
@@ -1674,6 +1544,167 @@ impl<'a> crate::function_library::EvalContext for Evaluator<'a> {
 }
 
 /// Unwrap unresolved[T] to T, or return the type as-is if not unresolved.
+/// Recover a float literal's original source text for display passthrough
+/// (e.g. `"1.5e3"`, `"3.500"`), or `None` to use default formatting.
+///
+/// AST offsets are relative to the parsed text; multi-line sources were
+/// wrapped in `"(...)"` before parsing, shifting every offset by 1 (same
+/// compensation as the caret rendering in `error.rs`). Malformed forms
+/// (`"3."`, `".5"`, underscores) are rejected, and the slice must round-trip
+/// to the value — a backstop so any future offset mismatch falls back to
+/// default formatting instead of silently displaying the wrong text.
+fn float_passthrough_text(src: &str, range: ruff_text_size::TextRange, f: f64) -> Option<String> {
+    let shift = usize::from(src.contains('\n'));
+    let start = range.start().to_usize().checked_sub(shift)?;
+    let end = range.end().to_usize().checked_sub(shift)?;
+    let s = src.get(start..end)?;
+    if s.ends_with('.') || s.starts_with('.') || s.contains('_') || s.parse::<f64>().ok() != Some(f)
+    {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+/// RFC 0005: elements derive their target from a `list[T]` parent
+/// target (the element type T); any other target shape gives the
+/// elements no constraint.
+fn list_element_target(target: Option<&crate::types::ExprType>) -> Option<ExprType> {
+    target.and_then(|tt| {
+        if tt.code() == crate::types::TypeCode::List && tt.params().len() == 1 {
+            Some(tt.params()[0].clone())
+        } else {
+            None
+        }
+    })
+}
+
+/// Check nesting depth — max 2 levels (list[list[T]] ok, list[list[list[T]]] not)
+fn check_list_nesting(elements: &[ExprValue]) -> Result<(), ExpressionError> {
+    for e in elements {
+        let t = e.expr_type();
+        if let Some(inner) = t.list_element_type() {
+            if inner.list_element_type().is_some() {
+                return Err(ExpressionError::new(
+                    "Lists may be nested at most 2 levels deep",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Check type compatibility for a list literal that contains unresolved elements.
+fn check_unresolved_list_types(elements: &[ExprValue]) -> Result<(), ExpressionError> {
+    if elements.is_empty() {
+        return Ok(());
+    }
+    let first_type = unwrap_unresolved(&elements[0].expr_type());
+    for e in elements.iter().skip(1) {
+        let t = unwrap_unresolved(&e.expr_type());
+        // Allow int/float and path/string mixing
+        if (first_type == ExprType::INT && t == ExprType::FLOAT)
+            || (first_type == ExprType::FLOAT && t == ExprType::INT)
+            || (first_type == ExprType::PATH && t == ExprType::STRING)
+            || (first_type == ExprType::STRING && t == ExprType::PATH)
+        {
+            continue;
+        }
+        if t.code() == crate::types::TypeCode::Unresolved
+            || first_type.code() == crate::types::TypeCode::Unresolved
+        {
+            continue;
+        }
+        if t != first_type {
+            return Err(ExpressionError::new(format!(
+                "List literal contains incompatible types: {first_type}, {t}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Compute the coerced element type for an unresolved list literal:
+/// int+float→float, path+string→string.
+fn unresolved_list_elem_type(elements: &[ExprValue]) -> ExprType {
+    if elements.is_empty() {
+        return ExprType::NULLTYPE;
+    }
+    let mut result = unwrap_unresolved(&elements[0].expr_type());
+    for e in elements.iter().skip(1) {
+        let t = unwrap_unresolved(&e.expr_type());
+        if t.code() == crate::types::TypeCode::Unresolved {
+            continue;
+        }
+        if result.code() == crate::types::TypeCode::Unresolved {
+            result = t;
+            continue;
+        }
+        if (result == ExprType::INT && t == ExprType::FLOAT)
+            || (result == ExprType::FLOAT && t == ExprType::INT)
+        {
+            result = ExprType::FLOAT;
+        } else if (result == ExprType::PATH && t == ExprType::STRING)
+            || (result == ExprType::STRING && t == ExprType::PATH)
+        {
+            result = ExprType::STRING;
+        }
+    }
+    result
+}
+
+/// Check type consistency for a fully-resolved list literal.
+fn check_resolved_list_types(elements: &[ExprValue]) -> Result<(), ExpressionError> {
+    if elements.is_empty() {
+        return Ok(());
+    }
+    let mut seen_types: Vec<ExprType> = Vec::new();
+    for e in elements.iter() {
+        let t = e.expr_type();
+        if !seen_types.contains(&t) {
+            seen_types.push(t);
+        }
+    }
+    // Check compatibility: allow int/float mixing and path/string mixing
+    let dominated: Vec<&ExprType> = seen_types
+        .iter()
+        .filter(|t| {
+            // nulltype is compatible with anything
+            t.code() == crate::types::TypeCode::NullType ||
+                // int is compatible if float is also present (promotion)
+                (**t == ExprType::INT && seen_types.contains(&ExprType::FLOAT)) ||
+                // float is compatible if int is also present (promotion)
+                (**t == ExprType::FLOAT && seen_types.contains(&ExprType::INT)) ||
+                // path is compatible if string is also present
+                (**t == ExprType::PATH && seen_types.contains(&ExprType::STRING)) ||
+                // string is compatible if path is also present
+                (**t == ExprType::STRING && seen_types.contains(&ExprType::PATH))
+        })
+        .collect();
+    // If all types are in compatible pairs, it's fine; otherwise error
+    let compatible = dominated.len() == seen_types.len() ||
+        seen_types.len() == 1 ||
+        // All list types are compatible (make_list handles inner promotion)
+        seen_types.iter().all(|t| t.code() == crate::types::TypeCode::List || t.code() == crate::types::TypeCode::NullType);
+    if !compatible {
+        let type_strs: Vec<String> = seen_types.iter().map(|t| t.to_string()).collect();
+        return Err(ExpressionError::new(incompatible_types_message(&type_strs)));
+    }
+    Ok(())
+}
+
+/// Format the "incompatible types" error message for two or more type names.
+fn incompatible_types_message(type_strs: &[String]) -> String {
+    if let [first, second] = type_strs {
+        return format!("List literal contains incompatible types: {first} and {second}");
+    }
+    let (last, rest) = type_strs
+        .split_last()
+        .expect("caller guarantees at least one incompatible type");
+    let rest = rest.join(", ");
+    format!("List literal contains incompatible types: {rest}, and {last}")
+}
+
 fn unwrap_unresolved(t: &ExprType) -> ExprType {
     if t.code() == crate::types::TypeCode::Unresolved && !t.params().is_empty() {
         t.params()[0].clone()

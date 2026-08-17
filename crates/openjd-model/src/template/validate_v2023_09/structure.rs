@@ -22,8 +22,68 @@ pub fn validate_structure(
     ctx: &ValidationContext,
     errors: &mut ValidationErrors,
 ) {
+    validate_template_level(jt, limits, ctx, errors);
+    validate_parameter_definitions_structure(jt, limits, rules, errors);
+    validate_environment_names(jt, ctx, errors);
+
+    // Step validation: duplicate-name detection needs the running set,
+    // so it stays here; everything per-step lives in the helper.
+    let all_step_names: HashSet<String> = jt.steps.iter().map(|s| s.name.clone()).collect();
+    let mut step_names = HashSet::new();
+    for (i, step) in jt.steps.iter().enumerate() {
+        let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
+        let name = step.name.clone();
+        if !step_names.insert(name.clone()) {
+            errors.add(
+                &path_field(&step_path, "name"),
+                format!("duplicate step name: '{name}'"),
+            );
+        }
+        validate_single_step_structure(
+            step,
+            &step_path,
+            &all_step_names,
+            limits,
+            rules,
+            ctx,
+            errors,
+        );
+    }
+
     let root: Vec<PathElement> = vec![];
 
+    // Cycle detection
+    detect_dependency_cycles(&jt.steps, errors);
+
+    // Environments
+    if let Some(envs) = &jt.job_environments {
+        let envs_path = path_field(&root, "jobEnvironments");
+        for (i, env) in envs.iter().enumerate() {
+            validate_single_environment(env, limits, rules, &path_index(&envs_path, i), errors);
+        }
+    }
+    for (i, step) in jt.steps.iter().enumerate() {
+        if let Some(envs) = &step.step_environments {
+            let envs_path = path_field(
+                &[PathElement::Field("steps".into()), PathElement::Index(i)],
+                "stepEnvironments",
+            );
+            for (j, env) in envs.iter().enumerate() {
+                validate_single_environment(env, limits, rules, &path_index(&envs_path, j), errors);
+            }
+        }
+    }
+}
+
+/// Template-level checks: step presence and caller step-count limit, job
+/// name, and description bounds.
+fn validate_template_level(
+    jt: &JobTemplate,
+    limits: &super::EffectiveLimits,
+    ctx: &ValidationContext,
+    errors: &mut ValidationErrors,
+) {
+    let root: Vec<PathElement> = vec![];
     // Template-level
     if jt.steps.is_empty() {
         errors.add(&root, "must have at least one step.");
@@ -62,7 +122,17 @@ pub fn validate_structure(
             errors.add(&dp, "contains control characters.");
         }
     }
+}
 
+/// Job parameter definitions: non-empty, unique names, allowed types, and
+/// per-definition validation.
+fn validate_parameter_definitions_structure(
+    jt: &JobTemplate,
+    limits: &super::EffectiveLimits,
+    rules: &EffectiveRules,
+    errors: &mut ValidationErrors,
+) {
+    let root: Vec<PathElement> = vec![];
     // Parameter definitions
     if let Some(params) = &jt.parameter_definitions {
         let pd_path = path_field(&root, "parameterDefinitions");
@@ -89,7 +159,16 @@ pub fn validate_structure(
             }
         }
     }
+}
 
+/// Environment name uniqueness across job and step environments, plus the
+/// caller-imposed total (unique-name) environment count limit.
+fn validate_environment_names(
+    jt: &JobTemplate,
+    ctx: &ValidationContext,
+    errors: &mut ValidationErrors,
+) {
+    let root: Vec<PathElement> = vec![];
     // Environment name uniqueness across all environments
     let mut env_names = HashSet::new();
     if let Some(envs) = &jt.job_environments {
@@ -139,36 +218,41 @@ pub fn validate_structure(
             );
         }
     }
+}
 
-    // Step validation
-    let all_step_names: HashSet<String> = jt.steps.iter().map(|s| s.name.clone()).collect();
-    let mut step_names = HashSet::new();
-    for (i, step) in jt.steps.iter().enumerate() {
-        let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
-        let name = step.name.clone();
-        if !step_names.insert(name.clone()) {
-            errors.add(
-                &path_field(&step_path, "name"),
-                format!("duplicate step name: '{name}'"),
-            );
-        }
+/// Per-step structural checks: name shape, description, script-or-simple-
+/// action presence, dependencies, host requirements, parameter space, and
+/// script actions/embedded files. Duplicate-name detection stays with the
+/// caller (it needs the running name set).
+#[allow(clippy::too_many_arguments)]
+fn validate_single_step_structure(
+    step: &StepTemplate,
+    step_path: &[PathElement],
+    all_step_names: &HashSet<String>,
+    limits: &super::EffectiveLimits,
+    rules: &EffectiveRules,
+    ctx: &ValidationContext,
+    errors: &mut ValidationErrors,
+) {
+    let name = step.name.clone();
+    {
         if name.is_empty() {
-            errors.add(&path_field(&step_path, "name"), "must not be empty.");
+            errors.add(&path_field(step_path, "name"), "must not be empty.");
         }
         if name.chars().any(|c| c.is_control()) {
             errors.add(
-                &path_field(&step_path, "name"),
+                &path_field(step_path, "name"),
                 "contains control characters.",
             );
         }
         if name.contains("{{") {
             errors.add(
-                &path_field(&step_path, "name"),
+                &path_field(step_path, "name"),
                 "must not contain format string expressions.",
             );
         }
         if let Some(desc) = &step.description {
-            let dp = path_field(&step_path, "description");
+            let dp = path_field(step_path, "description");
             if desc.0.chars().count() > limits.max_description_len {
                 errors.add(
                     &dp,
@@ -187,12 +271,12 @@ pub fn validate_structure(
             && step.powershell.is_none()
             && step.node.is_none()
         {
-            errors.add(&step_path, "must have 'script' or a simple action field.");
+            errors.add(step_path, "must have 'script' or a simple action field.");
         }
 
         // Dependencies
         if let Some(deps) = &step.dependencies {
-            let deps_path = path_field(&step_path, "dependencies");
+            let deps_path = path_field(step_path, "dependencies");
             if deps.is_empty() {
                 errors.add(&deps_path, "must not be empty.");
             }
@@ -202,9 +286,10 @@ pub fn validate_structure(
                 if dep.depends_on == step.name {
                     errors.add(&dep_path, "cannot depend on itself.");
                 }
-                if !step_names.contains(&dep.depends_on)
-                    && !all_step_names.contains(&dep.depends_on)
-                {
+                // A previous `!step_names.contains(..)` conjunct here was
+                // provably redundant (step_names is a subset of
+                // all_step_names, so it could never decide) and was removed.
+                if !all_step_names.contains(&dep.depends_on) {
                     errors.add(
                         &dep_path,
                         format!("dependency '{}' not found.", dep.depends_on),
@@ -221,7 +306,7 @@ pub fn validate_structure(
 
         // Host requirements
         if let Some(hr) = &step.host_requirements {
-            let hr_path = path_field(&step_path, "hostRequirements");
+            let hr_path = path_field(step_path, "hostRequirements");
             match (
                 capabilities::standard_amount_capability_names(
                     ctx.profile.revision(),
@@ -264,7 +349,7 @@ pub fn validate_structure(
         if let Some(ps) = &step.parameter_space {
             validate_step_param_space(
                 ps,
-                &path_field(&step_path, "parameterSpace"),
+                &path_field(step_path, "parameterSpace"),
                 limits,
                 rules,
                 errors,
@@ -273,7 +358,7 @@ pub fn validate_structure(
 
         // Script actions
         if let Some(script) = &step.script {
-            let script_path = path_field(&step_path, "script");
+            let script_path = path_field(step_path, "script");
             let action_path = path_field(&path_field(&script_path, "actions"), "onRun");
             validate_action(&script.actions.on_run, &action_path, limits, rules, errors);
 
@@ -318,28 +403,6 @@ pub fn validate_structure(
                     errors.add(&files_path, "must not be empty.");
                 }
                 validate_embedded_files(files, &files_path, errors);
-            }
-        }
-    }
-
-    // Cycle detection
-    detect_dependency_cycles(&jt.steps, errors);
-
-    // Environments
-    if let Some(envs) = &jt.job_environments {
-        let envs_path = path_field(&root, "jobEnvironments");
-        for (i, env) in envs.iter().enumerate() {
-            validate_single_environment(env, limits, rules, &path_index(&envs_path, i), errors);
-        }
-    }
-    for (i, step) in jt.steps.iter().enumerate() {
-        if let Some(envs) = &step.step_environments {
-            let envs_path = path_field(
-                &[PathElement::Field("steps".into()), PathElement::Index(i)],
-                "stepEnvironments",
-            );
-            for (j, env) in envs.iter().enumerate() {
-                validate_single_environment(env, limits, rules, &path_index(&envs_path, j), errors);
             }
         }
     }
@@ -549,70 +612,7 @@ fn validate_host_requirements(
             if !names.insert(amt.name.to_lowercase()) {
                 errors.add(&amt_path, format!("duplicate amount name '{}'.", amt.name));
             }
-            if amt.name.len() > 100 {
-                errors.add(
-                    &amt_path,
-                    format!("name '{}' exceeds 100 characters.", amt.name),
-                );
-            }
-            if !AMOUNT_CAP_RE.is_match(&amt.name) {
-                errors.add(
-                    &amt_path,
-                    format!(
-                        "name '{}' does not match capability name pattern.",
-                        amt.name
-                    ),
-                );
-            }
-            check_capability_reserved_scope(&amt.name, standard_amounts, &amt_path, errors);
-            if amt.min.is_none() && amt.max.is_none() {
-                errors.add(&amt_path, "must have at least one of min or max.");
-            }
-            for (field, fs) in [("min", &amt.min), ("max", &amt.max)] {
-                if let Some(fs) = fs {
-                    if (fs.has_complex_expressions() || fs.raw().contains("{{"))
-                        && !rules.allow_fmtstring_in_numeric_fields
-                    {
-                        errors.add(
-                            &path_field(&amt_path, field),
-                            "format strings are not allowed.",
-                        );
-                    }
-                }
-            }
-            let mut parse_literal_amount =
-                |field: &str, value: &Option<openjd_expr::FormatString>| -> Option<f64> {
-                    let fs = value.as_ref()?;
-                    if !fs.is_literal() {
-                        return None;
-                    }
-                    let Ok(value) = fs.raw().trim().parse::<f64>() else {
-                        errors.add(&path_field(&amt_path, field), "must be a number.");
-                        return None;
-                    };
-                    if !value.is_finite() {
-                        errors.add(&path_field(&amt_path, field), "must be a finite number.");
-                        return None;
-                    }
-                    Some(value)
-                };
-            let min_val = parse_literal_amount("min", &amt.min);
-            let max_val = parse_literal_amount("max", &amt.max);
-            if let Some(min) = min_val {
-                if min < 0.0 {
-                    errors.add(&path_field(&amt_path, "min"), "must be non-negative.");
-                }
-            }
-            if let Some(max) = max_val {
-                if max <= 0.0 {
-                    errors.add(&path_field(&amt_path, "max"), "must be positive.");
-                }
-            }
-            if let (Some(min), Some(max)) = (min_val, max_val) {
-                if min > max {
-                    errors.add(&amt_path, format!("min ({min}) > max ({max})."));
-                }
-            }
+            validate_amount_requirement(amt, &amt_path, rules, standard_amounts, errors);
         }
     }
 
@@ -627,28 +627,145 @@ fn validate_host_requirements(
                     format!("duplicate attribute name '{}'.", attr.name),
                 );
             }
+            validate_attribute_requirement(attr, &attr_path, standard_attrs, errors);
+        }
+    }
+}
+
+/// One `hostRequirements.amounts[i]` entry: name shape, reserved scope,
+/// min/max presence, format-string gating, and literal numeric bounds.
+fn validate_amount_requirement(
+    amt: &AmountRequirement,
+    amt_path: &[PathElement],
+    rules: &EffectiveRules,
+    standard_amounts: &[&str],
+    errors: &mut ValidationErrors,
+) {
+    {
+        {
+            if amt.name.len() > 100 {
+                errors.add(
+                    amt_path,
+                    format!("name '{}' exceeds 100 characters.", amt.name),
+                );
+            }
+            if !AMOUNT_CAP_RE.is_match(&amt.name) {
+                errors.add(
+                    amt_path,
+                    format!(
+                        "name '{}' does not match capability name pattern.",
+                        amt.name
+                    ),
+                );
+            }
+            check_capability_reserved_scope(&amt.name, standard_amounts, amt_path, errors);
+            if amt.min.is_none() && amt.max.is_none() {
+                errors.add(amt_path, "must have at least one of min or max.");
+            }
+            for (field, fs) in [("min", &amt.min), ("max", &amt.max)] {
+                if let Some(fs) = fs {
+                    if (fs.has_complex_expressions() || fs.raw().contains("{{"))
+                        && !rules.allow_fmtstring_in_numeric_fields
+                    {
+                        errors.add(
+                            &path_field(amt_path, field),
+                            "format strings are not allowed.",
+                        );
+                    }
+                }
+            }
+            let mut parse_literal_amount =
+                |field: &str, value: &Option<openjd_expr::FormatString>| -> Option<f64> {
+                    let fs = value.as_ref()?;
+                    if !fs.is_literal() {
+                        return None;
+                    }
+                    let Ok(value) = fs.raw().trim().parse::<f64>() else {
+                        errors.add(&path_field(amt_path, field), "must be a number.");
+                        return None;
+                    };
+                    if !value.is_finite() {
+                        errors.add(&path_field(amt_path, field), "must be a finite number.");
+                        return None;
+                    }
+                    Some(value)
+                };
+            let min_val = parse_literal_amount("min", &amt.min);
+            let max_val = parse_literal_amount("max", &amt.max);
+            if let Some(min) = min_val {
+                if min < 0.0 {
+                    errors.add(&path_field(amt_path, "min"), "must be non-negative.");
+                }
+            }
+            if let Some(max) = max_val {
+                if max <= 0.0 {
+                    errors.add(&path_field(amt_path, "max"), "must be positive.");
+                }
+            }
+            if let (Some(min), Some(max)) = (min_val, max_val) {
+                if min > max {
+                    errors.add(amt_path, format!("min ({min}) > max ({max})."));
+                }
+            }
+        }
+    }
+}
+
+/// Literal anyOf/allOf values of a standard single-choice capability must be
+/// one of `valid` (case-insensitive).
+fn check_standard_attr_values(
+    attr: &AttributeRequirement,
+    attr_path: &[PathElement],
+    cap_name: &str,
+    valid: &[&str],
+    errors: &mut ValidationErrors,
+) {
+    for (field, vals) in [("anyOf", &attr.any_of), ("allOf", &attr.all_of)] {
+        if let Some(vals) = vals {
+            for v in vals {
+                if v.is_literal() && !valid.iter().any(|vv| vv.eq_ignore_ascii_case(v.raw())) {
+                    errors.add(
+                        &path_field(attr_path, field),
+                        format!("value '{}' is not valid for {cap_name}.", v.raw()),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// One `hostRequirements.attributes[i]` entry: name shape, reserved scope,
+/// anyOf/allOf shape and element checks, and standard-capability value rules.
+fn validate_attribute_requirement(
+    attr: &AttributeRequirement,
+    attr_path: &[PathElement],
+    standard_attrs: &[&str],
+    errors: &mut ValidationErrors,
+) {
+    {
+        {
             if attr.name.len() > 100 {
                 errors.add(
-                    &attr_path,
+                    attr_path,
                     format!("name '{}' exceeds 100 characters.", attr.name),
                 );
             }
             if !ATTR_CAP_RE.is_match(&attr.name) {
                 errors.add(
-                    &attr_path,
+                    attr_path,
                     format!(
                         "name '{}' does not match capability name pattern.",
                         attr.name
                     ),
                 );
             }
-            check_capability_reserved_scope(&attr.name, standard_attrs, &attr_path, errors);
+            check_capability_reserved_scope(&attr.name, standard_attrs, attr_path, errors);
             if attr.any_of.is_none() && attr.all_of.is_none() {
-                errors.add(&attr_path, "must have at least one of anyOf or allOf.");
+                errors.add(attr_path, "must have at least one of anyOf or allOf.");
             }
             for (field, vals) in [("anyOf", &attr.any_of), ("allOf", &attr.all_of)] {
                 if let Some(vals) = vals {
-                    let field_path = path_field(&attr_path, field);
+                    let field_path = path_field(attr_path, field);
                     if vals.is_empty() {
                         errors.add(&field_path, "must not be empty.");
                     }
@@ -681,51 +798,29 @@ fn validate_host_requirements(
                 if let Some(vals) = &attr.all_of {
                     if vals.len() > 1 {
                         errors.add(
-                            &path_field(&attr_path, "allOf"),
+                            &path_field(attr_path, "allOf"),
                             "single-valued attribute cannot have more than 1 element.",
                         );
                     }
                 }
             }
             if attr_lower == "attr.worker.os.family" {
-                let valid = ["linux", "windows", "macos"];
-                for (field, vals) in [("anyOf", &attr.any_of), ("allOf", &attr.all_of)] {
-                    if let Some(vals) = vals {
-                        for v in vals {
-                            if v.is_literal()
-                                && !valid.iter().any(|vv| vv.eq_ignore_ascii_case(v.raw()))
-                            {
-                                errors.add(
-                                    &path_field(&attr_path, field),
-                                    format!(
-                                        "value '{}' is not valid for attr.worker.os.family.",
-                                        v.raw()
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
+                check_standard_attr_values(
+                    attr,
+                    attr_path,
+                    "attr.worker.os.family",
+                    &["linux", "windows", "macos"],
+                    errors,
+                );
             }
             if attr_lower == "attr.worker.cpu.arch" {
-                let valid = ["x86_64", "arm64"];
-                for (field, vals) in [("anyOf", &attr.any_of), ("allOf", &attr.all_of)] {
-                    if let Some(vals) = vals {
-                        for v in vals {
-                            if v.is_literal()
-                                && !valid.iter().any(|vv| vv.eq_ignore_ascii_case(v.raw()))
-                            {
-                                errors.add(
-                                    &path_field(&attr_path, field),
-                                    format!(
-                                        "value '{}' is not valid for attr.worker.cpu.arch.",
-                                        v.raw()
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
+                check_standard_attr_values(
+                    attr,
+                    attr_path,
+                    "attr.worker.cpu.arch",
+                    &["x86_64", "arm64"],
+                    errors,
+                );
             }
         }
     }
