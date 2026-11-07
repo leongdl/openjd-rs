@@ -18,12 +18,19 @@ calling `diff_environments`.
 
 ## Algorithm
 
-1. Unless `with_resolved_symtab(true)`, clear every `resolved_symtab` on both sides. The
-   step-scope table holds every `Param.*`, so comparing it marks every step modified when
-   any job parameter changes.
+1. `resolvedSymTab` is compared by default. Actions keep their format strings
+   unresolved (`command` stays `{{Param.Scene}}`), so a job parameter's effect on a step
+   is visible only in the step's table. `create_job` filters that table to the symbols
+   the step and its step environments reference (`filter_symtab_for_step`), and each job
+   environment's to the symbols it references, so a parameter change marks exactly the
+   steps and job environments that read it. Step environments carry no table of their
+   own, so a change they see lands on the step. `with_resolved_symtab(false)` clears the
+   tables first, which hides parameter changes inside steps.
 2. Push the root pair. For each pair, the node's `DiffStatus` is decided **when the node is
    created**, by one `PartialEq` of the whole subtree: `Unchanged`, `Modified`, `Added`
-   (new side only), or `Removed` (old side only).
+   (new side only), or `Removed` (old side only). For a job, step or parameter space the
+   check also compares task parameter definition order, which `IndexMap` equality ignores
+   but which fixes task iteration order and so task indices.
 3. Pop pairs from a FIFO queue. Expanding a `Modified` node records its own differing
    scalar fields as `FieldChange`s and creates one child node per child pair.
 4. A child is queued only if it is `Modified` and its depth is below `max_depth`. An
@@ -43,29 +50,38 @@ descended.
 | collection | matched by | order recorded as |
 |---|---|---|
 | `steps`, `jobEnvironments`, `stepEnvironments`, `embeddedFiles` | `name` | `<collection>.order` field change |
-| `parameters`, `taskParameterDefinitions` | map key | not a change (`IndexMap` equality is order-insensitive) |
+| `taskParameterDefinitions` | map key | `taskParameterDefinitions.order` (it fixes task order) |
+| `parameters` | map key | not a change |
 | `variables` | map key | not a change; entries are `variables.<KEY>` |
-| `hostRequirements.amounts` / `attributes` | `name` | `<collection>` field change; entries are `<collection>[<name>]` |
+| `hostRequirements.amounts` / `attributes` | `name` | `<collection>.order`; entries are `<collection>[<name>]` |
 | `dependencies` | set of `dependsOn` | `dependencies.order` |
 
 Children are ordered old-side first, then new-only entries. With duplicate names (not
-possible in a validated job) the first occurrence wins.
+possible in a validated job, but the fields are public) the first occurrence is matched
+and the later copies are reported as a `<collection>.duplicates` field change listing
+their names, so the parent is never an unattributed `Modified`.
+
+A `None` versus `Some(empty)` difference in an optional list has no entry to attribute
+it to, so it is recorded as a field change named after the collection
+(`jobEnvironments`, `stepEnvironments`, `embeddedFiles`, `variables`, `amounts`,
+`attributes`). Same-edge `dependencies` that differ only in order, repetition or
+None-vs-empty are recorded as `dependencies.order`.
 
 ## Tree shape
 
 | node kind | segment from parent | own fields | children |
 |---|---|---|---|
-| Job | (root) | `name`, `description`, `extensions`, `steps.order`, `jobEnvironments.order` | `parameters[K]`, `jobEnvironments[N]`, `steps[N]` |
+| Job | (root) | `name`, `description`, `extensions`, `steps.order`, `steps.duplicates`, `jobEnvironments`, `jobEnvironments.order` | `parameters[K]`, `jobEnvironments[N]`, `steps[N]` |
 | JobParameter | `parameters[K]` | `name`, `type`, `value` | — |
-| Step | `steps[N]` | `name`, `description`, `dependencies`, `stepEnvironments.order`, `resolvedSymTab` | `script`, `stepEnvironments[N]`, `parameterSpace`, `hostRequirements` |
-| StepScript | `script` | `let`, `embeddedFiles.order` | `onRun`, `embeddedFiles[N]` |
-| Environment | `jobEnvironments[N]` / `stepEnvironments[N]` | `name`, `description`, `variables.K`, `resolvedSymTab` | `script` |
-| EnvironmentScript | `script` | `let`, `embeddedFiles.order` | `onEnter`, `onWrapEnvEnter`, `onWrapTaskRun`, `onWrapEnvExit`, `onExit`, `embeddedFiles[N]` |
+| Step | `steps[N]` | `name`, `description`, `dependencies`, `dependencies.order`, `stepEnvironments`, `stepEnvironments.order`, `resolvedSymTab` | `script`, `stepEnvironments[N]`, `parameterSpace`, `hostRequirements` |
+| StepScript | `script` | `let`, `embeddedFiles`, `embeddedFiles.order` | `onRun`, `embeddedFiles[N]` |
+| Environment | `jobEnvironments[N]` / `stepEnvironments[N]` | `name`, `description`, `variables.K`, `variables`, `resolvedSymTab` | `script` |
+| EnvironmentScript | `script` | `let`, `embeddedFiles`, `embeddedFiles.order` | `onEnter`, `onWrapEnvEnter`, `onWrapTaskRun`, `onWrapEnvExit`, `onExit`, `embeddedFiles[N]` |
 | Action | `onRun`, `onEnter`, ... | `command`, `args`, `timeout`, `cancelation` | — |
 | EmbeddedFile | `embeddedFiles[N]` | `name`, `type`, `filename`, `data`, `runnable`, `endOfLine` | — |
-| ParameterSpace | `parameterSpace` | `combination` | `taskParameterDefinitions[K]` |
+| ParameterSpace | `parameterSpace` | `combination`, `taskParameterDefinitions.order` | `taskParameterDefinitions[K]` |
 | TaskParameter | `taskParameterDefinitions[K]` | `definition` (whole value) | — |
-| HostRequirements | `hostRequirements` | `amounts[N]`, `attributes[N]` | — |
+| HostRequirements | `hostRequirements` | `amounts[N]`, `amounts.order`, `amounts`, `attributes[N]`, `attributes.order`, `attributes` | — |
 
 ## Identity and position
 
@@ -86,7 +102,9 @@ and everywhere in a `diff_steps` tree.
 `task_delta(old: Option<&StepParameterSpace>, new: Option<&StepParameterSpace>) ->
 TaskDelta` gives the change in a step's task set without enumerating tasks, when both
 sides are a plain Cartesian product over the same parameters (combination absent, `*`,
-or names joined by `*`; no chunking; no parameter added, removed or retyped). With
+or every name exactly once joined by `*`; no chunking; no range that repeats a value,
+since the algebra is over sets; a task count that fits `usize`; no parameter added,
+removed or retyped). With
 per-parameter value sets `O_k`, `N_k` and `I_k = O_k ∩ N_k`, in the new side's dimension
 order:
 
@@ -118,6 +136,6 @@ cannot address a name that contains `.`; walk with `DiffTree::child` instead.
 Tests: `crates/openjd-model/src/test_job_diff.rs`.
 
 Example CLI: `cargo run -p openjd-model --example job_diff -- OLD NEW [--max-depth N]
-[--with-symtab] [--param K=V] [--old-param K=V] [--new-param K=V] [--plan]`, with sample
+[--no-symtab] [--param K=V] [--old-param K=V] [--new-param K=V] [--plan]`, with sample
 templates in `crates/openjd-model/examples/job_diff/`. `--plan` previews a step and task
 apply order; it is example code, not part of the API.

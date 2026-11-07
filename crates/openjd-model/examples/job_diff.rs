@@ -8,7 +8,7 @@
 //! cargo run -p openjd-model --example job_diff -- OLD.yaml NEW.yaml [options]
 //!
 //!   --max-depth N        do not expand nodes at depth N or deeper
-//!   --with-symtab        also compare resolvedSymTab
+//!   --no-symtab          do not compare resolvedSymTab (hides parameter changes in steps)
 //!   --param K=V          job parameter for both sides (repeatable)
 //!   --old-param K=V      job parameter for the old side only
 //!   --new-param K=V      job parameter for the new side only
@@ -47,7 +47,7 @@ fn parse_args() -> Result<Args, String> {
     let mut options = DiffOptions::default();
     let (mut old_params, mut new_params) = (Vec::new(), Vec::new());
     let mut plan = false;
-    let mut with_symtab = false;
+    let mut with_symtab = true;
     let mut it = std::env::args().skip(1);
     let kv = |s: Option<String>, flag: &str| -> Result<(String, String), String> {
         let s = s.ok_or_else(|| format!("{flag} needs K=V"))?;
@@ -63,9 +63,9 @@ fn parse_args() -> Result<Args, String> {
                 let n = n.parse().map_err(|e| format!("--max-depth {n}: {e}"))?;
                 options = options.with_max_depth(n);
             }
-            "--with-symtab" => {
-                options = options.with_resolved_symtab(true);
-                with_symtab = true;
+            "--no-symtab" => {
+                options = options.with_resolved_symtab(false);
+                with_symtab = false;
             }
             "--param" => {
                 let p = kv(it.next(), "--param")?;
@@ -94,7 +94,7 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
-const USAGE: &str = "usage: job_diff OLD NEW [--max-depth N] [--with-symtab] \
+const USAGE: &str = "usage: job_diff OLD NEW [--max-depth N] [--no-symtab] \
 [--param K=V] [--old-param K=V] [--new-param K=V] [--plan]";
 
 fn load(path: &str) -> Result<DecodedTemplate, String> {
@@ -268,16 +268,8 @@ fn print_plan(tree: &DiffTree, old: &Job, new: &Job) -> Result<(), String> {
             *slot = Some(c);
         }
     }
-    // Removes: dependents first (reverse topo of the OLD graph).
-    for &i in topo(old)?.iter().rev() {
-        if by_old.get(i).copied().flatten().is_some() {
-            op(format!(
-                "step#{i:<2}    REMOVE {:<8} (old side; store: stepId = lookup(job, name), cascade tasks)",
-                old.steps[i].name
-            ));
-        }
-    }
-    // Adds and modifies: origins first (topo of the NEW graph).
+    // Adds and modifies first, origins before dependents (topo of the NEW
+    // graph): every edge a step gains points at a step that already exists.
     for &j in &topo(new)? {
         let s = &new.steps[j];
         let Some(id) = by_new.get(j).copied().flatten() else {
@@ -327,6 +319,16 @@ fn print_plan(tree: &DiffTree, old: &Job, new: &Job) -> Result<(), String> {
                 }
             }
             DiffStatus::Removed => {}
+        }
+    }
+    // Removes last, dependents first (reverse topo of the OLD graph). By now
+    // no remaining step depends on a removed one: the new job cannot name it.
+    for &i in topo(old)?.iter().rev() {
+        if by_old.get(i).copied().flatten().is_some() {
+            op(format!(
+                "step#{i:<2}    REMOVE {:<8} (old side; store: stepId = lookup(job, name), cascade tasks)",
+                old.steps[i].name
+            ));
         }
     }
     if let Some(f) = tree
@@ -445,9 +447,9 @@ fn task_ops(
                     describe(b),
                     b.len(),
                     next,
-                    next + b.len() - 1
+                    next.saturating_add(b.len()).saturating_sub(1)
                 ));
-                next += b.len();
+                next = next.saturating_add(b.len());
             }
             for b in &removed {
                 let mut idx: Vec<usize> = b

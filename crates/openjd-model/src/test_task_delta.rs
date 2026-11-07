@@ -226,3 +226,114 @@ fn association_chunking_and_new_parameters_fall_back() {
     fb(task_delta(Some(&one), Some(&two)));
     fb(task_delta(None, Some(&one)));
 }
+
+fn floats(v: &[f64]) -> TaskParameter {
+    TaskParameter::Float {
+        range: v
+            .iter()
+            .map(|f| openjd_expr::value::Float64::new(*f).unwrap())
+            .collect(),
+    }
+}
+
+fn paths(v: &[&str]) -> TaskParameter {
+    TaskParameter::Path {
+        range: v.iter().map(|s| (*s).to_string()).collect(),
+    }
+}
+
+fn int_list(v: &[i64]) -> TaskParameter {
+    TaskParameter::Int {
+        range: TaskParamRange::List(v.to_vec()),
+        chunks: None,
+    }
+}
+
+fn is_fallback(d: &TaskDelta) -> bool {
+    matches!(d, TaskDelta::Fallback { .. })
+}
+
+#[test]
+fn float_and_path_ranges_decompose_and_index() {
+    check(
+        &space(
+            vec![
+                ("Scale", floats(&[0.5, 1.0, 2.0])),
+                ("Out", paths(&["/a", "/b"])),
+            ],
+            None,
+        ),
+        &space(
+            vec![
+                ("Scale", floats(&[1.0, 2.0, 4.0])),
+                ("Out", paths(&["/b", "/c"])),
+            ],
+            None,
+        ),
+    );
+}
+
+#[test]
+fn repeated_range_values_fall_back() {
+    // The algebra is over sets; a repeated value would make kept/added
+    // counts and index_of wrong, so it is refused.
+    let a = space(vec![("F", int_list(&[1, 1, 2]))], None);
+    let b = space(vec![("F", int_list(&[1, 2]))], None);
+    assert!(is_fallback(&task_delta(Some(&a), Some(&b))));
+    assert!(is_fallback(&task_delta(Some(&b), Some(&a))));
+    let s = space(vec![("C", strs(&["x", "x"]))], None);
+    let t = space(vec![("C", strs(&["x"]))], None);
+    assert!(is_fallback(&task_delta(Some(&s), Some(&t))));
+}
+
+#[test]
+fn combination_must_name_each_parameter_once_with_star_only() {
+    let p = |c: Option<&str>, b: &str| space(vec![("A", ints("1-2")), ("B", ints(b))], c);
+    let fb = |c: &str| {
+        assert!(
+            is_fallback(&task_delta(
+                Some(&p(Some(c), "7-8")),
+                Some(&p(Some(c), "7-9"))
+            )),
+            "{c:?} should fall back"
+        );
+    };
+    fb("A * A");
+    fb("");
+    fb("(A, B)");
+    fb("A * C");
+    // Whitespace and explicit order are fine.
+    assert!(!is_fallback(&task_delta(
+        Some(&p(Some(" B *A "), "7-8")),
+        Some(&p(Some("A*B"), "7-9")),
+    )));
+    check(&p(Some(" B *A "), "7-8"), &p(Some("A*B"), "7-9"));
+}
+
+#[test]
+fn task_count_overflow_falls_back() {
+    // 2^16 to the 4th power is 2^64, one past usize::MAX on 64-bit.
+    let big = || ints("1-65536");
+    let a = space(
+        vec![("W", big()), ("X", big()), ("Y", big()), ("Z", big())],
+        None,
+    );
+    let b = space(
+        vec![
+            ("W", big()),
+            ("X", big()),
+            ("Y", big()),
+            ("Z", ints("1-65537")),
+        ],
+        None,
+    );
+    assert!(is_fallback(&task_delta(Some(&a), Some(&b))));
+}
+
+#[test]
+fn zero_parameters_is_one_task() {
+    let a = space(vec![], None);
+    let b = space(vec![("F", ints("1-2"))], None);
+    assert_eq!(task_delta(Some(&a), Some(&a.clone())), TaskDelta::Unchanged);
+    assert!(is_fallback(&task_delta(Some(&a), Some(&b))));
+}

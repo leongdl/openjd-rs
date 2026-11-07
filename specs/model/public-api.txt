@@ -268,7 +268,7 @@ pub fn openjd_model::job::diff::DiffOptions::with_resolved_symtab(self, bool) ->
 impl core::clone::Clone for openjd_model::job::diff::DiffOptions
 pub fn openjd_model::job::diff::DiffOptions::clone(&self) -> openjd_model::job::diff::DiffOptions
 impl core::default::Default for openjd_model::job::diff::DiffOptions
-pub fn openjd_model::job::diff::DiffOptions::default() -> openjd_model::job::diff::DiffOptions
+pub fn openjd_model::job::diff::DiffOptions::default() -> Self
 impl core::fmt::Debug for openjd_model::job::diff::DiffOptions
 pub fn openjd_model::job::diff::DiffOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct openjd_model::job::diff::DiffTree

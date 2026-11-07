@@ -144,11 +144,20 @@ impl DiffNode {
 }
 
 /// Options for [`diff_jobs`], [`diff_steps`] and [`diff_environments`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct DiffOptions {
     max_depth: Option<usize>,
     include_resolved_symtab: bool,
+}
+
+impl Default for DiffOptions {
+    fn default() -> Self {
+        Self {
+            max_depth: None,
+            include_resolved_symtab: true,
+        }
+    }
 }
 
 impl DiffOptions {
@@ -160,9 +169,10 @@ impl DiffOptions {
         self
     }
 
-    /// Compare `resolvedSymTab` too. Off by default: the step-scope table
-    /// holds every job parameter, so one parameter change would mark every
-    /// step modified, including steps that never read it.
+    /// Whether to compare `resolvedSymTab`. On by default, and it must stay
+    /// on to see job parameter changes in a step: actions keep their format
+    /// strings unresolved, and the table, filtered to the symbols the step or
+    /// environment references, is the only place a parameter's value shows.
     #[must_use]
     pub fn with_resolved_symtab(mut self, include: bool) -> Self {
         self.include_resolved_symtab = include;
@@ -391,21 +401,44 @@ impl Subject<'_> {
 
     /// Whole-subtree equality. Sides of different kinds never occur: both
     /// sides of a node come from the same field.
+    ///
+    /// `==` on `IndexMap` ignores order, but task parameter definition order
+    /// fixes task iteration order (and so task indices), so it is checked
+    /// on top for every node that contains a parameter space.
     fn subtree_eq(self, other: Self) -> bool {
         match (self, other) {
-            (Self::Job(a), Self::Job(b)) => a == b,
+            (Self::Job(a), Self::Job(b)) => {
+                a == b
+                    && a.steps.iter().zip(&b.steps).all(|(x, y)| {
+                        space_order_eq(x.parameter_space.as_ref(), y.parameter_space.as_ref())
+                    })
+            }
             (Self::JobParameter(a), Self::JobParameter(b)) => a == b,
             (Self::Environment(a), Self::Environment(b)) => a == b,
-            (Self::Step(a), Self::Step(b)) => a == b,
+            (Self::Step(a), Self::Step(b)) => {
+                a == b && space_order_eq(a.parameter_space.as_ref(), b.parameter_space.as_ref())
+            }
+            (Self::ParameterSpace(a), Self::ParameterSpace(b)) => {
+                a == b && space_order_eq(Some(a), Some(b))
+            }
             (Self::StepScript(a), Self::StepScript(b)) => a == b,
             (Self::EnvironmentScript(a), Self::EnvironmentScript(b)) => a == b,
             (Self::Action(a), Self::Action(b)) => a == b,
             (Self::EmbeddedFile(a), Self::EmbeddedFile(b)) => a == b,
-            (Self::ParameterSpace(a), Self::ParameterSpace(b)) => a == b,
             (Self::TaskParameter(a), Self::TaskParameter(b)) => a == b,
             (Self::HostRequirements(a), Self::HostRequirements(b)) => a == b,
             _ => false,
         }
+    }
+}
+
+fn space_order_eq(a: Option<&StepParameterSpace>, b: Option<&StepParameterSpace>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a
+            .task_parameter_definitions
+            .keys()
+            .eq(b.task_parameter_definitions.keys()),
+        _ => true,
     }
 }
 
@@ -505,14 +538,29 @@ impl<'a> Builder<'a> {
         b: impl IntoIterator<Item = (&'a str, &'a T)>,
         wrap: fn(&'a T) -> Subject<'a>,
     ) {
-        // First occurrence wins; names are unique in a validated job.
+        // First occurrence wins; names are unique in a validated job. A
+        // hand-built job can repeat one, so later copies are reported as a
+        // `<collection>.duplicates` field change rather than dropped silently.
         let mut a_map: IndexMap<&str, (usize, &T)> = IndexMap::new();
+        let mut a_dups: Vec<&str> = Vec::new();
         for (i, (k, v)) in a.into_iter().enumerate() {
-            a_map.entry(k).or_insert((i, v));
+            if a_map.contains_key(k) {
+                a_dups.push(k);
+            } else {
+                a_map.insert(k, (i, v));
+            }
         }
         let mut b_map: IndexMap<&str, (usize, &T)> = IndexMap::new();
+        let mut b_dups: Vec<&str> = Vec::new();
         for (i, (k, v)) in b.into_iter().enumerate() {
-            b_map.entry(k).or_insert((i, v));
+            if b_map.contains_key(k) {
+                b_dups.push(k);
+            } else {
+                b_map.insert(k, (i, v));
+            }
+        }
+        if !a_dups.is_empty() || !b_dups.is_empty() {
+            self.field(id, &format!("{collection}.duplicates"), &a_dups, &b_dups);
         }
         if ordered {
             let a_order: Vec<&str> = a_map
@@ -565,6 +613,17 @@ impl<'a> Builder<'a> {
         let a_map: IndexMap<&str, &T> = a.unwrap_or_default().iter().map(|v| (key(v), v)).collect();
         let b_map: IndexMap<&str, &T> = b.unwrap_or_default().iter().map(|v| (key(v), v)).collect();
         let before = self.nodes[id].field_changes.len();
+        let a_order: Vec<&str> = a_map
+            .keys()
+            .copied()
+            .filter(|k| b_map.contains_key(k))
+            .collect();
+        let b_order: Vec<&str> = b_map
+            .keys()
+            .copied()
+            .filter(|k| a_map.contains_key(k))
+            .collect();
+        self.field(id, &format!("{collection}.order"), &a_order, &b_order);
         let keys: Vec<&str> = a_map
             .keys()
             .chain(b_map.keys().filter(|k| !a_map.contains_key(*k)))
@@ -578,7 +637,7 @@ impl<'a> Builder<'a> {
                 &b_map.get(k),
             );
         }
-        // Same entries, but order or None-vs-empty differs.
+        // Nothing attributable (None vs empty, or repeated names): record the whole list.
         if self.nodes[id].field_changes.len() == before {
             self.field(id, collection, &a, &b);
         }
@@ -679,11 +738,11 @@ impl<'a> Builder<'a> {
                     combination,
                 } = a;
                 self.field(id, "combination", combination, &b.combination);
-                // IndexMap equality is order-insensitive, so order is not a change.
+                // Definition order fixes task iteration order, so it is a change.
                 self.keyed(
                     id,
                     "taskParameterDefinitions",
-                    false,
+                    true,
                     task_parameter_definitions
                         .iter()
                         .map(|(k, v)| (k.as_str(), v)),

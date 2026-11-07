@@ -22,7 +22,8 @@
 //! iterated with [`StepParameterSpaceIterator`] and counted without iteration.
 //! Cost is linear in the per-parameter range sizes, not in their product.
 //!
-//! Anything else (association, chunking, a parameter added, removed or
+//! Anything else (association, chunking, a range that repeats a value, a
+//! task count that overflows, a parameter added, removed or
 //! retyped) returns [`TaskDelta::Fallback`]: there the caller enumerates both
 //! spaces and diffs tasks by value.
 
@@ -130,7 +131,9 @@ pub fn task_delta(old: Option<&StepParameterSpace>, new: Option<&StepParameterSp
         return fallback("parameter space added or removed");
     };
     let (Some(old_dims), Some(new_dims)) = (product_dims(old), product_dims(new)) else {
-        return fallback("combination is not a plain product, or a parameter is chunked");
+        return fallback(
+            "not an exact plain product: association, chunking, a repeated range value or name, or a task count overflow",
+        );
     };
     let old_names: HashSet<&str> = old_dims.iter().map(|(n, _)| n.as_str()).collect();
     let new_names: HashSet<&str> = new_dims.iter().map(|(n, _)| n.as_str()).collect();
@@ -203,28 +206,41 @@ fn make_box(defs: impl Iterator<Item = (String, TaskParameter)>) -> TaskBox {
 }
 
 /// The dimensions of a plain product, in iteration order (outermost first),
-/// or `None` for association or chunking.
+/// or `None` when the decomposition would not be exact: association or any
+/// other non-`*` syntax, a repeated or unknown name, chunking, a range that
+/// repeats a value (the algebra is over sets), or a task count that
+/// overflows `usize` (the iterator rejects those).
 fn product_dims(space: &StepParameterSpace) -> Option<Vec<(String, &TaskParameter)>> {
     let defs = &space.task_parameter_definitions;
     let names: Vec<String> = match space.combination.as_deref().map(str::trim) {
-        None | Some("") | Some("*") => defs.keys().cloned().collect(),
-        Some(c) if c.contains(['(', ')', ',']) => return None,
+        None | Some("*") => defs.keys().cloned().collect(),
         Some(c) => c.split('*').map(|s| s.trim().to_string()).collect(),
     };
-    if names.len() != defs.len() {
+    let unique: HashSet<&str> = names.iter().map(String::as_str).collect();
+    if names.len() != defs.len() || unique.len() != names.len() {
         return None;
     }
+    let mut total = 1usize;
     names
         .into_iter()
         .map(|n| {
+            // An unknown name also covers "(A, B)" and "" here.
             let p = defs.get(&n)?;
-            match p {
+            if matches!(
+                p,
                 TaskParameter::Int {
-                    chunks: Some(_), ..
-                }
-                | TaskParameter::ChunkInt { .. } => None,
-                _ => Some((n, p)),
+                    chunks: Some(_),
+                    ..
+                } | TaskParameter::ChunkInt { .. }
+            ) {
+                return None;
             }
+            let keys = range_keys(p);
+            if keys.iter().collect::<HashSet<_>>().len() != keys.len() {
+                return None;
+            }
+            total = total.checked_mul(keys.len())?;
+            Some((n, p))
         })
         .collect()
 }

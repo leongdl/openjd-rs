@@ -721,7 +721,7 @@ pub fn job::diff::diff_environments(old: &Environment, new: &Environment, option
 pub struct job::diff::DiffOptions { /* private */ }
 impl DiffOptions {
     pub fn with_max_depth(self, depth: usize) -> Self;      // nodes at depth >= d are not expanded
-    pub fn with_resolved_symtab(self, include: bool) -> Self; // default false
+    pub fn with_resolved_symtab(self, include: bool) -> Self; // default true
 }
 
 pub type job::diff::DiffNodeId = usize;

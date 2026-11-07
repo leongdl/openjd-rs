@@ -160,16 +160,20 @@ fn added_and_removed_steps() {
 }
 
 #[test]
-fn job_parameter_change_does_not_dirty_steps_unless_symtab_is_compared() {
+fn job_parameter_change_marks_exactly_the_steps_that_read_it() {
+    // Prep reads Param.Scene; Render reads only Param.Frames.
     let (a, b) = (job(BASE, &[]), job(BASE, &[("Scene", "b.blend")]));
     let t = diff_jobs(&a, &b, &DiffOptions::default());
     assert_eq!(fields(&t, "parameters[Scene]"), vec!["value"]);
-    assert_eq!(status(&t, "steps[Prep]"), DiffStatus::Unchanged);
+    assert_eq!(fields(&t, "steps[Prep]"), vec!["resolvedSymTab"]);
+    assert_eq!(status(&t, "steps[Render]"), DiffStatus::Unchanged);
+    assert_eq!(status(&t, "jobEnvironments[Conda]"), DiffStatus::Unchanged);
     assert_attributed(&t);
 
-    let t = diff_jobs(&a, &b, &DiffOptions::default().with_resolved_symtab(true));
-    assert_eq!(fields(&t, "steps[Prep]"), vec!["resolvedSymTab"]);
-    assert_attributed(&t);
+    // Opting out hides the change in Prep: its command is still the
+    // unresolved "{{Param.Scene}}" on both sides.
+    let t = diff_jobs(&a, &b, &DiffOptions::default().with_resolved_symtab(false));
+    assert_eq!(status(&t, "steps[Prep]"), DiffStatus::Unchanged);
 }
 
 #[test]
@@ -311,4 +315,254 @@ fn display_lists_only_changes() {
     assert!(s.contains("~ steps[Render]"), "{s}");
     assert!(s.contains("command: \"render\" -> \"render2\""), "{s}");
     assert!(!s.contains("Prep"), "{s}");
+}
+
+// ─── coverage for every node kind (also kills subtree_eq/expand mutants) ───
+
+const RICH: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: Rich
+parameterDefinitions:
+  - {name: Pkg, type: STRING, default: blender}
+jobEnvironments:
+  - name: Env
+    variables: {PKG: "{{Param.Pkg}}"}
+    script:
+      actions:
+        onEnter: {command: enter}
+        onExit: {command: exit}
+      embeddedFiles:
+        - {name: Rc, type: TEXT, data: "rc"}
+steps:
+  - name: S
+    stepEnvironments:
+      - name: StepEnv
+        variables: {PKG: "{{Param.Pkg}}"}
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: Frame, type: INT, range: "1-3"}
+        - {name: Cam, type: STRING, range: [left, right]}
+    hostRequirements:
+      amounts:
+        - {name: amount.worker.vcpu, min: 2}
+        - {name: amount.worker.memory, min: 1024}
+      attributes:
+        - {name: attr.worker.os.family, anyOf: [linux]}
+    script:
+      actions:
+        onRun: {command: run}
+      embeddedFiles:
+        - {name: A, type: TEXT, data: "a"}
+        - {name: B, type: TEXT, data: "b"}
+"#;
+
+fn rich(edit: impl Fn(&str) -> String) -> (Job, Job) {
+    (job(RICH, &[]), job(&edit(RICH), &[]))
+}
+
+#[test]
+fn unchanged_siblings_of_every_kind_stay_unchanged() {
+    // One leaf change per subtree; its siblings of each node kind must stay Unchanged.
+    let (a, b) = rich(|t| {
+        t.replace("command: enter", "command: enter2")
+            .replace("data: \"a\"", "data: \"a2\"")
+            .replace("range: \"1-3\"", "range: \"1-4\"")
+            .replace("command: run", "command: run2")
+    });
+    let t = diff_jobs(&a, &b, &DiffOptions::default());
+    assert_eq!(
+        fields(&t, "jobEnvironments[Env].script.onEnter"),
+        vec!["command"]
+    );
+    assert_eq!(
+        status(&t, "jobEnvironments[Env].script.onExit"),
+        DiffStatus::Unchanged
+    );
+    assert_eq!(
+        status(&t, "jobEnvironments[Env].script.embeddedFiles[Rc]"),
+        DiffStatus::Unchanged
+    );
+    assert_eq!(fields(&t, "steps[S].script.embeddedFiles[A]"), vec!["data"]);
+    assert_eq!(
+        status(&t, "steps[S].script.embeddedFiles[B]"),
+        DiffStatus::Unchanged
+    );
+    assert_eq!(
+        status(&t, "steps[S].parameterSpace.taskParameterDefinitions[Cam]"),
+        DiffStatus::Unchanged
+    );
+    assert_eq!(
+        status(&t, "steps[S].hostRequirements"),
+        DiffStatus::Unchanged
+    );
+    assert_eq!(
+        status(&t, "steps[S].stepEnvironments[StepEnv]"),
+        DiffStatus::Unchanged
+    );
+    assert_attributed(&t);
+
+    // Environment variables change but its script does not.
+    let (a, b) = rich(|t| t.replacen("{PKG: \"{{Param.Pkg}}\"}", "{PKG: x}", 1));
+    let t = diff_jobs(&a, &b, &DiffOptions::default());
+    assert!(fields(&t, "jobEnvironments[Env]").contains(&"variables.PKG".to_string()));
+    assert_eq!(
+        status(&t, "jobEnvironments[Env].script"),
+        DiffStatus::Unchanged
+    );
+    assert_attributed(&t);
+}
+
+#[test]
+fn host_requirements_entries_and_order() {
+    let (a, b) = rich(|t| t.replace("min: 2}", "min: 3}"));
+    let t = diff_jobs(&a, &b, &DiffOptions::default());
+    assert_eq!(
+        fields(&t, "steps[S].hostRequirements"),
+        vec!["amounts[amount.worker.vcpu]"]
+    );
+    assert_eq!(status(&t, "steps[S].script"), DiffStatus::Unchanged);
+
+    let (a, b) = rich(|t| t.replace("anyOf: [linux]", "anyOf: [windows]"));
+    let t = diff_jobs(&a, &b, &DiffOptions::default());
+    assert_eq!(
+        fields(&t, "steps[S].hostRequirements"),
+        vec!["attributes[attr.worker.os.family]"]
+    );
+
+    // Swap the two amounts and change one: both the order and the entry are reported.
+    let (a, b) = rich(|t| {
+        t.replace(
+            "        - {name: amount.worker.vcpu, min: 2}\n        - {name: amount.worker.memory, min: 1024}\n",
+            "        - {name: amount.worker.memory, min: 1024}\n        - {name: amount.worker.vcpu, min: 3}\n",
+        )
+    });
+    let t = diff_jobs(&a, &b, &DiffOptions::default());
+    assert_eq!(
+        fields(&t, "steps[S].hostRequirements"),
+        vec!["amounts.order", "amounts[amount.worker.vcpu]"]
+    );
+}
+
+#[test]
+fn task_parameter_definition_order_is_a_change() {
+    // Same tasks, different iteration order (and so different task indices).
+    let (a, b) = rich(|t| {
+        t.replace(
+            "        - {name: Frame, type: INT, range: \"1-3\"}\n        - {name: Cam, type: STRING, range: [left, right]}\n",
+            "        - {name: Cam, type: STRING, range: [left, right]}\n        - {name: Frame, type: INT, range: \"1-3\"}\n",
+        )
+    });
+    assert_eq!(
+        a.steps[0].parameter_space, b.steps[0].parameter_space,
+        "== ignores order"
+    );
+    let t = diff_jobs(&a, &b, &DiffOptions::default());
+    assert_eq!(status(&t, "steps[S]"), DiffStatus::Modified);
+    assert_eq!(
+        fields(&t, "steps[S].parameterSpace"),
+        vec!["taskParameterDefinitions.order"]
+    );
+    let t = diff_steps(&a.steps[0], &b.steps[0], &DiffOptions::default());
+    assert!(t.is_changed());
+}
+
+#[test]
+fn parameter_change_reaches_environments_through_their_symtab() {
+    let (a, b) = (job(RICH, &[]), job(RICH, &[("Pkg", "maya")]));
+    let t = diff_jobs(&a, &b, &DiffOptions::default());
+    assert_eq!(fields(&t, "jobEnvironments[Env]"), vec!["resolvedSymTab"]);
+    // Step environments carry no table of their own; the step's table holds
+    // the symbols they reference, so the change lands on the step.
+    assert_eq!(fields(&t, "steps[S]"), vec!["resolvedSymTab"]);
+    assert_eq!(
+        status(&t, "steps[S].stepEnvironments[StepEnv]"),
+        DiffStatus::Unchanged
+    );
+    assert_attributed(&t);
+    // Opting out strips job- and step-environment tables as well as the step's.
+    let t = diff_jobs(&a, &b, &DiffOptions::default().with_resolved_symtab(false));
+    assert_eq!(status(&t, "jobEnvironments[Env]"), DiffStatus::Unchanged);
+    assert_eq!(status(&t, "steps[S]"), DiffStatus::Unchanged);
+    let t = diff_steps(
+        &a.steps[0],
+        &b.steps[0],
+        &DiffOptions::default().with_resolved_symtab(false),
+    );
+    assert!(!t.is_changed());
+    let (ea, eb) = (
+        &a.job_environments.as_ref().unwrap()[0],
+        &b.job_environments.as_ref().unwrap()[0],
+    );
+    assert!(diff_environments(ea, eb, &DiffOptions::default()).is_changed());
+    assert!(
+        !diff_environments(ea, eb, &DiffOptions::default().with_resolved_symtab(false))
+            .is_changed()
+    );
+}
+
+#[test]
+fn none_versus_empty_collections_are_attributed() {
+    let a = job(RICH, &[]);
+    let mut b = a.clone();
+    b.steps[0].step_environments = Some(vec![]);
+    b.steps[0].script.embedded_files = Some(vec![]);
+    let mut a2 = a.clone();
+    a2.steps[0].step_environments = None;
+    a2.steps[0].script.embedded_files = None;
+    let t = diff_jobs(&a2, &b, &DiffOptions::default());
+    assert_eq!(fields(&t, "steps[S]"), vec!["stepEnvironments"]);
+    assert_eq!(fields(&t, "steps[S].script"), vec!["embeddedFiles"]);
+    assert_attributed(&t);
+
+    let mut c = a.clone();
+    c.job_environments = None;
+    let mut d = a.clone();
+    d.job_environments = Some(vec![]);
+    let t = diff_jobs(&c, &d, &DiffOptions::default());
+    assert_eq!(fields(&t, ""), vec!["jobEnvironments"]);
+}
+
+#[test]
+fn duplicate_names_are_reported_not_dropped() {
+    let a = job(RICH, &[]);
+    let mut b = a.clone();
+    let mut dup = b.steps[0].clone();
+    dup.script.actions.on_run.command = a.steps[0].script.actions.on_run.command.clone();
+    dup.description = Some("second copy".into());
+    b.steps.push(dup);
+    let t = diff_jobs(&a, &b, &DiffOptions::default());
+    assert_eq!(fields(&t, ""), vec!["steps.duplicates"]);
+    assert_attributed(&t);
+}
+
+#[test]
+fn path_find_and_changed_agree() {
+    let (a, b) = rich(|t| t.replace("command: run", "command: run2"));
+    let t = diff_jobs(&a, &b, &DiffOptions::default());
+    let id = t.find("steps[S].script.onRun").unwrap();
+    assert_eq!(t.path(id), "steps[S].script.onRun");
+    assert_eq!(t.path(0), "");
+    for (i, _) in t.nodes().iter().enumerate() {
+        assert_eq!(t.find(&t.path(i)), Some(i));
+    }
+    let changed: Vec<String> = t.changed().map(|(i, _)| t.path(i)).collect();
+    assert_eq!(
+        changed,
+        vec!["", "steps[S]", "steps[S].script", "steps[S].script.onRun"]
+    );
+}
+
+#[test]
+fn display_marks_unexpanded_nodes_and_the_root() {
+    let (a, b) = rich(|t| t.replace("command: run", "command: run2"));
+    let s = diff_jobs(&a, &b, &DiffOptions::default().with_max_depth(1)).to_string();
+    assert_eq!(s, "~ <root>\n  ~ steps[S] (not expanded)\n");
+    let s = diff_jobs(&a, &b, &DiffOptions::default()).to_string();
+    assert!(!s.contains("not expanded"), "{s}");
+    let mut c = b.clone();
+    c.steps.clear();
+    let s = diff_jobs(&a, &c, &DiffOptions::default()).to_string();
+    assert!(s.contains("- steps[S]\n"), "{s}");
+    let s = diff_jobs(&c, &a, &DiffOptions::default()).to_string();
+    assert!(s.contains("+ steps[S]\n"), "{s}");
 }
