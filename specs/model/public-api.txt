@@ -143,6 +143,177 @@ pub fn openjd_model::error::ValidationErrors::fmt(&self, &mut core::fmt::Formatt
 pub fn openjd_model::error::path_field(&[openjd_model::error::PathElement], &str) -> alloc::vec::Vec<openjd_model::error::PathElement>
 pub fn openjd_model::error::path_index(&[openjd_model::error::PathElement], usize) -> alloc::vec::Vec<openjd_model::error::PathElement>
 pub mod openjd_model::job
+pub mod openjd_model::job::apply
+#[non_exhaustive] pub enum openjd_model::job::apply::Action<'a>
+pub openjd_model::job::apply::Action::Environment(openjd_model::job::apply::Op<'a, openjd_model::job::Environment>)
+pub openjd_model::job::apply::Action::Job(openjd_model::job::apply::Op<'a, openjd_model::job::Job>)
+pub openjd_model::job::apply::Action::Parameter(openjd_model::job::apply::Op<'a, openjd_model::job::JobParameter>)
+pub openjd_model::job::apply::Action::Step(openjd_model::job::apply::StepIndex, openjd_model::job::apply::Op<'a, openjd_model::job::Step>)
+pub openjd_model::job::apply::Action::Tasks
+pub openjd_model::job::apply::Action::Tasks::change: openjd_model::job::apply::TaskChange
+pub openjd_model::job::apply::Action::Tasks::space: core::option::Option<&'a openjd_model::job::StepParameterSpace>
+pub openjd_model::job::apply::Action::Tasks::step: openjd_model::job::apply::StepIndex
+impl<'a> core::clone::Clone for openjd_model::job::apply::Action<'a>
+pub fn openjd_model::job::apply::Action<'a>::clone(&self) -> openjd_model::job::apply::Action<'a>
+impl<'a> core::cmp::PartialEq for openjd_model::job::apply::Action<'a>
+pub fn openjd_model::job::apply::Action<'a>::eq(&self, &openjd_model::job::apply::Action<'a>) -> bool
+impl<'a> core::fmt::Debug for openjd_model::job::apply::Action<'a>
+pub fn openjd_model::job::apply::Action<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::StructuralPartialEq for openjd_model::job::apply::Action<'a>
+pub enum openjd_model::job::apply::ApplyError<E>
+pub openjd_model::job::apply::ApplyError::Model(openjd_model::error::ModelError)
+pub openjd_model::job::apply::ApplyError::Refused
+pub openjd_model::job::apply::ApplyError::Refused::op: usize
+pub openjd_model::job::apply::ApplyError::Refused::refusal: openjd_model::job::apply::Refusal
+pub openjd_model::job::apply::ApplyError::Store
+pub openjd_model::job::apply::ApplyError::Store::error: E
+pub openjd_model::job::apply::ApplyError::Store::op: usize
+impl<E: core::fmt::Debug> core::fmt::Debug for openjd_model::job::apply::ApplyError<E>
+pub fn openjd_model::job::apply::ApplyError<E>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum openjd_model::job::apply::MutationKind
+pub openjd_model::job::apply::MutationKind::EnvAdd
+pub openjd_model::job::apply::MutationKind::EnvMetadata
+pub openjd_model::job::apply::MutationKind::EnvRemove
+pub openjd_model::job::apply::MutationKind::EnvReorder
+pub openjd_model::job::apply::MutationKind::EnvScript
+pub openjd_model::job::apply::MutationKind::EnvSymbols
+pub openjd_model::job::apply::MutationKind::EnvVariables
+pub openjd_model::job::apply::MutationKind::JobExtensions
+pub openjd_model::job::apply::MutationKind::JobMetadata
+pub openjd_model::job::apply::MutationKind::ParameterAdd
+pub openjd_model::job::apply::MutationKind::ParameterRemove
+pub openjd_model::job::apply::MutationKind::ParameterValue
+pub openjd_model::job::apply::MutationKind::StepAdd
+pub openjd_model::job::apply::MutationKind::StepDependencies
+pub openjd_model::job::apply::MutationKind::StepHostRequirements
+pub openjd_model::job::apply::MutationKind::StepMetadata
+pub openjd_model::job::apply::MutationKind::StepRemove
+pub openjd_model::job::apply::MutationKind::StepReorder
+pub openjd_model::job::apply::MutationKind::StepScript
+pub openjd_model::job::apply::MutationKind::StepSymbols
+pub openjd_model::job::apply::MutationKind::TaskAppend
+pub openjd_model::job::apply::MutationKind::TaskRemove
+pub openjd_model::job::apply::MutationKind::TaskReplace
+impl core::clone::Clone for openjd_model::job::apply::MutationKind
+pub fn openjd_model::job::apply::MutationKind::clone(&self) -> openjd_model::job::apply::MutationKind
+impl core::cmp::Eq for openjd_model::job::apply::MutationKind
+impl core::cmp::Ord for openjd_model::job::apply::MutationKind
+pub fn openjd_model::job::apply::MutationKind::cmp(&self, &openjd_model::job::apply::MutationKind) -> core::cmp::Ordering
+impl core::cmp::PartialEq for openjd_model::job::apply::MutationKind
+pub fn openjd_model::job::apply::MutationKind::eq(&self, &openjd_model::job::apply::MutationKind) -> bool
+impl core::cmp::PartialOrd for openjd_model::job::apply::MutationKind
+pub fn openjd_model::job::apply::MutationKind::partial_cmp(&self, &openjd_model::job::apply::MutationKind) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for openjd_model::job::apply::MutationKind
+pub fn openjd_model::job::apply::MutationKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::apply::MutationKind
+pub fn openjd_model::job::apply::MutationKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::job::apply::MutationKind
+impl core::marker::StructuralPartialEq for openjd_model::job::apply::MutationKind
+pub enum openjd_model::job::apply::Op<'a, T>
+pub openjd_model::job::apply::Op::Add
+pub openjd_model::job::apply::Op::Add::new: &'a T
+pub openjd_model::job::apply::Op::Modify
+pub openjd_model::job::apply::Op::Modify::new: &'a T
+pub openjd_model::job::apply::Op::Modify::node: openjd_model::job::diff::DiffNodeId
+pub openjd_model::job::apply::Op::Modify::old: &'a T
+pub openjd_model::job::apply::Op::Remove
+pub openjd_model::job::apply::Op::Remove::old: &'a T
+impl<'a, T: core::cmp::PartialEq> core::cmp::PartialEq for openjd_model::job::apply::Op<'a, T>
+pub fn openjd_model::job::apply::Op<'a, T>::eq(&self, &openjd_model::job::apply::Op<'a, T>) -> bool
+impl<'a, T: core::cmp::PartialEq> core::marker::StructuralPartialEq for openjd_model::job::apply::Op<'a, T>
+impl<'a, T: core::fmt::Debug> core::fmt::Debug for openjd_model::job::apply::Op<'a, T>
+pub fn openjd_model::job::apply::Op<'a, T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::clone::Clone for openjd_model::job::apply::Op<'_, T>
+pub fn openjd_model::job::apply::Op<'_, T>::clone(&self) -> Self
+impl<T> core::marker::Copy for openjd_model::job::apply::Op<'_, T>
+pub enum openjd_model::job::apply::TaskChange
+pub openjd_model::job::apply::TaskChange::All
+pub openjd_model::job::apply::TaskChange::Boxes(alloc::boxed::Box<openjd_model::job::task_delta::ProductDelta>)
+pub openjd_model::job::apply::TaskChange::Replace
+impl core::clone::Clone for openjd_model::job::apply::TaskChange
+pub fn openjd_model::job::apply::TaskChange::clone(&self) -> openjd_model::job::apply::TaskChange
+impl core::cmp::PartialEq for openjd_model::job::apply::TaskChange
+pub fn openjd_model::job::apply::TaskChange::eq(&self, &openjd_model::job::apply::TaskChange) -> bool
+impl core::fmt::Debug for openjd_model::job::apply::TaskChange
+pub fn openjd_model::job::apply::TaskChange::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::apply::TaskChange
+pub struct openjd_model::job::apply::AllowList(pub std::collections::hash::set::HashSet<openjd_model::job::apply::MutationKind>)
+impl openjd_model::job::apply::AllowList
+pub fn openjd_model::job::apply::AllowList::of(impl core::iter::traits::collect::IntoIterator<Item = openjd_model::job::apply::MutationKind>) -> Self
+impl core::clone::Clone for openjd_model::job::apply::AllowList
+pub fn openjd_model::job::apply::AllowList::clone(&self) -> openjd_model::job::apply::AllowList
+impl core::cmp::Eq for openjd_model::job::apply::AllowList
+impl core::cmp::PartialEq for openjd_model::job::apply::AllowList
+pub fn openjd_model::job::apply::AllowList::eq(&self, &openjd_model::job::apply::AllowList) -> bool
+impl core::default::Default for openjd_model::job::apply::AllowList
+pub fn openjd_model::job::apply::AllowList::default() -> openjd_model::job::apply::AllowList
+impl core::fmt::Debug for openjd_model::job::apply::AllowList
+pub fn openjd_model::job::apply::AllowList::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::apply::AllowList
+impl openjd_model::job::apply::MutationPolicy for openjd_model::job::apply::AllowList
+pub fn openjd_model::job::apply::AllowList::allows(&self, &openjd_model::job::apply::PlannedOp<'_>) -> core::result::Result<(), openjd_model::job::apply::Refusal>
+pub struct openjd_model::job::apply::ApplyPlan<'a>
+pub openjd_model::job::apply::ApplyPlan::ops: alloc::vec::Vec<openjd_model::job::apply::PlannedOp<'a>>
+impl openjd_model::job::apply::ApplyPlan<'_>
+pub fn openjd_model::job::apply::ApplyPlan<'_>::kinds(&self) -> alloc::collections::btree::set::BTreeSet<openjd_model::job::apply::MutationKind>
+impl<'a> core::clone::Clone for openjd_model::job::apply::ApplyPlan<'a>
+pub fn openjd_model::job::apply::ApplyPlan<'a>::clone(&self) -> openjd_model::job::apply::ApplyPlan<'a>
+impl<'a> core::cmp::PartialEq for openjd_model::job::apply::ApplyPlan<'a>
+pub fn openjd_model::job::apply::ApplyPlan<'a>::eq(&self, &openjd_model::job::apply::ApplyPlan<'a>) -> bool
+impl<'a> core::fmt::Debug for openjd_model::job::apply::ApplyPlan<'a>
+pub fn openjd_model::job::apply::ApplyPlan<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::StructuralPartialEq for openjd_model::job::apply::ApplyPlan<'a>
+pub struct openjd_model::job::apply::ApplyReport
+pub openjd_model::job::apply::ApplyReport::applied: usize
+impl core::clone::Clone for openjd_model::job::apply::ApplyReport
+pub fn openjd_model::job::apply::ApplyReport::clone(&self) -> openjd_model::job::apply::ApplyReport
+impl core::cmp::Eq for openjd_model::job::apply::ApplyReport
+impl core::cmp::PartialEq for openjd_model::job::apply::ApplyReport
+pub fn openjd_model::job::apply::ApplyReport::eq(&self, &openjd_model::job::apply::ApplyReport) -> bool
+impl core::fmt::Debug for openjd_model::job::apply::ApplyReport
+pub fn openjd_model::job::apply::ApplyReport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for openjd_model::job::apply::ApplyReport
+impl core::marker::StructuralPartialEq for openjd_model::job::apply::ApplyReport
+pub struct openjd_model::job::apply::PlannedOp<'a>
+pub openjd_model::job::apply::PlannedOp::action: openjd_model::job::apply::Action<'a>
+pub openjd_model::job::apply::PlannedOp::kinds: alloc::collections::btree::set::BTreeSet<openjd_model::job::apply::MutationKind>
+impl<'a> core::clone::Clone for openjd_model::job::apply::PlannedOp<'a>
+pub fn openjd_model::job::apply::PlannedOp<'a>::clone(&self) -> openjd_model::job::apply::PlannedOp<'a>
+impl<'a> core::cmp::PartialEq for openjd_model::job::apply::PlannedOp<'a>
+pub fn openjd_model::job::apply::PlannedOp<'a>::eq(&self, &openjd_model::job::apply::PlannedOp<'a>) -> bool
+impl<'a> core::fmt::Debug for openjd_model::job::apply::PlannedOp<'a>
+pub fn openjd_model::job::apply::PlannedOp<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::StructuralPartialEq for openjd_model::job::apply::PlannedOp<'a>
+pub struct openjd_model::job::apply::Refusal
+pub openjd_model::job::apply::Refusal::kind: openjd_model::job::apply::MutationKind
+pub openjd_model::job::apply::Refusal::reason: alloc::string::String
+impl core::clone::Clone for openjd_model::job::apply::Refusal
+pub fn openjd_model::job::apply::Refusal::clone(&self) -> openjd_model::job::apply::Refusal
+impl core::cmp::Eq for openjd_model::job::apply::Refusal
+impl core::cmp::PartialEq for openjd_model::job::apply::Refusal
+pub fn openjd_model::job::apply::Refusal::eq(&self, &openjd_model::job::apply::Refusal) -> bool
+impl core::fmt::Debug for openjd_model::job::apply::Refusal
+pub fn openjd_model::job::apply::Refusal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::apply::Refusal
+pub trait openjd_model::job::apply::JobApplier
+pub type openjd_model::job::apply::JobApplier::Error
+pub fn openjd_model::job::apply::JobApplier::begin(&mut self) -> core::result::Result<(), Self::Error>
+pub fn openjd_model::job::apply::JobApplier::check(&mut self, &openjd_model::job::apply::PlannedOp<'_>) -> core::result::Result<(), Self::Error>
+pub fn openjd_model::job::apply::JobApplier::commit(&mut self) -> core::result::Result<(), Self::Error>
+pub fn openjd_model::job::apply::JobApplier::environment(&mut self, openjd_model::job::apply::Op<'_, openjd_model::job::Environment>) -> core::result::Result<(), Self::Error>
+pub fn openjd_model::job::apply::JobApplier::job(&mut self, openjd_model::job::apply::Op<'_, openjd_model::job::Job>) -> core::result::Result<(), Self::Error>
+pub fn openjd_model::job::apply::JobApplier::parameter(&mut self, openjd_model::job::apply::Op<'_, openjd_model::job::JobParameter>) -> core::result::Result<(), Self::Error>
+pub fn openjd_model::job::apply::JobApplier::step(&mut self, openjd_model::job::apply::StepIndex, openjd_model::job::apply::Op<'_, openjd_model::job::Step>) -> core::result::Result<(), Self::Error>
+pub fn openjd_model::job::apply::JobApplier::tasks(&mut self, openjd_model::job::apply::StepIndex, core::option::Option<&openjd_model::job::StepParameterSpace>, &openjd_model::job::apply::TaskChange) -> core::result::Result<(), Self::Error>
+pub trait openjd_model::job::apply::MutationPolicy
+pub fn openjd_model::job::apply::MutationPolicy::allows(&self, &openjd_model::job::apply::PlannedOp<'_>) -> core::result::Result<(), openjd_model::job::apply::Refusal>
+impl openjd_model::job::apply::MutationPolicy for openjd_model::job::apply::AllowList
+pub fn openjd_model::job::apply::AllowList::allows(&self, &openjd_model::job::apply::PlannedOp<'_>) -> core::result::Result<(), openjd_model::job::apply::Refusal>
+pub fn openjd_model::job::apply::apply<A: openjd_model::job::apply::JobApplier>(&openjd_model::job::diff::DiffTree, &openjd_model::job::Job, &openjd_model::job::Job, &dyn openjd_model::job::apply::MutationPolicy, &mut A) -> core::result::Result<openjd_model::job::apply::ApplyReport, openjd_model::job::apply::ApplyError<<A as openjd_model::job::apply::JobApplier>::Error>>
+pub fn openjd_model::job::apply::execute<A: openjd_model::job::apply::JobApplier>(&openjd_model::job::apply::ApplyPlan<'_>, &mut A, usize) -> core::result::Result<openjd_model::job::apply::ApplyReport, openjd_model::job::apply::ApplyError<<A as openjd_model::job::apply::JobApplier>::Error>>
+pub fn openjd_model::job::apply::plan<'a>(&openjd_model::job::diff::DiffTree, &'a openjd_model::job::Job, &'a openjd_model::job::Job) -> core::result::Result<openjd_model::job::apply::ApplyPlan<'a>, openjd_model::error::ModelError>
+pub fn openjd_model::job::apply::validate<A: openjd_model::job::apply::JobApplier>(&openjd_model::job::apply::ApplyPlan<'_>, &dyn openjd_model::job::apply::MutationPolicy, &mut A) -> core::result::Result<(), openjd_model::job::apply::ApplyError<<A as openjd_model::job::apply::JobApplier>::Error>>
+pub type openjd_model::job::apply::StepIndex = usize
 pub mod openjd_model::job::create_job
 pub mod openjd_model::job::create_job::parameters
 pub struct openjd_model::job::create_job::parameters::MergedParameterDefinition

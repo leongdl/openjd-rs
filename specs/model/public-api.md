@@ -39,6 +39,7 @@ openjd_model              — crate root re-exports, the main public surface
 ├── error                 — ModelError + structured validation errors
 ├── format_string         — re-exported from openjd_expr
 ├── job                   — instantiated (resolved) job types
+│   ├── apply             — experimental: plan/validate/execute a DiffTree through JobApplier
 │   ├── create_job        — pipeline functions + MergedParameterDefinition
 │   ├── diff              — experimental: diff_jobs/diff_steps/diff_environments → DiffTree
 │   ├── task_delta        — experimental: task_delta → TaskDelta (product box algebra)
@@ -783,6 +784,48 @@ impl TaskBox {
     pub fn is_empty(&self) -> bool;
     pub fn tasks(&self) -> Result<StepParameterSpaceIterator, ModelError>;
     pub fn index_of(&self, task: &TaskParameterSet) -> Option<usize>; // row-major position
+}
+```
+
+### Job Apply (experimental)
+
+Ordered, gated application of a job diff to a store; see [job-apply.md](job-apply.md).
+
+```rust
+pub fn job::apply::plan<'a>(diff: &DiffTree, old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>;
+pub fn job::apply::validate<A: JobApplier>(plan: &ApplyPlan<'_>, policy: &dyn MutationPolicy, store: &mut A) -> Result<(), ApplyError<A::Error>>;
+pub fn job::apply::execute<A: JobApplier>(plan: &ApplyPlan<'_>, store: &mut A, resume_from: usize) -> Result<ApplyReport, ApplyError<A::Error>>;
+pub fn job::apply::apply<A: JobApplier>(diff: &DiffTree, old: &Job, new: &Job, policy: &dyn MutationPolicy, store: &mut A) -> Result<ApplyReport, ApplyError<A::Error>>;
+
+pub type job::apply::StepIndex = usize;
+pub enum job::apply::Op<'a, T> { Add { new: &'a T }, Modify { old: &'a T, new: &'a T, node: DiffNodeId }, Remove { old: &'a T } } // Copy
+pub enum job::apply::TaskChange { Boxes(Box<ProductDelta>), All, Replace }
+#[non_exhaustive] pub enum job::apply::MutationKind { JobMetadata, JobExtensions, ParameterValue, ParameterAdd, ParameterRemove,
+    EnvVariables, EnvScript, EnvMetadata, EnvSymbols, EnvAdd, EnvRemove, EnvReorder, StepMetadata, StepScript,
+    StepHostRequirements, StepDependencies, StepSymbols, StepAdd, StepRemove, StepReorder, TaskAppend, TaskRemove, TaskReplace }
+#[non_exhaustive] pub enum job::apply::Action<'a> { Job(Op<'a, Job>), Parameter(Op<'a, JobParameter>), Environment(Op<'a, Environment>),
+    Step(StepIndex, Op<'a, Step>), Tasks { step: StepIndex, space: Option<&'a StepParameterSpace>, change: TaskChange } }
+pub struct job::apply::PlannedOp<'a> { pub kinds: BTreeSet<MutationKind>, pub action: Action<'a> }
+pub struct job::apply::ApplyPlan<'a> { pub ops: Vec<PlannedOp<'a>> }
+impl ApplyPlan<'_> { pub fn kinds(&self) -> BTreeSet<MutationKind>; }
+pub struct job::apply::ApplyReport { pub applied: usize }
+pub enum job::apply::ApplyError<E> { Refused { op: usize, refusal: Refusal }, Store { op: usize, error: E }, Model(ModelError) }
+pub struct job::apply::Refusal { pub kind: MutationKind, pub reason: String }
+
+pub trait job::apply::MutationPolicy { fn allows(&self, op: &PlannedOp<'_>) -> Result<(), Refusal>; }
+pub struct job::apply::AllowList(pub HashSet<MutationKind>);
+impl AllowList { pub fn of(kinds: impl IntoIterator<Item = MutationKind>) -> Self; }
+
+pub trait job::apply::JobApplier {
+    type Error;
+    fn check(&mut self, op: &PlannedOp<'_>) -> Result<(), Self::Error>;   // default Ok
+    fn job(&mut self, op: Op<'_, Job>) -> Result<(), Self::Error>;
+    fn parameter(&mut self, op: Op<'_, JobParameter>) -> Result<(), Self::Error>;
+    fn environment(&mut self, op: Op<'_, Environment>) -> Result<(), Self::Error>;
+    fn step(&mut self, step: StepIndex, op: Op<'_, Step>) -> Result<(), Self::Error>;
+    fn tasks(&mut self, step: StepIndex, space: Option<&StepParameterSpace>, change: &TaskChange) -> Result<(), Self::Error>;
+    fn begin(&mut self) -> Result<(), Self::Error>;    // default Ok
+    fn commit(&mut self) -> Result<(), Self::Error>;   // default Ok
 }
 ```
 
