@@ -25,12 +25,16 @@ calling `diff_environments`.
    environment's to the symbols it references, so a parameter change marks exactly the
    steps and job environments that read it. Step environments carry no table of their
    own, so a change they see lands on the step. `with_resolved_symtab(false)` clears the
-   tables first, which hides parameter changes inside steps.
+   tables first, which hides parameter changes inside steps. A float parameter whose
+   literal changes form only (`1.0` to `1.00`) shows `parameters[F]` as `Unchanged`, since
+   `ExprValue` equality ignores the spelling, while the steps that read it are `Modified`
+   through `resolvedSymTab`, which keeps the literal the worker renders.
 2. Push the root pair. For each pair, the node's `DiffStatus` is decided **when the node is
    created**, by one `PartialEq` of the whole subtree: `Unchanged`, `Modified`, `Added`
-   (new side only), or `Removed` (old side only). For a job, step or parameter space the
-   check also compares task parameter definition order, which `IndexMap` equality ignores
-   but which fixes task iteration order and so task indices.
+   (new side only), or `Removed` (old side only). For a job, step or parameter space with
+   no `combination`, the check also compares task parameter definition order, which
+   `IndexMap` equality ignores but which then fixes task iteration order and so task
+   indices. With an explicit `combination`, that string decides the order instead.
 3. Pop pairs from a FIFO queue. Expanding a `Modified` node records its own differing
    scalar fields as `FieldChange`s and creates one child node per child pair.
 4. A child is queued only if it is `Modified` and its depth is below `max_depth`. An
@@ -50,7 +54,7 @@ descended.
 | collection | matched by | order recorded as |
 |---|---|---|
 | `steps`, `jobEnvironments`, `stepEnvironments`, `embeddedFiles` | `name` | `<collection>.order` field change |
-| `taskParameterDefinitions` | map key | `taskParameterDefinitions.order` (it fixes task order) |
+| `taskParameterDefinitions` | map key | `taskParameterDefinitions.order` when there is no `combination` (then it fixes task order) |
 | `parameters` | map key | not a change |
 | `variables` | map key | not a change; entries are `variables.<KEY>` |
 | `hostRequirements.amounts` / `attributes` | `name` | `<collection>.order`; entries are `<collection>[<name>]` |
@@ -58,8 +62,9 @@ descended.
 
 Children are ordered old-side first, then new-only entries. With duplicate names (not
 possible in a validated job, but the fields are public) the first occurrence is matched
-and the later copies are reported as a `<collection>.duplicates` field change listing
-their names, so the parent is never an unattributed `Modified`.
+and the later copies are compared as a list. When they differ, a
+`<collection>.duplicates` field change lists the repeated names, so the parent is never
+an unattributed `Modified`.
 
 A `None` versus `Some(empty)` difference in an optional list has no entry to attribute
 it to, so it is recorded as a field change named after the collection
@@ -118,7 +123,9 @@ The `added_k` are disjoint and their union is `new \ kept`; likewise for `remove
 the delta is `TaskDelta::Product(ProductDelta { old, kept, added, removed })`: at most
 `2D + 1` `TaskBox`es, each of which is a `StepParameterSpace` of list ranges that
 `StepParameterSpaceIterator` iterates and `TaskBox::len` counts. Cost is linear in the
-per-parameter range sizes, not their product. `old` is the whole old space, and
+per-parameter range sizes, not their product. Each range value is keyed as a string and
+hashed, so a 10^6-frame range takes seconds in a release build. Interval arithmetic on
+`RangeExpr` would remove that and is left for later. `old` is the whole old space, and
 `old.index_of(task)` is the row-major (rightmost fastest) position of a task at job
 creation. Equal spaces are `Unchanged`; anything else is `Fallback { reason }`, where
 the caller enumerates and diffs by value. Tests: `src/test_task_delta.rs`, which checks

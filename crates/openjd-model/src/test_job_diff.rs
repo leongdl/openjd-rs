@@ -566,3 +566,70 @@ fn display_marks_unexpanded_nodes_and_the_root() {
     let s = diff_jobs(&c, &a, &DiffOptions::default()).to_string();
     assert!(s.contains("+ steps[S]\n"), "{s}");
 }
+
+#[test]
+fn duplicate_names_on_both_sides_with_different_copies_are_attributed() {
+    let a = job(RICH, &[]);
+    let mut dup = a.steps[0].clone();
+    dup.description = Some("copy one".into());
+    let (mut x, mut y) = (a.clone(), a.clone());
+    x.steps.push(dup.clone());
+    dup.description = Some("copy two".into());
+    y.steps.push(dup);
+    let t = diff_jobs(&x, &y, &DiffOptions::default());
+    assert!(t.is_changed());
+    assert_eq!(fields(&t, ""), vec!["steps.duplicates"]);
+    assert_attributed(&t);
+    // Identical duplicates on both sides: no change at all.
+    assert!(!diff_jobs(&x, &x.clone(), &DiffOptions::default()).is_changed());
+}
+
+#[test]
+fn definition_reorder_under_an_explicit_combination_is_not_a_change() {
+    let with_combo = RICH.replace(
+        "        - {name: Cam, type: STRING, range: [left, right]}\n",
+        "        - {name: Cam, type: STRING, range: [left, right]}\n      combination: \"Frame * Cam\"\n",
+    );
+    let swapped = with_combo.replace(
+        "        - {name: Frame, type: INT, range: \"1-3\"}\n        - {name: Cam, type: STRING, range: [left, right]}\n",
+        "        - {name: Cam, type: STRING, range: [left, right]}\n        - {name: Frame, type: INT, range: \"1-3\"}\n",
+    );
+    assert_ne!(with_combo, swapped);
+    let t = diff_jobs(
+        &job(&with_combo, &[]),
+        &job(&swapped, &[]),
+        &DiffOptions::default(),
+    );
+    assert!(!t.is_changed(), "{t}");
+}
+
+#[test]
+fn none_versus_non_empty_is_only_an_added_child() {
+    let a = job(RICH, &[]);
+    let mut b = a.clone();
+    b.job_environments = None;
+    b.steps[0].script.embedded_files = None;
+    let t = diff_jobs(&b, &a, &DiffOptions::default());
+    assert_eq!(status(&t, "jobEnvironments[Env]"), DiffStatus::Added);
+    assert!(fields(&t, "").is_empty(), "{t}");
+    assert_eq!(
+        status(&t, "steps[S].script.embeddedFiles[A]"),
+        DiffStatus::Added
+    );
+    assert!(fields(&t, "steps[S].script").is_empty(), "{t}");
+}
+
+#[test]
+fn opting_out_strips_a_hand_set_step_environment_table() {
+    let a = job(RICH, &[]);
+    let mut b = a.clone();
+    let table = a.job_environments.as_ref().unwrap()[0]
+        .resolved_symtab
+        .clone();
+    assert!(table.is_some());
+    b.steps[0].step_environments.as_mut().unwrap()[0].resolved_symtab = table;
+    let off = DiffOptions::default().with_resolved_symtab(false);
+    assert!(!diff_jobs(&a, &b, &off).is_changed());
+    assert!(!diff_steps(&a.steps[0], &b.steps[0], &off).is_changed());
+    assert!(diff_jobs(&a, &b, &DiffOptions::default()).is_changed());
+}

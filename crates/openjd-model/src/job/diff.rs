@@ -432,9 +432,11 @@ impl Subject<'_> {
     }
 }
 
+/// Definition order decides task order only when there is no `combination`
+/// (an explicit one decides it instead, and `==` already compares it).
 fn space_order_eq(a: Option<&StepParameterSpace>, b: Option<&StepParameterSpace>) -> bool {
     match (a, b) {
-        (Some(a), Some(b)) => a
+        (Some(a), Some(b)) if a.combination.is_none() && b.combination.is_none() => a
             .task_parameter_definitions
             .keys()
             .eq(b.task_parameter_definitions.keys()),
@@ -529,7 +531,7 @@ impl<'a> Builder<'a> {
     /// Match two named collections by key and add a child per key. When
     /// `ordered`, a different relative order of the shared keys is recorded
     /// as `<collection>.order`.
-    fn keyed<T: 'a>(
+    fn keyed<T: PartialEq + 'a>(
         &mut self,
         id: DiffNodeId,
         collection: &str,
@@ -542,25 +544,39 @@ impl<'a> Builder<'a> {
         // hand-built job can repeat one, so later copies are reported as a
         // `<collection>.duplicates` field change rather than dropped silently.
         let mut a_map: IndexMap<&str, (usize, &T)> = IndexMap::new();
-        let mut a_dups: Vec<&str> = Vec::new();
+        let mut a_dups: Vec<(&str, &T)> = Vec::new();
         for (i, (k, v)) in a.into_iter().enumerate() {
             if a_map.contains_key(k) {
-                a_dups.push(k);
+                a_dups.push((k, v));
             } else {
                 a_map.insert(k, (i, v));
             }
         }
         let mut b_map: IndexMap<&str, (usize, &T)> = IndexMap::new();
-        let mut b_dups: Vec<&str> = Vec::new();
+        let mut b_dups: Vec<(&str, &T)> = Vec::new();
         for (i, (k, v)) in b.into_iter().enumerate() {
             if b_map.contains_key(k) {
-                b_dups.push(k);
+                b_dups.push((k, v));
             } else {
                 b_map.insert(k, (i, v));
             }
         }
-        if !a_dups.is_empty() || !b_dups.is_empty() {
-            self.field(id, &format!("{collection}.duplicates"), &a_dups, &b_dups);
+        // Compare the copies, not just their names: two sides can repeat the
+        // same name with different content.
+        if a_dups != b_dups {
+            let names = |d: &[(&'a str, &T)]| d.iter().map(|(k, _)| *k).collect::<Vec<_>>();
+            let (an, bn) = (names(&a_dups), names(&b_dups));
+            let field = format!("{collection}.duplicates");
+            if an == bn {
+                // Same names, different content: record it so the change is attributed.
+                self.nodes[id].field_changes.push(FieldChange {
+                    field,
+                    before: to_json(&an),
+                    after: to_json(&format!("{} changed", bn.join(", "))),
+                });
+            } else {
+                self.field(id, &field, &an, &bn);
+            }
         }
         if ordered {
             let a_order: Vec<&str> = a_map
@@ -738,11 +754,11 @@ impl<'a> Builder<'a> {
                     combination,
                 } = a;
                 self.field(id, "combination", combination, &b.combination);
-                // Definition order fixes task iteration order, so it is a change.
+                // Without a combination, definition order fixes task order.
                 self.keyed(
                     id,
                     "taskParameterDefinitions",
-                    true,
+                    combination.is_none() && b.combination.is_none(),
                     task_parameter_definitions
                         .iter()
                         .map(|(k, v)| (k.as_str(), v)),

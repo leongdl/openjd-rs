@@ -337,3 +337,25 @@ fn zero_parameters_is_one_task() {
     assert_eq!(task_delta(Some(&a), Some(&a.clone())), TaskDelta::Unchanged);
     assert!(is_fallback(&task_delta(Some(&a), Some(&b))));
 }
+
+#[test]
+fn index_of_accepts_path_values_as_well_as_strings() {
+    use crate::types::{TaskParameterType, TaskParameterValue};
+    let a = space(vec![("Out", paths(&["/a", "/b"]))], None);
+    let b = space(vec![("Out", paths(&["/b", "/c"]))], None);
+    let TaskDelta::Product(pd) = task_delta(Some(&a), Some(&b)) else {
+        panic!("expected Product")
+    };
+    let mut t = TaskParameterSet::new();
+    t.insert(
+        "Out".into(),
+        TaskParameterValue {
+            param_type: TaskParameterType::Path,
+            value: openjd_expr::ExprValue::new_path(
+                "/b",
+                openjd_expr::path_mapping::PathFormat::Posix,
+            ),
+        },
+    );
+    assert_eq!(pd.old.index_of(&t), Some(1));
+}
