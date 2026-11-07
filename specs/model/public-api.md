@@ -40,6 +40,7 @@ openjd_model              — crate root re-exports, the main public surface
 ├── format_string         — re-exported from openjd_expr
 ├── job                   — instantiated (resolved) job types
 │   ├── create_job        — pipeline functions + MergedParameterDefinition
+│   ├── diff              — experimental: diff_jobs/diff_steps/diff_environments → DiffTree
 │   ├── step_param_space  — StepParameterSpaceIterator
 │   └── step_dependency_graph — StepDependencyGraph + friends
 ├── symbol_table          — re-exported from openjd_expr
@@ -704,6 +705,56 @@ pub struct job::AttributeRequirement {
 pub struct job::StepDependency {
     pub depends_on: String,
 }
+```
+
+### Job Diff (experimental)
+
+Breadth-first structural diff; see [job-diff.md](job-diff.md).
+
+```rust
+pub fn job::diff::diff_jobs(old: &Job, new: &Job, options: &DiffOptions) -> DiffTree;
+pub fn job::diff::diff_steps(old: &Step, new: &Step, options: &DiffOptions) -> DiffTree;
+pub fn job::diff::diff_environments(old: &Environment, new: &Environment, options: &DiffOptions) -> DiffTree;
+
+#[derive(Debug, Clone, Default)] #[non_exhaustive]
+pub struct job::diff::DiffOptions { /* private */ }
+impl DiffOptions {
+    pub fn with_max_depth(self, depth: usize) -> Self;      // nodes at depth >= d are not expanded
+    pub fn with_resolved_symtab(self, include: bool) -> Self; // default false
+}
+
+pub type job::diff::DiffNodeId = usize;
+pub struct job::diff::DiffTree { /* private */ }
+impl DiffTree {
+    pub fn root(&self) -> &DiffNode;
+    pub fn is_changed(&self) -> bool;
+    pub fn node(&self, id: DiffNodeId) -> Option<&DiffNode>;
+    pub fn nodes(&self) -> &[DiffNode];                     // breadth-first order
+    pub fn child(&self, id: DiffNodeId, segment: &str) -> Option<DiffNodeId>;
+    pub fn find(&self, path: &str) -> Option<DiffNodeId>;   // "steps[Render].script.onRun"
+    pub fn path(&self, id: DiffNodeId) -> String;
+    pub fn changed(&self) -> impl Iterator<Item = (DiffNodeId, &DiffNode)>;
+}
+impl Display for DiffTree; // indented listing of changes
+
+#[non_exhaustive]
+pub struct job::diff::DiffNode {
+    pub kind: DiffNodeKind,
+    pub segment: String,
+    pub status: DiffStatus,
+    pub depth: usize,
+    pub parent: Option<DiffNodeId>,
+    pub children: Vec<DiffNodeId>,
+    pub field_changes: Vec<FieldChange>,
+    pub expanded: bool,
+}
+impl DiffNode { pub fn is_changed(&self) -> bool; }
+
+pub struct job::diff::FieldChange { pub field: String, pub before: serde_json::Value, pub after: serde_json::Value }
+pub enum job::diff::DiffStatus { Unchanged, Added, Removed, Modified }
+#[non_exhaustive]
+pub enum job::diff::DiffNodeKind { Job, JobParameter, Environment, Step, StepScript, EnvironmentScript,
+    Action, EmbeddedFile, ParameterSpace, TaskParameter, HostRequirements }
 ```
 
 ## Shared Types
