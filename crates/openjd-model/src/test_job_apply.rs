@@ -73,6 +73,9 @@ struct JobRebuilder {
     envs: Vec<Environment>,
     steps: BTreeMap<String, Step>,
     tasks: BTreeMap<String, Vec<String>>,
+    /// Steps whose tasks were appended to or removed from: their store order
+    /// is allowed to differ from the new iterator order.
+    boxed: std::collections::BTreeSet<String>,
     new_names: Vec<String>,
 }
 
@@ -98,6 +101,7 @@ impl JobRebuilder {
                 .iter()
                 .map(|s| (s.name.clone(), tasks(s.parameter_space.as_ref())))
                 .collect(),
+            boxed: Default::default(),
             new_names,
         }
     }
@@ -121,14 +125,18 @@ impl JobRebuilder {
             .collect();
         assert_eq!(self.steps, steps, "steps");
         for s in &new.steps {
-            // `Step ==` ignores definition order, which is task order.
+            // `Step ==` ignores definition order; it decides task order only
+            // without a combination.
             let order = |s: &Step| {
-                s.parameter_space.as_ref().map(|p| {
-                    p.task_parameter_definitions
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
+                s.parameter_space
+                    .as_ref()
+                    .filter(|p| p.combination.is_none())
+                    .map(|p| {
+                        p.task_parameter_definitions
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
             };
             assert_eq!(
                 order(&self.steps[&s.name]),
@@ -136,11 +144,16 @@ impl JobRebuilder {
                 "definition order of {}",
                 s.name
             );
-            let mut have = self.tasks[&s.name].clone();
-            let mut want = tasks(s.parameter_space.as_ref());
-            have.sort();
-            want.sort();
-            assert_eq!(have, want, "tasks of {}", s.name);
+            let have = self.tasks[&s.name].clone();
+            let want = tasks(s.parameter_space.as_ref());
+            if self.boxed.contains(&s.name) {
+                let (mut h, mut w) = (have, want);
+                h.sort();
+                w.sort();
+                assert_eq!(h, w, "task set of {}", s.name);
+            } else {
+                assert_eq!(have, want, "tasks of {}, in order", s.name);
+            }
         }
         assert_eq!(
             self.tasks.len(),
@@ -259,6 +272,9 @@ impl JobApplier for JobRebuilder {
         let name = self.new_names.get(j).ok_or("bad step index")?.clone();
         let step = self.steps.get_mut(&name).ok_or("tasks before their step")?;
         step.parameter_space = space.cloned();
+        if matches!(change, TaskChange::Boxes(_)) {
+            self.boxed.insert(name.clone());
+        }
         let list = self.tasks.entry(name).or_default();
         match change {
             TaskChange::Boxes(d) => {
@@ -397,7 +413,7 @@ fn plan_order_and_kinds_for_shot_render() {
             vec![ParameterValue],
             vec![EnvVariables],
             vec![TaskAppend],
-            vec![StepAdd],
+            vec![EnvAdd, StepAdd],
             vec![TaskAppend],
             vec![StepScript, StepDependencies],
             vec![StepRemove],
@@ -485,7 +501,7 @@ fn a_refused_kind_writes_nothing_and_names_the_kind() {
     match apply(&a, &b, &phase1, &mut r) {
         Err(ApplyError::Refused { op, refusal }) => {
             assert_eq!(op, 3);
-            assert_eq!(refusal.kind, MutationKind::StepAdd);
+            assert_eq!(refusal.kind, MutationKind::EnvAdd);
         }
         other => panic!("expected Refused, got {other:?}"),
     }
@@ -628,4 +644,83 @@ fn every_op_carries_at_least_one_kind() {
             assert!(p.ops.iter().all(|o| !o.kinds.is_empty()), "{:?}", p.ops);
         }
     }
+}
+
+// ─── audit round 2 regressions ──────────────────────────────────────
+
+fn one_step(space: &str) -> String {
+    format!(
+        r#"
+specificationVersion: jobtemplate-2023-09
+name: One
+steps:
+  - name: S
+    parameterSpace:
+{space}
+    script:
+      actions:
+        onRun: {{command: run}}
+"#
+    )
+}
+
+const FG: &str = "      taskParameterDefinitions:\n        - {name: F, type: INT, range: \"1-2\"}\n        - {name: G, type: STRING, range: [a, b]}\n";
+
+#[test]
+fn a_combination_that_reorders_dimensions_replaces_the_tasks() {
+    let none = one_step(FG);
+    let gf = one_step(&format!("{FG}      combination: \"G * F\"\n"));
+    let fg = one_step(&format!("{FG}      combination: \"F * G\"\n"));
+    for (x, y) in [(&none, &gf), (&fg, &gf)] {
+        let (a, b) = (job(x, &[]), job(y, &[]));
+        let p = plan(&a, &b).unwrap();
+        assert!(
+            p.kinds().contains(&MutationKind::TaskReplace),
+            "{:?}",
+            p.kinds()
+        );
+        roundtrip(&a, &b);
+        roundtrip(&b, &a);
+    }
+}
+
+#[test]
+fn a_space_rewrite_with_the_same_tasks_still_writes_the_step() {
+    let range = one_step(FG);
+    let list = one_step(&FG.replace("range: \"1-2\"", "range: [1, 2]"));
+    let (a, b) = (job(&range, &[]), job(&list, &[]));
+    let p = plan(&a, &b).unwrap();
+    assert_eq!(
+        p.kinds().into_iter().collect::<Vec<_>>(),
+        vec![MutationKind::StepParameterSpace]
+    );
+    roundtrip(&a, &b);
+    roundtrip(&b, &a);
+    // `F * G` written out is the default order: same tasks, same order.
+    let fg = one_step(&format!("{FG}      combination: \"F * G\"\n"));
+    roundtrip(&a, &job(&fg, &[]));
+}
+
+#[test]
+fn adding_or_removing_a_step_with_step_environments_carries_env_kinds() {
+    let (a, b) = (job(V1, &[]), job(V2, &[]));
+    // Denoise has a step environment.
+    let p = plan(&a, &b).unwrap();
+    let add = p
+        .ops
+        .iter()
+        .find(|o| matches!(o.action, Action::Step(_, Op::Add { .. })))
+        .unwrap();
+    assert!(add.kinds.contains(&MutationKind::EnvAdd), "{:?}", add.kinds);
+    let p = plan(&b, &a).unwrap();
+    let rm = p
+        .ops
+        .iter()
+        .find(|o| matches!(o.action, Action::Step(_, Op::Remove { .. })))
+        .unwrap();
+    assert!(
+        rm.kinds.contains(&MutationKind::EnvRemove),
+        "{:?}",
+        rm.kinds
+    );
 }

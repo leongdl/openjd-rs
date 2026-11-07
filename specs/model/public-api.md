@@ -802,7 +802,7 @@ pub enum job::apply::Op<'a, T> { Add { new: &'a T }, Modify { old: &'a T, new: &
 pub enum job::apply::TaskChange { Boxes(Box<ProductDelta>), All, Replace }
 #[non_exhaustive] pub enum job::apply::MutationKind { JobMetadata, JobExtensions, ParameterValue, ParameterAdd, ParameterRemove,
     EnvVariables, EnvScript, EnvMetadata, EnvSymbols, EnvAdd, EnvRemove, EnvReorder, StepMetadata, StepScript,
-    StepHostRequirements, StepDependencies, StepSymbols, StepAdd, StepRemove, StepReorder, TaskAppend, TaskRemove, TaskReplace }
+    StepHostRequirements, StepDependencies, StepSymbols, StepParameterSpace, StepAdd, StepRemove, StepReorder, TaskAppend, TaskRemove, TaskReplace }
 #[non_exhaustive] pub enum job::apply::Action<'a> { Job(Op<'a, Job>), Parameter(Op<'a, JobParameter>), Environment(usize, Op<'a, Environment>),
     Step(StepIndex, Op<'a, Step>), Tasks { step: StepIndex, space: Option<&'a StepParameterSpace>, change: TaskChange } }
 pub struct job::apply::PlannedOp<'a> { pub kinds: BTreeSet<MutationKind>, pub action: Action<'a> }

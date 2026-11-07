@@ -40,8 +40,11 @@ the plan never takes one.
    - `Added`: `Step(j, Add)`, then `Tasks { change: All }`.
    - `Modified`: `Step(j, Modify)` unless the only change is the parameter space, then
      `Tasks` when the task set or task order changed (`task_delta`: `Product` with
-     added or removed boxes → `Boxes`, `Fallback` → `Replace`). A task-definition reorder
-     with no `combination` is a `Fallback`, because every task index moves.
+     added or removed boxes → `Boxes`, `Fallback` → `Replace`). A change of dimension
+     order is a `Fallback`, because every kept task moves. If the space changed but the
+     tasks and their order didn't (e.g. `1-2` rewritten as `[1, 2]`), there is no
+     `Tasks` op. The `Step(j, Modify)` is emitted with `StepParameterSpace`, so the store
+     still writes the new definition.
 5. Removed steps in **reverse topological order of the old step graph**, dependents first.
 
 Adds and modifies come before removes. A step therefore exists before any step gains an
@@ -51,6 +54,10 @@ and `old.steps[i]` for steps 5.
 
 The planner classifies each modified step and job environment with a full
 `diff_steps` / `diff_environments`.
+
+A task-definition reorder under an explicit `combination` produces no op: the
+combination fixes task order, and the diff reports such a step `Unchanged`. A store
+that persists definition order verbatim keeps the old order.
 
 ## Mutation kinds
 
@@ -63,7 +70,8 @@ every one. `AllowList` is the default policy.
 | `ParameterValue`, `ParameterAdd`, `ParameterRemove` | parameter node status |
 | `EnvVariables`, `EnvScript`, `EnvMetadata`, `EnvSymbols`, `EnvAdd`, `EnvRemove` | environment fields, `script` child, status (job or step scope) |
 | `StepMetadata`, `StepScript`, `StepHostRequirements`, `StepDependencies`, `StepSymbols` | step fields and children |
-| `StepAdd`, `StepRemove` | step status |
+| `StepParameterSpace` | the space changed with the same tasks in the same order |
+| `StepAdd`, `StepRemove` | step status; also `EnvAdd` / `EnvRemove` when that step has step environments |
 | `TaskAppend`, `TaskRemove`, `TaskReplace` | `TaskChange`: added boxes, removed boxes, or `Replace`; `All` is `TaskAppend` |
 
 "Render more frames" (a `Frames` parameter change) plans as `ParameterValue` +
@@ -90,7 +98,10 @@ like a real adapter, maps new step indices to its own ids once. It rejects:
 - a modify at the wrong index.
 
 The oracle: after `apply(a, b)` the store holds `b`. That covers parameters and steps by
-name, job environments in order, each step's task-definition order, and its task set.
+name, and job environments in order. It also covers each step's task-definition order
+where that decides task order (no `combination`), and its task list. The task list is
+compared in order, except after a `Boxes` op, where appends are expected to land after
+the old tasks.
 It is run in both directions for the example templates, for parameter-only changes,
 for job-environment inserts, moves and deletes, for a symbol-table-only step change,
 and for a definition reorder. Other tests cover plan

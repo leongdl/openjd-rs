@@ -187,6 +187,7 @@ pub openjd_model::job::apply::MutationKind::StepAdd
 pub openjd_model::job::apply::MutationKind::StepDependencies
 pub openjd_model::job::apply::MutationKind::StepHostRequirements
 pub openjd_model::job::apply::MutationKind::StepMetadata
+pub openjd_model::job::apply::MutationKind::StepParameterSpace
 pub openjd_model::job::apply::MutationKind::StepRemove
 pub openjd_model::job::apply::MutationKind::StepReorder
 pub openjd_model::job::apply::MutationKind::StepScript

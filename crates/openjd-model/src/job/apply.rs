@@ -119,6 +119,9 @@ pub enum MutationKind {
     StepDependencies,
     /// A step's resolved symbol table: a parameter it reads changed.
     StepSymbols,
+    /// A step's parameter space changed but its tasks and their order did
+    /// not (e.g. `1-2` rewritten as `[1, 2]`): only the definition is written.
+    StepParameterSpace,
     /// A step added.
     StepAdd,
     /// A step removed.
@@ -595,8 +598,12 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
         let s = &new.steps[j];
         match n.status {
             DiffStatus::Added => {
+                let mut k = kinds([MutationKind::StepAdd]);
+                if s.step_environments.as_ref().is_some_and(|e| !e.is_empty()) {
+                    k.insert(MutationKind::EnvAdd);
+                }
                 ops.push(PlannedOp {
-                    kinds: kinds([MutationKind::StepAdd]),
+                    kinds: k,
                     action: Action::Step(j, Op::Add { new: s }),
                 });
                 ops.push(PlannedOp {
@@ -612,7 +619,22 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
                 let Some(o) = n.old_index.and_then(|i| old.steps.get(i)) else {
                     continue;
                 };
-                let (k, space_changed) = step_kinds(o, s);
+                let (mut k, space_changed) = step_kinds(o, s);
+                let change = if space_changed {
+                    match task_delta(o.parameter_space.as_ref(), s.parameter_space.as_ref()) {
+                        TaskDelta::Unchanged => None,
+                        TaskDelta::Product(d) if d.added.is_empty() && d.removed.is_empty() => None,
+                        TaskDelta::Product(d) => Some(TaskChange::Boxes(d)),
+                        TaskDelta::Fallback { .. } => Some(TaskChange::Replace),
+                    }
+                } else {
+                    None
+                };
+                // The space changed but no task did: the step write must carry
+                // the new definition, since no Tasks op will.
+                if space_changed && change.is_none() {
+                    k.insert(MutationKind::StepParameterSpace);
+                }
                 if !k.is_empty() {
                     ops.push(PlannedOp {
                         kinds: k,
@@ -626,26 +648,15 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
                         ),
                     });
                 }
-                if space_changed {
-                    let change =
-                        match task_delta(o.parameter_space.as_ref(), s.parameter_space.as_ref()) {
-                            TaskDelta::Unchanged => None,
-                            TaskDelta::Product(d) if d.added.is_empty() && d.removed.is_empty() => {
-                                None
-                            }
-                            TaskDelta::Product(d) => Some(TaskChange::Boxes(d)),
-                            TaskDelta::Fallback { .. } => Some(TaskChange::Replace),
-                        };
-                    if let Some(change) = change {
-                        ops.push(PlannedOp {
-                            kinds: task_kinds(&change),
-                            action: Action::Tasks {
-                                step: j,
-                                space: s.parameter_space.as_ref(),
-                                change,
-                            },
-                        });
-                    }
+                if let Some(change) = change {
+                    ops.push(PlannedOp {
+                        kinds: task_kinds(&change),
+                        action: Action::Tasks {
+                            step: j,
+                            space: s.parameter_space.as_ref(),
+                            change,
+                        },
+                    });
                 }
             }
             _ => {}
@@ -659,8 +670,16 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
         .rev()
     {
         if by_old.get(i).copied().flatten().is_some() {
+            let mut k = kinds([MutationKind::StepRemove]);
+            if old.steps[i]
+                .step_environments
+                .as_ref()
+                .is_some_and(|e| !e.is_empty())
+            {
+                k.insert(MutationKind::EnvRemove);
+            }
             ops.push(PlannedOp {
-                kinds: kinds([MutationKind::StepRemove]),
+                kinds: k,
                 action: Action::Step(i, Op::Remove { old: &old.steps[i] }),
             });
         }
