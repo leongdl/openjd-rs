@@ -396,3 +396,19 @@ fn definition_reorder_without_combination_falls_back() {
     );
     assert_eq!(task_delta(Some(&a), Some(&b)), TaskDelta::Unchanged);
 }
+
+#[test]
+fn reordering_values_inside_a_range_falls_back() {
+    let a = space(vec![("F", ints("1-2")), ("G", strs(&["b", "a"]))], None);
+    let b = space(vec![("F", ints("1-2")), ("G", strs(&["a", "b"]))], None);
+    assert!(is_fallback(&task_delta(Some(&a), Some(&b))));
+    // Appending and removing values while keeping the shared order is fine.
+    let c = space(
+        vec![("F", ints("1-3")), ("G", strs(&["b", "c", "a"]))],
+        None,
+    );
+    check(&a, &c);
+    let d = space(vec![("F", int_list(&[2, 1]))], None);
+    let e = space(vec![("F", int_list(&[1, 2]))], None);
+    assert!(is_fallback(&task_delta(Some(&d), Some(&e))));
+}

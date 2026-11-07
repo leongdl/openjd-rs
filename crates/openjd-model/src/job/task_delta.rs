@@ -22,7 +22,8 @@
 //! iterated with [`StepParameterSpaceIterator`] and counted without iteration.
 //! Cost is linear in the per-parameter range sizes, not in their product.
 //!
-//! Anything else (association, chunking, a different dimension order, a
+//! Anything else (association, chunking, a different dimension order or
+//! order of shared values in a range, a
 //! range that repeats a value, a
 //! task count that overflows, a parameter added, removed or
 //! retyped) returns [`TaskDelta::Fallback`]: there the caller enumerates both
@@ -170,6 +171,20 @@ pub fn task_delta(old: Option<&StepParameterSpace>, new: Option<&StepParameterSp
             return fallback("task parameter type changed");
         }
         dims.push((name.as_str(), *o, *n));
+    }
+    // The values both sides share must keep their relative order in every
+    // dimension, or kept tasks are reordered, which boxes cannot express.
+    for &(_, o, n) in &dims {
+        let (ok, nk) = (range_keys(o), range_keys(n));
+        let (os, ns): (HashSet<&String>, HashSet<&String>) =
+            (ok.iter().collect(), nk.iter().collect());
+        if !ok
+            .iter()
+            .filter(|k| ns.contains(k))
+            .eq(nk.iter().filter(|k| os.contains(k)))
+        {
+            return fallback("a range's shared values changed order, so task order changed");
+        }
     }
 
     let kept: Vec<(&str, TaskParameter)> = dims
