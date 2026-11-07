@@ -359,3 +359,22 @@ fn index_of_accepts_path_values_as_well_as_strings() {
     );
     assert_eq!(pd.old.index_of(&t), Some(1));
 }
+
+#[test]
+fn definition_reorder_without_combination_falls_back() {
+    // Same task set, different iteration order: every index moves.
+    let a = space(vec![("F", ints("1-2")), ("C", strs(&["l", "r"]))], None);
+    let b = space(vec![("C", strs(&["l", "r"])), ("F", ints("1-2"))], None);
+    assert_eq!(a, b, "IndexMap == ignores order");
+    assert!(is_fallback(&task_delta(Some(&a), Some(&b))));
+    // With an explicit combination the definition order does not matter.
+    let a = space(
+        vec![("F", ints("1-2")), ("C", strs(&["l", "r"]))],
+        Some("F * C"),
+    );
+    let b = space(
+        vec![("C", strs(&["l", "r"])), ("F", ints("1-2"))],
+        Some("F * C"),
+    );
+    assert_eq!(task_delta(Some(&a), Some(&b)), TaskDelta::Unchanged);
+}

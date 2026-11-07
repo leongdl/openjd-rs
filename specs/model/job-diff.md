@@ -127,7 +127,7 @@ per-parameter range sizes, not their product. Each range value is keyed as a str
 hashed, so a 10^6-frame range takes seconds in a release build. Interval arithmetic on
 `RangeExpr` would remove that and is left for later. `old` is the whole old space, and
 `old.index_of(task)` is the row-major (rightmost fastest) position of a task at job
-creation. Equal spaces are `Unchanged`; anything else is `Fallback { reason }`, where
+creation. Equal spaces are `Unchanged`, except that a definition reorder with no `combination` is `Fallback`, because every task index moves; anything else is `Fallback { reason }`, where
 the caller enumerates and diffs by value. Tests: `src/test_task_delta.rs`, which checks
 each decomposition against brute-force enumeration.
 

@@ -633,3 +633,21 @@ fn opting_out_strips_a_hand_set_step_environment_table() {
     assert!(!diff_steps(&a.steps[0], &b.steps[0], &off).is_changed());
     assert!(diff_jobs(&a, &b, &DiffOptions::default()).is_changed());
 }
+
+#[test]
+fn adding_a_combination_reports_only_the_combination() {
+    let with_combo = RICH.replace(
+        "        - {name: Cam, type: STRING, range: [left, right]}\n",
+        "        - {name: Cam, type: STRING, range: [left, right]}\n      combination: \"Frame * Cam\"\n",
+    );
+    let swapped = with_combo.replace(
+        "        - {name: Frame, type: INT, range: \"1-3\"}\n        - {name: Cam, type: STRING, range: [left, right]}\n",
+        "        - {name: Cam, type: STRING, range: [left, right]}\n        - {name: Frame, type: INT, range: \"1-3\"}\n",
+    );
+    let t = diff_jobs(
+        &job(RICH, &[]),
+        &job(&swapped, &[]),
+        &DiffOptions::default(),
+    );
+    assert_eq!(fields(&t, "steps[S].parameterSpace"), vec!["combination"]);
+}

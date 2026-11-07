@@ -122,6 +122,16 @@ pub struct ProductDelta {
 /// step without a parameter space (one task with no parameters).
 pub fn task_delta(old: Option<&StepParameterSpace>, new: Option<&StepParameterSpace>) -> TaskDelta {
     if old == new {
+        // `IndexMap ==` ignores definition order, but without a combination
+        // that order is the task order, so every task index moves.
+        let order_changed = matches!((old, new), (Some(a), Some(b))
+            if a.combination.is_none()
+                && !a.task_parameter_definitions.keys().eq(b.task_parameter_definitions.keys()));
+        if order_changed {
+            return TaskDelta::Fallback {
+                reason: "task parameter definition order changed, so task order changed".into(),
+            };
+        }
         return TaskDelta::Unchanged;
     }
     let fallback = |reason: &str| TaskDelta::Fallback {
