@@ -747,6 +747,9 @@ pub struct job::diff::DiffNode {
     pub children: Vec<DiffNodeId>,
     pub field_changes: Vec<FieldChange>,
     pub expanded: bool,
+    pub key: Option<String>,        // name, for elements of a named collection
+    pub old_index: Option<usize>,   // position in the old collection (not an identity)
+    pub new_index: Option<usize>,   // position in the new collection
 }
 impl DiffNode { pub fn is_changed(&self) -> bool; }
 

@@ -249,6 +249,26 @@ environment:
 }
 
 #[test]
+fn step_nodes_carry_name_and_old_and_new_positions() {
+    // Insert a step before Render: Render moves from #1 to #2.
+    let new = BASE.replace(
+        "  - name: Render\n",
+        "  - name: Lint\n    script:\n      actions: {onRun: {command: lint}}\n  - name: Render\n",
+    );
+    let t = diff_jobs(&job(BASE, &[]), &job(&new, &[]), &DiffOptions::default());
+    let at = |p: &str| t.node(t.find(p).unwrap()).unwrap();
+    let render = at("steps[Render]");
+    assert_eq!(render.key.as_deref(), Some("Render"));
+    assert_eq!((render.old_index, render.new_index), (Some(1), Some(2)));
+    assert_eq!(render.status, DiffStatus::Unchanged);
+    let lint = at("steps[Lint]");
+    assert_eq!((lint.old_index, lint.new_index), (None, Some(1)));
+    // Non-collection nodes have no key or position.
+    assert_eq!(t.root().key, None);
+    assert_eq!(t.root().old_index, None);
+}
+
+#[test]
 fn display_lists_only_changes() {
     let new = BASE.replace("command: render", "command: render2");
     let t = diff_jobs(&job(BASE, &[]), &job(&new, &[]), &DiffOptions::default());

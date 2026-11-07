@@ -244,7 +244,10 @@ pub openjd_model::job::diff::DiffNode::children: alloc::vec::Vec<openjd_model::j
 pub openjd_model::job::diff::DiffNode::depth: usize
 pub openjd_model::job::diff::DiffNode::expanded: bool
 pub openjd_model::job::diff::DiffNode::field_changes: alloc::vec::Vec<openjd_model::job::diff::FieldChange>
+pub openjd_model::job::diff::DiffNode::key: core::option::Option<alloc::string::String>
 pub openjd_model::job::diff::DiffNode::kind: openjd_model::job::diff::DiffNodeKind
+pub openjd_model::job::diff::DiffNode::new_index: core::option::Option<usize>
+pub openjd_model::job::diff::DiffNode::old_index: core::option::Option<usize>
 pub openjd_model::job::diff::DiffNode::parent: core::option::Option<openjd_model::job::diff::DiffNodeId>
 pub openjd_model::job::diff::DiffNode::segment: alloc::string::String
 pub openjd_model::job::diff::DiffNode::status: openjd_model::job::diff::DiffStatus

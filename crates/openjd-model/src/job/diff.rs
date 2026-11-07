@@ -118,6 +118,16 @@ pub struct DiffNode {
     /// [`DiffOptions::with_max_depth`] is not, so its children and field
     /// changes are unknown; diff the pair again to see them.
     pub expanded: bool,
+    /// For an element of a named collection (`steps`, environments,
+    /// parameters, embedded files, task parameter definitions): its name.
+    /// This is the stable identity to map to a store's own id.
+    pub key: Option<String>,
+    /// For an element of a named collection: its position in the old side's
+    /// collection, e.g. the index into the old `Job::steps`. Positions shift
+    /// when elements are inserted or removed, so they are not an identity.
+    pub old_index: Option<usize>,
+    /// As [`old_index`](Self::old_index), on the new side.
+    pub new_index: Option<usize>,
 }
 
 impl DiffNode {
@@ -427,13 +437,13 @@ impl<'a> Builder<'a> {
         segment: String,
         old: Option<Subject<'a>>,
         new: Option<Subject<'a>>,
-    ) {
+    ) -> Option<DiffNodeId> {
         let (status, kind) = match (old, new) {
             (Some(o), Some(n)) if o.subtree_eq(n) => (DiffStatus::Unchanged, o.kind()),
             (Some(o), Some(_)) => (DiffStatus::Modified, o.kind()),
             (Some(o), None) => (DiffStatus::Removed, o.kind()),
             (None, Some(n)) => (DiffStatus::Added, n.kind()),
-            (None, None) => return,
+            (None, None) => return None,
         };
         let depth = parent.map_or(0, |p| self.nodes[p].depth + 1);
         let id = self.nodes.len();
@@ -447,6 +457,9 @@ impl<'a> Builder<'a> {
             children: Vec::new(),
             field_changes: Vec::new(),
             expanded,
+            key: None,
+            old_index: None,
+            new_index: None,
         });
         if let Some(p) = parent {
             self.nodes[p].children.push(id);
@@ -454,6 +467,7 @@ impl<'a> Builder<'a> {
         if let (true, Some(o), Some(n)) = (expanded, old, new) {
             self.queue.push_back((id, o, n));
         }
+        Some(id)
     }
 
     fn field<T: PartialEq + Serialize + ?Sized>(
@@ -485,13 +499,13 @@ impl<'a> Builder<'a> {
         wrap: fn(&'a T) -> Subject<'a>,
     ) {
         // First occurrence wins; names are unique in a validated job.
-        let mut a_map: IndexMap<&str, &T> = IndexMap::new();
-        for (k, v) in a {
-            a_map.entry(k).or_insert(v);
+        let mut a_map: IndexMap<&str, (usize, &T)> = IndexMap::new();
+        for (i, (k, v)) in a.into_iter().enumerate() {
+            a_map.entry(k).or_insert((i, v));
         }
-        let mut b_map: IndexMap<&str, &T> = IndexMap::new();
-        for (k, v) in b {
-            b_map.entry(k).or_insert(v);
+        let mut b_map: IndexMap<&str, (usize, &T)> = IndexMap::new();
+        for (i, (k, v)) in b.into_iter().enumerate() {
+            b_map.entry(k).or_insert((i, v));
         }
         if ordered {
             let a_order: Vec<&str> = a_map
@@ -512,12 +526,19 @@ impl<'a> Builder<'a> {
             .copied()
             .collect();
         for k in keys {
-            self.add(
+            let (ai, bi) = (a_map.get(k), b_map.get(k));
+            let child = self.add(
                 Some(id),
                 format!("{collection}[{k}]"),
-                a_map.get(k).map(|v| wrap(v)),
-                b_map.get(k).map(|v| wrap(v)),
+                ai.map(|&(_, v)| wrap(v)),
+                bi.map(|&(_, v)| wrap(v)),
             );
+            if let Some(c) = child {
+                let n = &mut self.nodes[c];
+                n.key = Some(k.to_string());
+                n.old_index = ai.map(|&(i, _)| i);
+                n.new_index = bi.map(|&(i, _)| i);
+            }
         }
     }
 

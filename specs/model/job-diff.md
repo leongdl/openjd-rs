@@ -67,6 +67,15 @@ possible in a validated job) the first occurrence wins.
 | TaskParameter | `taskParameterDefinitions[K]` | `definition` (whole value) | — |
 | HostRequirements | `hostRequirements` | `amounts[N]`, `attributes[N]` | — |
 
+## Identity and position
+
+A node for an element of a named collection carries `key` (the name or map key),
+`old_index` and `new_index` (its position in each side's collection; `None` on the side
+where it is absent). For a step, the index is into `Job::steps`, which is the order
+`StepDependencyGraph` uses for `step_index`. The name is the identity: inserting or
+removing a step shifts the index of every later step, so a store maps `key` to its own
+id and uses the indices only for ordering or display.
+
 Each `expand_*` destructures its model type exhaustively, so adding a model field fails
 to compile until the diff handles it.
 
@@ -77,3 +86,8 @@ does.
 cannot address a name that contains `.`; walk with `DiffTree::child` instead.
 
 Tests: `crates/openjd-model/src/test_job_diff.rs`.
+
+Example CLI: `cargo run -p openjd-model --example job_diff -- OLD NEW [--max-depth N]
+[--with-symtab] [--param K=V] [--old-param K=V] [--new-param K=V] [--plan]`, with sample
+templates in `crates/openjd-model/examples/job_diff/`. `--plan` previews a step and task
+apply order; it is example code, not part of the API.
