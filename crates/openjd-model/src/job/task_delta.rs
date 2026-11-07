@@ -22,7 +22,8 @@
 //! iterated with [`StepParameterSpaceIterator`] and counted without iteration.
 //! Cost is linear in the per-parameter range sizes, not in their product.
 //!
-//! Anything else (association, chunking, a range that repeats a value, a
+//! Anything else (association, chunking, a different dimension order, a
+//! range that repeats a value, a
 //! task count that overflows, a parameter added, removed or
 //! retyped) returns [`TaskDelta::Fallback`]: there the caller enumerates both
 //! spaces and diffs tasks by value.
@@ -149,6 +150,15 @@ pub fn task_delta(old: Option<&StepParameterSpace>, new: Option<&StepParameterSp
     let new_names: HashSet<&str> = new_dims.iter().map(|(n, _)| n.as_str()).collect();
     if old_names != new_names {
         return fallback("task parameter added or removed");
+    }
+    // A different dimension order changes the iteration order of every kept
+    // task, which boxes cannot express.
+    if !old_dims
+        .iter()
+        .map(|(n, _)| n)
+        .eq(new_dims.iter().map(|(n, _)| n))
+    {
+        return fallback("task parameter iteration order changed, so task order changed");
     }
     // Decompose in the new side's dimension order.
     let mut dims = Vec::with_capacity(new_dims.len());

@@ -159,6 +159,8 @@ fn two_dimensions_both_changed() {
 
 #[test]
 fn explicit_product_order_is_respected_for_old_indices() {
+    // Same dimension order, written differently: still a product, and
+    // index_of follows the combination, not the definition order.
     check(
         &space(
             vec![("Frame", ints("1-4")), ("Cam", strs(&["A", "B", "C"]))],
@@ -166,9 +168,25 @@ fn explicit_product_order_is_respected_for_old_indices() {
         ),
         &space(
             vec![("Frame", ints("1-6")), ("Cam", strs(&["A", "C"]))],
-            Some("Frame * Cam"),
+            Some(" Cam*Frame "),
         ),
     );
+}
+
+#[test]
+fn a_different_dimension_order_falls_back() {
+    // Every kept task moves, even when the task set is identical.
+    let f = || ints("1-2");
+    let g = || strs(&["a", "b"]);
+    let none = space(vec![("F", f()), ("G", g())], None);
+    let gf = space(vec![("F", f()), ("G", g())], Some("G * F"));
+    let fg = space(vec![("F", f()), ("G", g())], Some("F * G"));
+    assert!(is_fallback(&task_delta(Some(&none), Some(&gf))));
+    assert!(is_fallback(&task_delta(Some(&fg), Some(&gf))));
+    // `F * G` is the default order for these definitions: same task order.
+    assert!(!is_fallback(&task_delta(Some(&none), Some(&fg))));
+    let wider = space(vec![("F", ints("1-3")), ("G", g())], Some("G * F"));
+    assert!(is_fallback(&task_delta(Some(&fg), Some(&wider))));
 }
 
 #[test]
@@ -302,12 +320,12 @@ fn combination_must_name_each_parameter_once_with_star_only() {
     fb("");
     fb("(A, B)");
     fb("A * C");
-    // Whitespace and explicit order are fine.
+    // Whitespace is fine.
     assert!(!is_fallback(&task_delta(
-        Some(&p(Some(" B *A "), "7-8")),
+        Some(&p(Some(" A *B "), "7-8")),
         Some(&p(Some("A*B"), "7-9")),
     )));
-    check(&p(Some(" B *A "), "7-8"), &p(Some("A*B"), "7-9"));
+    check(&p(Some(" A *B "), "7-8"), &p(Some("A*B"), "7-9"));
 }
 
 #[test]
