@@ -128,6 +128,11 @@ pub struct DiffNode {
     pub old_index: Option<usize>,
     /// As [`old_index`](Self::old_index), on the new side.
     pub new_index: Option<usize>,
+    /// Index of the step this node is in, or is: into the new job's `steps`
+    /// when the step exists there, otherwise (a removed step) into the old
+    /// job's. Set on step nodes and inherited by every node below them.
+    /// `None` above step level and in [`diff_steps`] trees.
+    pub step_index: Option<usize>,
 }
 
 impl DiffNode {
@@ -446,6 +451,7 @@ impl<'a> Builder<'a> {
             (None, None) => return None,
         };
         let depth = parent.map_or(0, |p| self.nodes[p].depth + 1);
+        let step_index = parent.and_then(|p| self.nodes[p].step_index);
         let id = self.nodes.len();
         let expanded = status == DiffStatus::Modified && self.max_depth.is_none_or(|m| depth < m);
         self.nodes.push(DiffNode {
@@ -460,6 +466,7 @@ impl<'a> Builder<'a> {
             key: None,
             old_index: None,
             new_index: None,
+            step_index,
         });
         if let Some(p) = parent {
             self.nodes[p].children.push(id);
@@ -538,6 +545,9 @@ impl<'a> Builder<'a> {
                 n.key = Some(k.to_string());
                 n.old_index = ai.map(|&(i, _)| i);
                 n.new_index = bi.map(|&(i, _)| i);
+                if collection == "steps" {
+                    n.step_index = n.new_index.or(n.old_index);
+                }
             }
         }
     }

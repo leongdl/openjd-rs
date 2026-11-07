@@ -26,6 +26,7 @@ pub mod create_job;
 pub mod diff;
 pub mod step_dependency_graph;
 pub mod step_param_space;
+pub mod task_delta;
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};

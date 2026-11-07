@@ -76,6 +76,36 @@ where it is absent). For a step, the index is into `Job::steps`, which is the or
 removing a step shifts the index of every later step, so a store maps `key` to its own
 id and uses the indices only for ordering or display.
 
+`step_index` is one int threaded through the whole step subtree: set on each step node
+and inherited by every node below it. It indexes the new job's `steps` when the step
+exists there, otherwise (a `Removed` step) the old job's. It is `None` above step level
+and everywhere in a `diff_steps` tree.
+
+## Task delta (`job::task_delta`)
+
+`task_delta(old: Option<&StepParameterSpace>, new: Option<&StepParameterSpace>) ->
+TaskDelta` gives the change in a step's task set without enumerating tasks, when both
+sides are a plain Cartesian product over the same parameters (combination absent, `*`,
+or names joined by `*`; no chunking; no parameter added, removed or retyped). With
+per-parameter value sets `O_k`, `N_k` and `I_k = O_k ∩ N_k`, in the new side's dimension
+order:
+
+```
+kept      = I_0 × … × I_{D-1}
+added_k   = I_0 × … × I_{k-1} × (N_k \ O_k) × N_{k+1} × … × N_{D-1}
+removed_k = I_0 × … × I_{k-1} × (O_k \ N_k) × O_{k+1} × … × O_{D-1}
+```
+
+The `added_k` are disjoint and their union is `new \ kept`; likewise for `removed_k`. So
+the delta is `TaskDelta::Product(ProductDelta { old, kept, added, removed })`: at most
+`2D + 1` `TaskBox`es, each of which is a `StepParameterSpace` of list ranges that
+`StepParameterSpaceIterator` iterates and `TaskBox::len` counts. Cost is linear in the
+per-parameter range sizes, not their product. `old` is the whole old space, and
+`old.index_of(task)` is the row-major (rightmost fastest) position of a task at job
+creation. Equal spaces are `Unchanged`; anything else is `Fallback { reason }`, where
+the caller enumerates and diffs by value. Tests: `src/test_task_delta.rs`, which checks
+each decomposition against brute-force enumeration.
+
 Each `expand_*` destructures its model type exhaustively, so adding a model field fails
 to compile until the diff handles it.
 

@@ -251,6 +251,7 @@ pub openjd_model::job::diff::DiffNode::old_index: core::option::Option<usize>
 pub openjd_model::job::diff::DiffNode::parent: core::option::Option<openjd_model::job::diff::DiffNodeId>
 pub openjd_model::job::diff::DiffNode::segment: alloc::string::String
 pub openjd_model::job::diff::DiffNode::status: openjd_model::job::diff::DiffStatus
+pub openjd_model::job::diff::DiffNode::step_index: core::option::Option<usize>
 impl openjd_model::job::diff::DiffNode
 pub fn openjd_model::job::diff::DiffNode::is_changed(&self) -> bool
 impl core::clone::Clone for openjd_model::job::diff::DiffNode
@@ -350,6 +351,46 @@ impl core::iter::traits::iterator::Iterator for openjd_model::job::step_param_sp
 pub type openjd_model::job::step_param_space::StepParameterSpaceIterator::Item = indexmap::map::IndexMap<alloc::string::String, openjd_model::types::TaskParameterValue>
 pub fn openjd_model::job::step_param_space::StepParameterSpaceIterator::next(&mut self) -> core::option::Option<openjd_model::types::TaskParameterSet>
 pub fn openjd_model::job::step_param_space::StepParameterSpaceIterator::size_hint(&self) -> (usize, core::option::Option<usize>)
+pub mod openjd_model::job::task_delta
+pub enum openjd_model::job::task_delta::TaskDelta
+pub openjd_model::job::task_delta::TaskDelta::Fallback
+pub openjd_model::job::task_delta::TaskDelta::Fallback::reason: alloc::string::String
+pub openjd_model::job::task_delta::TaskDelta::Product(alloc::boxed::Box<openjd_model::job::task_delta::ProductDelta>)
+pub openjd_model::job::task_delta::TaskDelta::Unchanged
+impl core::clone::Clone for openjd_model::job::task_delta::TaskDelta
+pub fn openjd_model::job::task_delta::TaskDelta::clone(&self) -> openjd_model::job::task_delta::TaskDelta
+impl core::cmp::PartialEq for openjd_model::job::task_delta::TaskDelta
+pub fn openjd_model::job::task_delta::TaskDelta::eq(&self, &openjd_model::job::task_delta::TaskDelta) -> bool
+impl core::fmt::Debug for openjd_model::job::task_delta::TaskDelta
+pub fn openjd_model::job::task_delta::TaskDelta::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::task_delta::TaskDelta
+pub struct openjd_model::job::task_delta::ProductDelta
+pub openjd_model::job::task_delta::ProductDelta::added: alloc::vec::Vec<openjd_model::job::task_delta::TaskBox>
+pub openjd_model::job::task_delta::ProductDelta::kept: openjd_model::job::task_delta::TaskBox
+pub openjd_model::job::task_delta::ProductDelta::old: openjd_model::job::task_delta::TaskBox
+pub openjd_model::job::task_delta::ProductDelta::removed: alloc::vec::Vec<openjd_model::job::task_delta::TaskBox>
+impl core::clone::Clone for openjd_model::job::task_delta::ProductDelta
+pub fn openjd_model::job::task_delta::ProductDelta::clone(&self) -> openjd_model::job::task_delta::ProductDelta
+impl core::cmp::PartialEq for openjd_model::job::task_delta::ProductDelta
+pub fn openjd_model::job::task_delta::ProductDelta::eq(&self, &openjd_model::job::task_delta::ProductDelta) -> bool
+impl core::fmt::Debug for openjd_model::job::task_delta::ProductDelta
+pub fn openjd_model::job::task_delta::ProductDelta::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::task_delta::ProductDelta
+pub struct openjd_model::job::task_delta::TaskBox
+impl openjd_model::job::task_delta::TaskBox
+pub fn openjd_model::job::task_delta::TaskBox::index_of(&self, &openjd_model::types::TaskParameterSet) -> core::option::Option<usize>
+pub fn openjd_model::job::task_delta::TaskBox::is_empty(&self) -> bool
+pub fn openjd_model::job::task_delta::TaskBox::len(&self) -> usize
+pub fn openjd_model::job::task_delta::TaskBox::space(&self) -> &openjd_model::job::StepParameterSpace
+pub fn openjd_model::job::task_delta::TaskBox::tasks(&self) -> core::result::Result<openjd_model::job::step_param_space::StepParameterSpaceIterator, openjd_model::error::ModelError>
+impl core::clone::Clone for openjd_model::job::task_delta::TaskBox
+pub fn openjd_model::job::task_delta::TaskBox::clone(&self) -> openjd_model::job::task_delta::TaskBox
+impl core::cmp::PartialEq for openjd_model::job::task_delta::TaskBox
+pub fn openjd_model::job::task_delta::TaskBox::eq(&self, &openjd_model::job::task_delta::TaskBox) -> bool
+impl core::fmt::Debug for openjd_model::job::task_delta::TaskBox
+pub fn openjd_model::job::task_delta::TaskBox::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::task_delta::TaskBox
+pub fn openjd_model::job::task_delta::task_delta(core::option::Option<&openjd_model::job::StepParameterSpace>, core::option::Option<&openjd_model::job::StepParameterSpace>) -> openjd_model::job::task_delta::TaskDelta
 pub enum openjd_model::job::CancelationMode
 pub openjd_model::job::CancelationMode::DeferredMode
 pub openjd_model::job::CancelationMode::DeferredMode::mode: openjd_expr::format_string::FormatString

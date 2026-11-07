@@ -266,6 +266,41 @@ fn step_nodes_carry_name_and_old_and_new_positions() {
     // Non-collection nodes have no key or position.
     assert_eq!(t.root().key, None);
     assert_eq!(t.root().old_index, None);
+    assert_eq!(t.root().step_index, None);
+}
+
+#[test]
+fn step_index_is_threaded_to_every_node_in_the_step() {
+    // Prep removed (old#0), Render modified (new#0), Lint added (new#1).
+    let new = BASE
+        .replace(
+            "  - name: Prep\n    script:\n      actions: {onRun: {command: prep, args: [\"{{Param.Scene}}\"]}}\n",
+            "",
+        )
+        .replace("    dependencies: [{dependsOn: Prep}]\n", "")
+        .replace("command: render", "command: render2")
+        + "  - name: Lint\n    script:\n      actions: {onRun: {command: lint}}\n";
+    let t = diff_jobs(&job(BASE, &[]), &job(&new, &[]), &DiffOptions::default());
+    let at = |p: &str| t.node(t.find(p).unwrap()).unwrap().step_index;
+    assert_eq!(at("steps[Prep]"), Some(0), "removed: index into old.steps");
+    assert_eq!(
+        at("steps[Render]"),
+        Some(0),
+        "present: index into new.steps"
+    );
+    assert_eq!(at("steps[Render].script"), Some(0));
+    assert_eq!(at("steps[Render].script.onRun"), Some(0));
+    assert_eq!(at("steps[Lint]"), Some(1));
+    assert_eq!(at("jobEnvironments[Conda]"), None);
+    // Every node under a step node agrees with it.
+    for (id, n) in t.nodes().iter().enumerate() {
+        if let Some(p) = n.parent {
+            let parent = t.node(p).unwrap();
+            if parent.step_index.is_some() {
+                assert_eq!(n.step_index, parent.step_index, "{}", t.path(id));
+            }
+        }
+    }
 }
 
 #[test]

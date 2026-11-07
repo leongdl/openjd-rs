@@ -26,6 +26,8 @@ pub use openjd_expr::symbol_table::SymbolTable;
 mod test_job_diff;
 #[cfg(test)]
 mod test_lazy_param_space;
+#[cfg(test)]
+mod test_task_delta;
 
 pub use error::ModelError;
 pub use error::{DiagnosticSpan, ErrorDetail};

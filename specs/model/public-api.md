@@ -41,6 +41,7 @@ openjd_model              — crate root re-exports, the main public surface
 ├── job                   — instantiated (resolved) job types
 │   ├── create_job        — pipeline functions + MergedParameterDefinition
 │   ├── diff              — experimental: diff_jobs/diff_steps/diff_environments → DiffTree
+│   ├── task_delta        — experimental: task_delta → TaskDelta (product box algebra)
 │   ├── step_param_space  — StepParameterSpaceIterator
 │   └── step_dependency_graph — StepDependencyGraph + friends
 ├── symbol_table          — re-exported from openjd_expr
@@ -750,6 +751,7 @@ pub struct job::diff::DiffNode {
     pub key: Option<String>,        // name, for elements of a named collection
     pub old_index: Option<usize>,   // position in the old collection (not an identity)
     pub new_index: Option<usize>,   // position in the new collection
+    pub step_index: Option<usize>,  // enclosing step: new.steps index, or old.steps if removed
 }
 impl DiffNode { pub fn is_changed(&self) -> bool; }
 
@@ -758,6 +760,30 @@ pub enum job::diff::DiffStatus { Unchanged, Added, Removed, Modified }
 #[non_exhaustive]
 pub enum job::diff::DiffNodeKind { Job, JobParameter, Environment, Step, StepScript, EnvironmentScript,
     Action, EmbeddedFile, ParameterSpace, TaskParameter, HostRequirements }
+```
+
+### Task Delta (experimental)
+
+Product decomposition of a step's task change; see [job-diff.md](job-diff.md#task-delta-jobtask_delta).
+
+```rust
+pub fn job::task_delta::task_delta(old: Option<&StepParameterSpace>, new: Option<&StepParameterSpace>) -> TaskDelta;
+
+pub enum job::task_delta::TaskDelta {
+    Unchanged,
+    Product(Box<ProductDelta>),
+    Fallback { reason: String },
+}
+pub struct job::task_delta::ProductDelta { pub old: TaskBox, pub kept: TaskBox, pub added: Vec<TaskBox>, pub removed: Vec<TaskBox> }
+
+pub struct job::task_delta::TaskBox { /* private */ }
+impl TaskBox {
+    pub fn space(&self) -> &StepParameterSpace;       // list ranges, product in definition order
+    pub fn len(&self) -> usize;                        // product of range lengths, saturating
+    pub fn is_empty(&self) -> bool;
+    pub fn tasks(&self) -> Result<StepParameterSpaceIterator, ModelError>;
+    pub fn index_of(&self, task: &TaskParameterSet) -> Option<usize>; // row-major position
+}
 ```
 
 ## Shared Types

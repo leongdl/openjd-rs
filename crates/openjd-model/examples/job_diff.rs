@@ -18,18 +18,18 @@
 //! Both files must be job templates, or both environment templates.
 //! Sample inputs are in `examples/job_diff/`.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::process::ExitCode;
 
 use openjd_model::job::diff::DiffNodeId;
 use openjd_model::job::diff::{diff_environments, diff_jobs, DiffOptions, DiffStatus, DiffTree};
-use openjd_model::job::ResolvedChunks;
+use openjd_model::job::task_delta::{task_delta, ProductDelta, TaskBox, TaskDelta};
+use openjd_model::job::TaskParamRange;
 use openjd_model::job::{Job, Step, StepParameterSpace, TaskParameter};
 use openjd_model::{
     convert_environment, create_job, decode_template, preprocess_job_parameters, CallerLimits,
     DecodedTemplate, JobParameterInputValues, PathParameterOptions, StepDependencyGraph,
-    StepParameterSpaceIterator, TaskParameterSet,
+    StepParameterSpaceIterator,
 };
 
 struct Args {
@@ -217,10 +217,6 @@ fn print_steps(tree: &DiffTree) {
     }
 }
 
-fn step_node(tree: &DiffTree, name: &str) -> Option<DiffNodeId> {
-    tree.child(0, &format!("steps[{name}]"))
-}
-
 fn print_plan(tree: &DiffTree, old: &Job, new: &Job) -> Result<(), String> {
     let topo = |j: &Job| -> Result<Vec<usize>, String> {
         StepDependencyGraph::new(j)
@@ -256,38 +252,54 @@ fn print_plan(tree: &DiffTree, old: &Job, new: &Job) -> Result<(), String> {
             ));
         }
     }
+    // Steps by the int index threaded through the diff: a removed step's
+    // `step_index` is into old.steps, every other step's into new.steps.
+    let mut by_old: Vec<Option<DiffNodeId>> = vec![None; old.steps.len()];
+    let mut by_new: Vec<Option<DiffNodeId>> = vec![None; new.steps.len()];
+    for &c in &tree.root().children {
+        let Some(node) = tree.node(c) else { continue };
+        let Some(i) = node.step_index else { continue };
+        let slot = if node.status == DiffStatus::Removed {
+            by_old.get_mut(i)
+        } else {
+            by_new.get_mut(i)
+        };
+        if let Some(slot) = slot {
+            *slot = Some(c);
+        }
+    }
     // Removes: dependents first (reverse topo of the OLD graph).
     for &i in topo(old)?.iter().rev() {
-        let s = &old.steps[i];
-        if let Some(node) = step_node(tree, &s.name).and_then(|id| tree.node(id)) {
-            if node.status == DiffStatus::Removed {
-                op(format!(
-                    "step       REMOVE {:<8} (old#{i}; store: stepId = lookup(job, name), cascade tasks)",
-                    s.name
-                ));
-            }
+        if by_old.get(i).copied().flatten().is_some() {
+            op(format!(
+                "step#{i:<2}    REMOVE {:<8} (old side; store: stepId = lookup(job, name), cascade tasks)",
+                old.steps[i].name
+            ));
         }
     }
     // Adds and modifies: origins first (topo of the NEW graph).
     for &j in &topo(new)? {
         let s = &new.steps[j];
-        let Some(id) = step_node(tree, &s.name) else {
+        let Some(id) = by_new.get(j).copied().flatten() else {
             continue;
         };
         let Some(node) = tree.node(id) else { continue };
         match node.status {
             DiffStatus::Unchanged => {
-                println!("     step       ----   {:<8} unchanged, no write", s.name)
+                println!(
+                    "     step#{j:<2}    ----   {:<8} unchanged, no write",
+                    s.name
+                )
             }
             DiffStatus::Added => {
                 op(format!(
-                    "step       ADD    {:<8} (new#{j}; store: stepId = generate_id(\"step-\"), save name -> id)",
+                    "step#{j:<2}    ADD    {:<8} (store: stepId = generate_id(\"step-\"), save name -> id)",
                     s.name
                 ));
                 for e in s.step_environments.iter().flatten() {
-                    op(format!("  stepEnv  ADD    {}.{}", s.name, e.name));
+                    op(format!("  stepEnv  ADD    step#{j}.{}", e.name));
                 }
-                task_ops(&mut op, &s.name, None, s)?;
+                task_ops(&mut op, j, None, s)?;
             }
             DiffStatus::Modified => {
                 let mut what: Vec<String> =
@@ -300,7 +312,7 @@ fn print_plan(tree: &DiffTree, old: &Job, new: &Job) -> Result<(), String> {
                         .map(|c| c.segment.clone()),
                 );
                 op(format!(
-                    "step       MODIFY {:<8} (old#{} -> new#{j}; store: stepId = lookup(job, name)) [{}]",
+                    "step#{j:<2}    MODIFY {:<8} (was old#{}; store: stepId = lookup(job, name)) [{}]",
                     s.name,
                     node.old_index.map_or("-".into(), |i| i.to_string()),
                     what.join(", ")
@@ -311,7 +323,7 @@ fn print_plan(tree: &DiffTree, old: &Job, new: &Job) -> Result<(), String> {
                     .is_some_and(|c| c.is_changed());
                 if ps_changed {
                     let old_step = node.old_index.and_then(|i| old.steps.get(i));
-                    task_ops(&mut op, &s.name, old_step, s)?;
+                    task_ops(&mut op, j, old_step, s)?;
                 }
             }
             DiffStatus::Removed => {}
@@ -340,56 +352,57 @@ fn verb(s: DiffStatus) -> &'static str {
     }
 }
 
-/// Stable identity of a task: its parameter values, sorted by name.
-fn canonical(t: &TaskParameterSet) -> String {
-    let mut kv: Vec<(String, String)> = t
+/// One line per box: `Frame∈{11..12} × Cam∈{B,C}  (4 tasks)`.
+fn describe(b: &TaskBox) -> String {
+    let dims: Vec<String> = b
+        .space()
+        .task_parameter_definitions
         .iter()
-        .map(|(k, v)| {
-            (
-                k.clone(),
-                serde_json::to_string(&v.value).unwrap_or_else(|e| format!("<{e}>")),
-            )
+        .map(|(name, p)| {
+            let vals: Vec<String> = match p {
+                TaskParameter::Int {
+                    range: TaskParamRange::List(v),
+                    ..
+                } => return format!("{name}∈{}", int_runs(v)),
+                TaskParameter::String { range } | TaskParameter::Path { range } => range.clone(),
+                TaskParameter::Float { range } => {
+                    range.iter().map(|f| f.to_display_string()).collect()
+                }
+                other => vec![format!("{other:?}")],
+            };
+            format!("{name}∈{{{}}}", vals.join(","))
         })
         .collect();
-    kv.sort();
-    if kv.is_empty() {
+    if dims.is_empty() {
         return "(no params)".into();
     }
-    kv.into_iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join(",")
+    dims.join(" × ")
 }
 
-fn tasks(space: Option<&StepParameterSpace>) -> Result<Vec<TaskParameterSet>, String> {
-    match space {
-        None => Ok(vec![TaskParameterSet::new()]),
-        Some(s) => Ok(StepParameterSpaceIterator::new(s)
-            .map_err(|e| e.to_string())?
-            .collect()),
+/// `[1,2,3,7,8]` -> `{1..3,7..8}`.
+fn int_runs(v: &[i64]) -> String {
+    let mut parts = Vec::new();
+    let mut i = 0;
+    while i < v.len() {
+        let mut j = i;
+        while j + 1 < v.len() && v[j + 1] == v[j] + 1 {
+            j += 1;
+        }
+        parts.push(if i == j {
+            v[i].to_string()
+        } else {
+            format!("{}..{}", v[i], v[j])
+        });
+        i = j + 1;
     }
+    format!("{{{}}}", parts.join(","))
 }
 
-fn chunks(space: Option<&StepParameterSpace>) -> Vec<(&str, Option<&ResolvedChunks>)> {
-    space
-        .iter()
-        .flat_map(|s| s.task_parameter_definitions.iter())
-        .map(|(k, p)| {
-            let c = match p {
-                TaskParameter::Int { chunks, .. } => chunks.as_ref(),
-                TaskParameter::ChunkInt { chunks, .. } => Some(chunks),
-                _ => None,
-            };
-            (k.as_str(), c)
-        })
-        .collect()
-}
-
-/// Value-based task delta. Existing tasks keep their store index (DDB
-/// `sk = INDEX#n`); added tasks are appended after the old maximum.
+/// Task delta for one step. Existing tasks keep their store index (DDB
+/// `sk = INDEX#n`); added tasks are appended after the old count.
 fn task_ops(
     op: &mut impl FnMut(String),
-    step: &str,
+    step: usize,
     old: Option<&Step>,
     new: &Step,
 ) -> Result<(), String> {
@@ -397,58 +410,69 @@ fn task_ops(
         old.and_then(|s| s.parameter_space.as_ref()),
         new.parameter_space.as_ref(),
     );
-    if old.is_some()
-        && (os.and_then(|s| s.combination.as_ref()) != ns.and_then(|s| s.combination.as_ref())
-            || chunks(os) != chunks(ns))
-    {
+    let count = |s: Option<&StepParameterSpace>| -> Result<usize, String> {
+        s.map_or(Ok(1), |s| {
+            StepParameterSpaceIterator::new(s)
+                .map(|it| it.len())
+                .map_err(|e| e.to_string())
+        })
+    };
+    if old.is_none() {
         op(format!(
-            "  tasks    REPLACE_ALL {step} (combination or chunking changed: no per-task mapping)"
+            "  tasks    step#{step}: add all {} -> store INDEX#0..",
+            count(ns)?
         ));
         return Ok(());
     }
-    let old_tasks = match old {
-        Some(_) => tasks(os)?,
-        None => Vec::new(),
-    };
-    let mut old_index: HashMap<String, usize> = old_tasks
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (canonical(t), i))
-        .collect();
-    let (mut keep, mut shifted, mut added) = (0usize, 0usize, Vec::new());
-    for (j, t) in tasks(ns)?.iter().enumerate() {
-        match old_index.remove(&canonical(t)) {
-            Some(i) => {
-                keep += 1;
-                if i != j {
-                    shifted += 1;
-                }
+    match task_delta(os, ns) {
+        TaskDelta::Unchanged => op(format!("  tasks    step#{step}: unchanged")),
+        TaskDelta::Product(pd) => {
+            let ProductDelta {
+                old: full_old,
+                kept,
+                added,
+                removed,
+            } = *pd;
+            op(format!(
+                "  tasks    step#{step}: keep {}  [{}]",
+                kept.len(),
+                describe(&kept)
+            ));
+            let mut next = full_old.len();
+            for b in &added {
+                op(format!(
+                    "  task     ADD    step#{step} {}  ({} tasks) -> store INDEX#{}..{}",
+                    describe(b),
+                    b.len(),
+                    next,
+                    next + b.len() - 1
+                ));
+                next += b.len();
             }
-            None => added.push((j, canonical(t))),
+            for b in &removed {
+                let mut idx: Vec<usize> = b
+                    .tasks()
+                    .map_err(|e| e.to_string())?
+                    .take(5)
+                    .filter_map(|t| full_old.index_of(&t))
+                    .collect();
+                idx.sort_unstable();
+                op(format!(
+                    "  task     REMOVE step#{step} {}  ({} tasks) store INDEX#{:?}{}",
+                    describe(b),
+                    b.len(),
+                    idx,
+                    if b.len() > 5 { "..." } else { "" }
+                ));
+            }
         }
-    }
-    let mut removed: Vec<(usize, String)> = old_index.into_iter().map(|(k, i)| (i, k)).collect();
-    removed.sort();
-    op(format!(
-        "  tasks    {step}: keep {keep} ({shifted} at a different iterator position), add {}, remove {}",
-        added.len(),
-        removed.len()
-    ));
-    let next = old_tasks.len();
-    for (k, (j, t)) in added.iter().enumerate().take(5) {
-        op(format!(
-            "  task     ADD    {step} {t:<14} new iter#{j:<3} -> store INDEX#{}",
-            next + k
-        ));
-    }
-    if added.len() > 5 {
-        println!("     ... {} more adds", added.len() - 5);
-    }
-    for (i, t) in removed.iter().take(5) {
-        op(format!("  task     REMOVE {step} {t:<14} store INDEX#{i}"));
-    }
-    if removed.len() > 5 {
-        println!("     ... {} more removes", removed.len() - 5);
+        TaskDelta::Fallback { reason } => {
+            op(format!(
+                "  tasks    step#{step}: REPLACE_ALL or enumerate by value ({reason}); {} old, {} new",
+                count(os)?,
+                count(ns)?
+            ));
+        }
     }
     Ok(())
 }
