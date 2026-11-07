@@ -12,7 +12,8 @@
 //!   --param K=V          job parameter for both sides (repeatable)
 //!   --old-param K=V      job parameter for the old side only
 //!   --new-param K=V      job parameter for the new side only
-//!   --plan               print `job::apply::plan` for the diff (job templates only)
+//!   --plan               print `job::apply::plan(old, new)` (job templates only;
+//!                        it always diffs in full with default options)
 //! ```
 //!
 //! Both files must be job templates, or both environment templates.
@@ -38,7 +39,6 @@ struct Args {
     old_params: Vec<(String, String)>,
     new_params: Vec<(String, String)>,
     plan: bool,
-    with_symtab: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -46,7 +46,6 @@ fn parse_args() -> Result<Args, String> {
     let mut options = DiffOptions::default();
     let (mut old_params, mut new_params) = (Vec::new(), Vec::new());
     let mut plan = false;
-    let mut with_symtab = true;
     let mut it = std::env::args().skip(1);
     let kv = |s: Option<String>, flag: &str| -> Result<(String, String), String> {
         let s = s.ok_or_else(|| format!("{flag} needs K=V"))?;
@@ -64,7 +63,6 @@ fn parse_args() -> Result<Args, String> {
             }
             "--no-symtab" => {
                 options = options.with_resolved_symtab(false);
-                with_symtab = false;
             }
             "--param" => {
                 let p = kv(it.next(), "--param")?;
@@ -89,7 +87,6 @@ fn parse_args() -> Result<Args, String> {
         old_params,
         new_params,
         plan,
-        with_symtab,
     })
 }
 
@@ -155,13 +152,8 @@ fn run() -> Result<(), String> {
             print_tree(&tree);
             print_steps(&tree);
             if args.plan {
-                // The plan needs the full tree, whatever --max-depth said.
-                let full = diff_jobs(
-                    &old,
-                    &new,
-                    &DiffOptions::default().with_resolved_symtab(args.with_symtab),
-                );
-                print_plan(&full, &old, &new)?;
+                // The plan always diffs in full with default options.
+                print_plan(&old, &new)?;
             }
         }
         (DecodedTemplate::Environment(a), DecodedTemplate::Environment(b)) => {
@@ -216,9 +208,9 @@ fn print_steps(tree: &DiffTree) {
     }
 }
 
-fn print_plan(tree: &DiffTree, old: &Job, new: &Job) -> Result<(), String> {
+fn print_plan(old: &Job, new: &Job) -> Result<(), String> {
     println!("\n== apply plan (job::apply::plan) ==");
-    let plan = plan(tree, old, new).map_err(|e| e.to_string())?;
+    let plan = plan(old, new).map_err(|e| e.to_string())?;
     if plan.ops.is_empty() {
         println!("nothing to apply");
         return Ok(());
@@ -228,7 +220,7 @@ fn print_plan(tree: &DiffTree, old: &Job, new: &Job) -> Result<(), String> {
         let what = match &op.action {
             Action::Job(_) => "job        MODIFY".to_string(),
             Action::Parameter(o) => format!("param      {}", name_of(o, |p| &p.name)),
-            Action::Environment(o) => format!("jobEnv     {}", name_of(o, |e| &e.name)),
+            Action::Environment(i, o) => format!("jobEnv#{i:<2}  {}", name_of(o, |e| &e.name)),
             Action::Step(i, o) => {
                 let s = match o {
                     Op::Remove { .. } => &old.steps[*i],

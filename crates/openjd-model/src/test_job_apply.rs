@@ -11,7 +11,6 @@ use crate::job::apply::{
     apply, execute, plan, validate, Action, AllowList, ApplyError, JobApplier, MutationKind, Op,
     TaskChange,
 };
-use crate::job::diff::{diff_jobs, DiffOptions};
 use crate::job::{Environment, Job, JobParameter, Step, StepParameterSpace};
 use crate::step_param_space::StepParameterSpaceIterator;
 use crate::types::TaskParameterSet;
@@ -71,7 +70,7 @@ struct JobRebuilder {
     description: Option<String>,
     extensions: Option<Vec<crate::types::ModelExtension>>,
     params: BTreeMap<String, JobParameter>,
-    envs: BTreeMap<String, Environment>,
+    envs: Vec<Environment>,
     steps: BTreeMap<String, Step>,
     tasks: BTreeMap<String, Vec<String>>,
     new_names: Vec<String>,
@@ -88,12 +87,7 @@ impl JobRebuilder {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
-            envs: old
-                .job_environments
-                .iter()
-                .flatten()
-                .map(|e| (e.name.clone(), e.clone()))
-                .collect(),
+            envs: old.job_environments.iter().flatten().cloned().collect(),
             steps: old
                 .steps
                 .iter()
@@ -118,13 +112,8 @@ impl JobRebuilder {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         assert_eq!(self.params, params, "parameters");
-        let envs: BTreeMap<_, _> = new
-            .job_environments
-            .iter()
-            .flatten()
-            .map(|e| (e.name.clone(), e.clone()))
-            .collect();
-        assert_eq!(self.envs, envs, "job environments");
+        let envs: Vec<Environment> = new.job_environments.iter().flatten().cloned().collect();
+        assert_eq!(self.envs, envs, "job environments, in order");
         let steps: BTreeMap<_, _> = new
             .steps
             .iter()
@@ -132,6 +121,21 @@ impl JobRebuilder {
             .collect();
         assert_eq!(self.steps, steps, "steps");
         for s in &new.steps {
+            // `Step ==` ignores definition order, which is task order.
+            let order = |s: &Step| {
+                s.parameter_space.as_ref().map(|p| {
+                    p.task_parameter_definitions
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+            };
+            assert_eq!(
+                order(&self.steps[&s.name]),
+                order(s),
+                "definition order of {}",
+                s.name
+            );
             let mut have = self.tasks[&s.name].clone();
             let mut want = tasks(s.parameter_space.as_ref());
             have.sort();
@@ -156,6 +160,19 @@ impl JobApplier for JobRebuilder {
         self.name = new.name.clone();
         self.description = new.description.clone();
         self.extensions = new.extensions.clone();
+        // A reorder: put the environments both sides share in the new order.
+        let order: Vec<&String> = new
+            .job_environments
+            .iter()
+            .flatten()
+            .map(|e| &e.name)
+            .collect();
+        self.envs.sort_by_key(|e| {
+            order
+                .iter()
+                .position(|n| **n == e.name)
+                .unwrap_or(usize::MAX)
+        });
         Ok(())
     }
     fn parameter(&mut self, op: Op<'_, JobParameter>) -> Result<(), String> {
@@ -169,13 +186,32 @@ impl JobApplier for JobRebuilder {
         }
         Ok(())
     }
-    fn environment(&mut self, op: Op<'_, Environment>) -> Result<(), String> {
+    fn environment(&mut self, i: usize, op: Op<'_, Environment>) -> Result<(), String> {
         match op {
-            Op::Add { new } | Op::Modify { new, .. } => {
-                self.envs.insert(new.name.clone(), new.clone());
+            Op::Add { new } => {
+                if i > self.envs.len() {
+                    return Err(format!("insert {} at {i} past the end", new.name));
+                }
+                self.envs.insert(i, new.clone());
+            }
+            Op::Modify { new, .. } => {
+                let at = self
+                    .envs
+                    .iter()
+                    .position(|e| e.name == new.name)
+                    .ok_or("modify a missing env")?;
+                if at != i {
+                    return Err(format!("{} is at {at}, op says {i}", new.name));
+                }
+                self.envs[at] = new.clone();
             }
             Op::Remove { old } => {
-                self.envs.remove(&old.name);
+                let at = self
+                    .envs
+                    .iter()
+                    .position(|e| e.name == old.name)
+                    .ok_or_else(|| format!("remove missing {}", old.name))?;
+                self.envs.remove(at);
             }
         }
         Ok(())
@@ -249,21 +285,9 @@ impl JobApplier for JobRebuilder {
 }
 
 fn roundtrip(a: &Job, b: &Job) {
-    let store_names = b.steps.iter().map(|s| s.name.clone()).collect();
-    let mut r = JobRebuilder::holding(a, store_names);
-    for opts in [
-        DiffOptions::default(),
-        DiffOptions::default().with_max_depth(1),
-    ] {
-        let tree = diff_jobs(a, b, &opts);
-        let all = AllowList::of(plan(&tree, a, b).unwrap().kinds());
-        let mut r2 = JobRebuilder::holding(a, b.steps.iter().map(|s| s.name.clone()).collect());
-        apply(&tree, a, b, &all, &mut r2).unwrap();
-        r2.assert_holds(b);
-    }
-    let tree = diff_jobs(a, b, &DiffOptions::default().with_max_depth(0));
-    let all = AllowList::of(plan(&tree, a, b).unwrap().kinds());
-    apply(&tree, a, b, &all, &mut r).unwrap();
+    let mut r = JobRebuilder::holding(a, b.steps.iter().map(|s| s.name.clone()).collect());
+    let all = AllowList::of(plan(a, b).unwrap().kinds());
+    apply(a, b, &all, &mut r).unwrap();
     r.assert_holds(b);
 }
 
@@ -298,8 +322,9 @@ fn oracle_two_dimensional_tasks() {
 #[test]
 fn no_change_is_an_empty_plan() {
     let a = job(V1, &[]);
-    let tree = diff_jobs(&a, &a, &DiffOptions::default());
-    assert!(plan(&tree, &a, &a).unwrap().ops.is_empty());
+    let p = plan(&a, &a).unwrap();
+    assert!(p.ops.is_empty());
+    assert!(!p.diff.is_changed());
 }
 
 fn summary(p: &crate::job::apply::ApplyPlan<'_>, old: &Job, new: &Job) -> Vec<String> {
@@ -308,7 +333,7 @@ fn summary(p: &crate::job::apply::ApplyPlan<'_>, old: &Job, new: &Job) -> Vec<St
         .map(|o| match &o.action {
             Action::Job(_) => "job".to_string(),
             Action::Parameter(op) => format!("param {}", name_of(op, |p| &p.name)),
-            Action::Environment(op) => format!("env {}", name_of(op, |e| &e.name)),
+            Action::Environment(_, op) => format!("env {}", name_of(op, |e| &e.name)),
             Action::Step(i, op) => {
                 let verb = match op {
                     Op::Add { .. } => "add",
@@ -347,8 +372,7 @@ fn name_of<'a, T>(op: &Op<'a, T>, f: impl Fn(&'a T) -> &'a String) -> String {
 #[test]
 fn plan_order_and_kinds_for_shot_render() {
     let (a, b) = (job(V1, &[]), job(V2, &[]));
-    let tree = diff_jobs(&a, &b, &DiffOptions::default());
-    let p = plan(&tree, &a, &b).unwrap();
+    let p = plan(&a, &b).unwrap();
     assert_eq!(
         summary(&p, &a, &b),
         vec![
@@ -384,8 +408,7 @@ fn plan_order_and_kinds_for_shot_render() {
 #[test]
 fn render_more_frames_needs_only_parameter_value_and_task_append() {
     let (a, b) = (job(V1, &[]), job(V1, &[("Frames", "1-12")]));
-    let tree = diff_jobs(&a, &b, &DiffOptions::default());
-    let p = plan(&tree, &a, &b).unwrap();
+    let p = plan(&a, &b).unwrap();
     assert_eq!(
         p.kinds().into_iter().collect::<Vec<_>>(),
         vec![MutationKind::ParameterValue, MutationKind::TaskAppend]
@@ -396,7 +419,7 @@ fn render_more_frames_needs_only_parameter_value_and_task_append() {
         MutationKind::TaskAppend,
     ]);
     let mut r = JobRebuilder::holding(&a, b.steps.iter().map(|s| s.name.clone()).collect());
-    apply(&tree, &a, &b, &phase1, &mut r).unwrap();
+    apply(&a, &b, &phase1, &mut r).unwrap();
     r.assert_holds(&b);
 }
 
@@ -423,7 +446,7 @@ impl JobApplier for Recorder {
     fn parameter(&mut self, _: Op<'_, JobParameter>) -> Result<(), String> {
         self.write()
     }
-    fn environment(&mut self, _: Op<'_, Environment>) -> Result<(), String> {
+    fn environment(&mut self, _: usize, _: Op<'_, Environment>) -> Result<(), String> {
         self.write()
     }
     fn step(&mut self, _: usize, _: Op<'_, Step>) -> Result<(), String> {
@@ -453,14 +476,13 @@ impl Recorder {
 #[test]
 fn a_refused_kind_writes_nothing_and_names_the_kind() {
     let (a, b) = (job(V1, &[]), job(V2, &[]));
-    let tree = diff_jobs(&a, &b, &DiffOptions::default());
     let phase1 = AllowList::of([
         MutationKind::ParameterValue,
         MutationKind::EnvVariables,
         MutationKind::TaskAppend,
     ]);
     let mut r = Recorder::default();
-    match apply(&tree, &a, &b, &phase1, &mut r) {
+    match apply(&a, &b, &phase1, &mut r) {
         Err(ApplyError::Refused { op, refusal }) => {
             assert_eq!(op, 3);
             assert_eq!(refusal.kind, MutationKind::StepAdd);
@@ -473,8 +495,7 @@ fn a_refused_kind_writes_nothing_and_names_the_kind() {
 #[test]
 fn a_store_veto_writes_nothing() {
     let (a, b) = (job(V1, &[]), job(V2, &[]));
-    let tree = diff_jobs(&a, &b, &DiffOptions::default());
-    let p = plan(&tree, &a, &b).unwrap();
+    let p = plan(&a, &b).unwrap();
     let mut r = Recorder {
         veto: true,
         ..Recorder::default()
@@ -489,8 +510,7 @@ fn a_store_veto_writes_nothing() {
 #[test]
 fn execution_resumes_after_a_failed_write() {
     let (a, b) = (job(V1, &[]), job(V2, &[]));
-    let tree = diff_jobs(&a, &b, &DiffOptions::default());
-    let p = plan(&tree, &a, &b).unwrap();
+    let p = plan(&a, &b).unwrap();
     let mut r = Recorder {
         fail_at: Some(4),
         ..Recorder::default()
@@ -503,4 +523,109 @@ fn execution_resumes_after_a_failed_write() {
     let report = execute(&p, &mut r, at).unwrap();
     assert_eq!(report.applied, p.ops.len());
     assert_eq!(r.writes, p.ops.len());
+}
+
+// ─── audit round 1 regressions ──────────────────────────────────────
+
+const ENVS: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: Envs
+parameterDefinitions:
+  - {name: S, type: STRING, default: a}
+jobEnvironments:
+  - {name: E1, variables: {X: "1"}}
+  - {name: E2, variables: {X: "2"}}
+  - {name: E3, variables: {X: "3"}}
+steps:
+  - name: R
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: F, type: INT, range: "1-2"}
+        - {name: C, type: STRING, range: [l, r]}
+    script:
+      actions:
+        onRun: {command: "{{Param.S}}"}
+"#;
+
+fn envs(list: &str) -> String {
+    let mut out = String::new();
+    for n in list.split(',').filter(|n| !n.is_empty()) {
+        out.push_str(&format!("  - {{name: {n}, variables: {{X: \"{n}\"}}}}\n"));
+    }
+    let head = ENVS.split("jobEnvironments:\n").next().unwrap();
+    let tail = &ENVS[ENVS.index_of("steps:")..];
+    format!("{head}jobEnvironments:\n{out}{tail}")
+}
+
+trait IndexOf {
+    fn index_of(&self, pat: &str) -> usize;
+}
+impl IndexOf for str {
+    fn index_of(&self, pat: &str) -> usize {
+        self.find(pat).unwrap()
+    }
+}
+
+#[test]
+fn job_environment_positions_are_rebuilt_exactly() {
+    let cases = [
+        ("E1", "E2,E1"),
+        ("E1", "E1,E2"),
+        ("E1,E2,E3", "E3,E1"),
+        ("E1,E2,E3", "E4,E2,E5"),
+        ("E1,E2", "E2,E1,E3"),
+        ("E1,E2,E3", ""),
+    ];
+    for (from, to) in cases {
+        let (a, b) = (job(&envs(from), &[]), job(&envs(to), &[]));
+        roundtrip(&a, &b);
+        roundtrip(&b, &a);
+    }
+    // The two inserts are distinguishable by index.
+    let a = job(&envs("E1"), &[]);
+    let (b1, b2) = (job(&envs("E2,E1"), &[]), job(&envs("E1,E2"), &[]));
+    let p1 = plan(&a, &b1).unwrap();
+    let p2 = plan(&a, &b2).unwrap();
+    assert_ne!(p1.ops, p2.ops);
+}
+
+#[test]
+fn a_parameter_seen_only_through_the_symtab_is_still_written() {
+    let (a, b) = (job(ENVS, &[]), job(ENVS, &[("S", "b")]));
+    let p = plan(&a, &b).unwrap();
+    assert!(
+        p.kinds().contains(&MutationKind::StepSymbols),
+        "{:?}",
+        p.kinds()
+    );
+    roundtrip(&a, &b);
+}
+
+#[test]
+fn a_definition_reorder_replaces_the_tasks() {
+    let swapped = ENVS.replace(
+        "        - {name: F, type: INT, range: \"1-2\"}\n        - {name: C, type: STRING, range: [l, r]}\n",
+        "        - {name: C, type: STRING, range: [l, r]}\n        - {name: F, type: INT, range: \"1-2\"}\n",
+    );
+    let (a, b) = (job(ENVS, &[]), job(&swapped, &[]));
+    let p = plan(&a, &b).unwrap();
+    assert_eq!(
+        p.kinds().into_iter().collect::<Vec<_>>(),
+        vec![MutationKind::TaskReplace]
+    );
+    roundtrip(&a, &b);
+}
+
+#[test]
+fn every_op_carries_at_least_one_kind() {
+    let pairs = [
+        (job(V1, &[]), job(V2, &[])),
+        (job(CAMS1, &[]), job(CAMS2, &[])),
+        (job(ENVS, &[]), job(&envs("E3,E9"), &[("S", "z")])),
+    ];
+    for (a, b) in &pairs {
+        for p in [plan(a, b).unwrap(), plan(b, a).unwrap()] {
+            assert!(p.ops.iter().all(|o| !o.kinds.is_empty()), "{:?}", p.ops);
+        }
+    }
 }

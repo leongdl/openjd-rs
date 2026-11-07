@@ -8,8 +8,8 @@
 //!
 //! Three stages:
 //!
-//! 1. [`plan`] turns a [`DiffTree`] and the two jobs into an ordered
-//!    [`ApplyPlan`]. Every op is tagged with the [`MutationKind`]s it carries.
+//! 1. [`plan`] diffs the stored and requested jobs and turns the
+//!    [`DiffTree`] into an ordered [`ApplyPlan`]. Every op is tagged with the [`MutationKind`]s it carries.
 //!    Steps are addressed by index (`new.steps[j]`, or `old.steps[i]` for a
 //!    removal). Adds and modifies run in topological order of the new step
 //!    graph, so a step exists before anything depends on it. Removals run
@@ -26,8 +26,8 @@ use std::collections::{BTreeSet, HashSet};
 
 use crate::error::ModelError;
 use crate::job::diff::{
-    diff_environments, diff_steps, DiffNode, DiffNodeId, DiffNodeKind, DiffOptions, DiffStatus,
-    DiffTree,
+    diff_environments, diff_jobs, diff_steps, DiffNode, DiffNodeId, DiffNodeKind, DiffOptions,
+    DiffStatus, DiffTree,
 };
 use crate::job::task_delta::{task_delta, ProductDelta, TaskDelta};
 use crate::job::{Environment, Job, JobParameter, Step, StepParameterSpace};
@@ -44,8 +44,8 @@ pub enum Op<'a, T> {
         /// The new object.
         new: &'a T,
     },
-    /// Update `old` to `new`. `node` is the object's node in the plan's
-    /// [`DiffTree`], for stores that want the field-level detail.
+    /// Update `old` to `new`. `node` is the object's node in
+    /// [`ApplyPlan::diff`], for stores that want the field-level detail.
     Modify {
         /// The object as stored.
         old: &'a T,
@@ -141,8 +141,13 @@ pub enum Action<'a> {
     Job(Op<'a, Job>),
     /// A job parameter.
     Parameter(Op<'a, JobParameter>),
-    /// A job environment. Step environments travel with their step.
-    Environment(Op<'a, Environment>),
+    /// A job environment and its index: the new list index for `Add` and
+    /// `Modify`, the old one (informational) for `Remove`. A store matches
+    /// `Modify` and `Remove` by name. Ops arrive as: any `Job` reorder of the
+    /// shared environments, removes, then adds and modifies in ascending new
+    /// index, so inserting each `Add` at its index rebuilds the new order.
+    /// Step environments travel with their step.
+    Environment(usize, Op<'a, Environment>),
     /// A step, including its step environments.
     Step(StepIndex, Op<'a, Step>),
     /// A step's tasks. `space` is the step's new parameter space.
@@ -170,6 +175,8 @@ pub struct PlannedOp<'a> {
 pub struct ApplyPlan<'a> {
     /// The ops, in the order they must run.
     pub ops: Vec<PlannedOp<'a>>,
+    /// The full diff the plan was built from. `Op::Modify::node` indexes it.
+    pub diff: DiffTree,
 }
 
 impl ApplyPlan<'_> {
@@ -234,8 +241,8 @@ pub trait JobApplier {
     fn job(&mut self, op: Op<'_, Job>) -> Result<(), Self::Error>;
     /// A job parameter.
     fn parameter(&mut self, op: Op<'_, JobParameter>) -> Result<(), Self::Error>;
-    /// A job environment.
-    fn environment(&mut self, op: Op<'_, Environment>) -> Result<(), Self::Error>;
+    /// A job environment at a list position (see [`Action::Environment`]).
+    fn environment(&mut self, index: usize, op: Op<'_, Environment>) -> Result<(), Self::Error>;
     /// A step, including its step environments. `Modify` carries the whole
     /// new step; a step whose only change is its tasks gets no step op.
     fn step(&mut self, step: StepIndex, op: Op<'_, Step>) -> Result<(), Self::Error>;
@@ -288,13 +295,12 @@ pub struct ApplyReport {
 
 /// Plan, validate and execute.
 pub fn apply<A: JobApplier>(
-    diff: &DiffTree,
     old: &Job,
     new: &Job,
     policy: &dyn MutationPolicy,
     store: &mut A,
 ) -> Result<ApplyReport, ApplyError<A::Error>> {
-    let plan = plan(diff, old, new).map_err(ApplyError::Model)?;
+    let plan = plan(old, new).map_err(ApplyError::Model)?;
     validate(&plan, policy, store)?;
     execute(&plan, store, 0)
 }
@@ -330,7 +336,7 @@ pub fn execute<A: JobApplier>(
         match &op.action {
             Action::Job(o) => store.job(*o),
             Action::Parameter(o) => store.parameter(*o),
-            Action::Environment(o) => store.environment(*o),
+            Action::Environment(i, o) => store.environment(*i, *o),
             Action::Step(j, o) => store.step(*j, *o),
             Action::Tasks {
                 step,
@@ -465,6 +471,8 @@ fn env_ops<'a>(
 ) {
     let prefix = format!("{collection}[");
     let Some(p) = diff.node(parent) else { return };
+    let mut removes = Vec::new();
+    let mut writes = Vec::new();
     for &c in &p.children {
         let n = &diff.nodes()[c];
         if !n.segment.starts_with(&prefix) || !n.is_changed() {
@@ -477,39 +485,39 @@ fn env_ops<'a>(
         let Some(action) = op(n, c, o, w) else {
             continue;
         };
-        let k = match action {
-            Op::Add { .. } => kinds([MutationKind::EnvAdd]),
-            Op::Remove { .. } => kinds([MutationKind::EnvRemove]),
-            Op::Modify { old, new, .. } => env_kinds(old, new),
+        let (k, index) = match action {
+            Op::Add { .. } => (kinds([MutationKind::EnvAdd]), n.new_index),
+            Op::Remove { .. } => (kinds([MutationKind::EnvRemove]), n.old_index),
+            Op::Modify { old, new, .. } => (env_kinds(old, new), n.new_index),
         };
-        out.push(PlannedOp {
+        let Some(index) = index else { continue };
+        let op = PlannedOp {
             kinds: k,
-            action: Action::Environment(action),
-        });
+            action: Action::Environment(index, action),
+        };
+        if matches!(action, Op::Remove { .. }) {
+            removes.push((index, op));
+        } else {
+            writes.push((index, op));
+        }
     }
+    // Removes (matched by name), then writes in ascending new index.
+    writes.sort_by_key(|w| w.0);
+    out.extend(removes.into_iter().chain(writes).map(|(_, op)| op));
 }
 
-/// Build the ordered plan. The diff must have been built from `old` and `new`,
-/// with any options: modified steps and environments are re-diffed in full to
-/// classify them, so a `max_depth` cut-off below the root loses nothing.
-pub fn plan<'a>(diff: &DiffTree, old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError> {
-    if !diff.is_changed() {
-        return Ok(ApplyPlan { ops: Vec::new() });
-    }
-    if !diff.root().expanded {
-        // Cut off at depth 0: rebuild the tree to see what changed.
-        let full = crate::job::diff::diff_jobs(old, new, &DiffOptions::default());
-        return plan_expanded(&full, old, new);
-    }
-    plan_expanded(diff, old, new)
-}
-
-fn plan_expanded<'a>(
-    diff: &DiffTree,
-    old: &'a Job,
-    new: &'a Job,
-) -> Result<ApplyPlan<'a>, ModelError> {
+/// Build the ordered plan from the stored job `old` to the requested `new`.
+///
+/// The plan diffs the jobs itself, always with the default [`DiffOptions`]:
+/// a caller's tree built with `max_depth` or `with_resolved_symtab(false)`
+/// can mark a changed step `Unchanged`, and the plan must not miss writes.
+/// The tree is kept in [`ApplyPlan::diff`]; `Op::Modify::node` indexes it.
+pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError> {
+    let diff = diff_jobs(old, new, &DiffOptions::default());
     let mut ops = Vec::new();
+    if !diff.is_changed() {
+        return Ok(ApplyPlan { ops, diff });
+    }
     let root = diff.root();
 
     // 1. Job-level fields.
@@ -553,7 +561,7 @@ fn plan_expanded<'a>(
     let empty: &[Environment] = &[];
     env_ops(
         &mut ops,
-        diff,
+        &diff,
         0,
         "jobEnvironments",
         old.job_environments.as_deref().unwrap_or(empty),
@@ -622,6 +630,9 @@ fn plan_expanded<'a>(
                     let change =
                         match task_delta(o.parameter_space.as_ref(), s.parameter_space.as_ref()) {
                             TaskDelta::Unchanged => None,
+                            TaskDelta::Product(d) if d.added.is_empty() && d.removed.is_empty() => {
+                                None
+                            }
                             TaskDelta::Product(d) => Some(TaskChange::Boxes(d)),
                             TaskDelta::Fallback { .. } => Some(TaskChange::Replace),
                         };
@@ -654,5 +665,5 @@ fn plan_expanded<'a>(
             });
         }
     }
-    Ok(ApplyPlan { ops })
+    Ok(ApplyPlan { ops, diff })
 }

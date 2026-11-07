@@ -9,26 +9,39 @@ a store that it knows only through a trait. Design: SuperDaveDocs
 ## Stages
 
 ```rust
-pub fn plan<'a>(diff: &DiffTree, old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>;
+pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>;
 pub fn validate<A: JobApplier>(plan: &ApplyPlan<'_>, policy: &dyn MutationPolicy, store: &mut A) -> Result<(), ApplyError<A::Error>>;
 pub fn execute<A: JobApplier>(plan: &ApplyPlan<'_>, store: &mut A, resume_from: usize) -> Result<ApplyReport, ApplyError<A::Error>>;
-pub fn apply<A: JobApplier>(diff: &DiffTree, old: &Job, new: &Job, policy: &dyn MutationPolicy, store: &mut A) -> Result<ApplyReport, ApplyError<A::Error>>;
+pub fn apply<A: JobApplier>(old: &Job, new: &Job, policy: &dyn MutationPolicy, store: &mut A) -> Result<ApplyReport, ApplyError<A::Error>>;
 ```
 
 `apply` is `plan`, then `validate`, then `execute(…, 0)`.
+
+`plan` diffs the two jobs itself, always with the default `DiffOptions`, and keeps the
+tree in `ApplyPlan::diff`. `Op::Modify::node` indexes that tree. A caller's tree built
+with `max_depth` or `with_resolved_symtab(false)` can mark a changed step `Unchanged`, so
+the plan never takes one.
 
 ## Plan order
 
 1. `Action::Job`: one `Modify` when the root has its own field changes (name,
    description, extensions, step or job-environment order).
 2. `Action::Parameter`: one op per changed parameter.
-3. `Action::Environment`: one op per changed **job** environment. Step environments
-   travel inside their step's op, because a step is one item in a store.
+3. `Action::Environment(index, op)`: one op per changed **job** environment.
+   - Removes come first. They are matched by name; the index is the old one and is
+     informational.
+   - Adds and modifies follow in ascending new index. Inserting each `Add` at its index
+     after the removes, and after any `Job` op's `EnvReorder` of the shared environments,
+     rebuilds the new list order.
+
+   Step environments travel inside their step's op, because a step is one item in a
+   store.
 4. Steps in **topological order of the new step graph**, origins first:
    - `Added`: `Step(j, Add)`, then `Tasks { change: All }`.
    - `Modified`: `Step(j, Modify)` unless the only change is the parameter space, then
-     `Tasks` when the task set changed (`task_delta`: `Product` → `Boxes`, `Fallback` →
-     `Replace`).
+     `Tasks` when the task set or task order changed (`task_delta`: `Product` with
+     added or removed boxes → `Boxes`, `Fallback` → `Replace`). A task-definition reorder
+     with no `combination` is a `Fallback`, because every task index moves.
 5. Removed steps in **reverse topological order of the old step graph**, dependents first.
 
 Adds and modifies come before removes. A step therefore exists before any step gains an
@@ -36,9 +49,8 @@ edge to it, and by the time a step is removed nothing still depends on it, becau
 new job can't name it. `StepIndex` is `DiffNode::step_index`: `new.steps[j]` for steps 4,
 and `old.steps[i]` for steps 5.
 
-The planner classifies each modified step and job environment with its own full
-`diff_steps` / `diff_environments` (default options). So a `max_depth` cut-off on the
-caller's diff loses nothing. A root cut off at depth 0 is re-diffed in full.
+The planner classifies each modified step and job environment with a full
+`diff_steps` / `diff_environments`.
 
 ## Mutation kinds
 
@@ -71,10 +83,16 @@ space uses.
 ## Tests
 
 `crates/openjd-model/src/test_job_apply.rs`. `JobRebuilder` is an in-memory store that,
-like a real adapter, maps new step indices to its own ids once. It also rejects a step
-whose dependency is missing, and the removal of a step that still has dependents. The
-oracle `apply(diff(a, b), a)` holds `b` (parameters, job environments and steps by
-name; each step's task set) for the example templates in both directions, for
-parameter-only changes, and for `max_depth` 0, 1 and unlimited. Other tests cover plan
+like a real adapter, maps new step indices to its own ids once. It rejects:
+- a step whose dependency is missing;
+- the removal of a step that still has dependents;
+- an environment insert past the end of the list;
+- a modify at the wrong index.
+
+The oracle: after `apply(a, b)` the store holds `b`. That covers parameters and steps by
+name, job environments in order, each step's task-definition order, and its task set.
+It is run in both directions for the example templates, for parameter-only changes,
+for job-environment inserts, moves and deletes, for a symbol-table-only step change,
+and for a definition reorder. Other tests cover plan
 order and kinds, policy refusal with zero writes, store veto, and resuming after a failed
 write.

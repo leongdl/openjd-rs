@@ -145,7 +145,7 @@ pub fn openjd_model::error::path_index(&[openjd_model::error::PathElement], usiz
 pub mod openjd_model::job
 pub mod openjd_model::job::apply
 #[non_exhaustive] pub enum openjd_model::job::apply::Action<'a>
-pub openjd_model::job::apply::Action::Environment(openjd_model::job::apply::Op<'a, openjd_model::job::Environment>)
+pub openjd_model::job::apply::Action::Environment(usize, openjd_model::job::apply::Op<'a, openjd_model::job::Environment>)
 pub openjd_model::job::apply::Action::Job(openjd_model::job::apply::Op<'a, openjd_model::job::Job>)
 pub openjd_model::job::apply::Action::Parameter(openjd_model::job::apply::Op<'a, openjd_model::job::JobParameter>)
 pub openjd_model::job::apply::Action::Step(openjd_model::job::apply::StepIndex, openjd_model::job::apply::Op<'a, openjd_model::job::Step>)
@@ -253,6 +253,7 @@ impl core::marker::StructuralPartialEq for openjd_model::job::apply::AllowList
 impl openjd_model::job::apply::MutationPolicy for openjd_model::job::apply::AllowList
 pub fn openjd_model::job::apply::AllowList::allows(&self, &openjd_model::job::apply::PlannedOp<'_>) -> core::result::Result<(), openjd_model::job::apply::Refusal>
 pub struct openjd_model::job::apply::ApplyPlan<'a>
+pub openjd_model::job::apply::ApplyPlan::diff: openjd_model::job::diff::DiffTree
 pub openjd_model::job::apply::ApplyPlan::ops: alloc::vec::Vec<openjd_model::job::apply::PlannedOp<'a>>
 impl openjd_model::job::apply::ApplyPlan<'_>
 pub fn openjd_model::job::apply::ApplyPlan<'_>::kinds(&self) -> alloc::collections::btree::set::BTreeSet<openjd_model::job::apply::MutationKind>
@@ -300,7 +301,7 @@ pub type openjd_model::job::apply::JobApplier::Error
 pub fn openjd_model::job::apply::JobApplier::begin(&mut self) -> core::result::Result<(), Self::Error>
 pub fn openjd_model::job::apply::JobApplier::check(&mut self, &openjd_model::job::apply::PlannedOp<'_>) -> core::result::Result<(), Self::Error>
 pub fn openjd_model::job::apply::JobApplier::commit(&mut self) -> core::result::Result<(), Self::Error>
-pub fn openjd_model::job::apply::JobApplier::environment(&mut self, openjd_model::job::apply::Op<'_, openjd_model::job::Environment>) -> core::result::Result<(), Self::Error>
+pub fn openjd_model::job::apply::JobApplier::environment(&mut self, usize, openjd_model::job::apply::Op<'_, openjd_model::job::Environment>) -> core::result::Result<(), Self::Error>
 pub fn openjd_model::job::apply::JobApplier::job(&mut self, openjd_model::job::apply::Op<'_, openjd_model::job::Job>) -> core::result::Result<(), Self::Error>
 pub fn openjd_model::job::apply::JobApplier::parameter(&mut self, openjd_model::job::apply::Op<'_, openjd_model::job::JobParameter>) -> core::result::Result<(), Self::Error>
 pub fn openjd_model::job::apply::JobApplier::step(&mut self, openjd_model::job::apply::StepIndex, openjd_model::job::apply::Op<'_, openjd_model::job::Step>) -> core::result::Result<(), Self::Error>
@@ -309,9 +310,9 @@ pub trait openjd_model::job::apply::MutationPolicy
 pub fn openjd_model::job::apply::MutationPolicy::allows(&self, &openjd_model::job::apply::PlannedOp<'_>) -> core::result::Result<(), openjd_model::job::apply::Refusal>
 impl openjd_model::job::apply::MutationPolicy for openjd_model::job::apply::AllowList
 pub fn openjd_model::job::apply::AllowList::allows(&self, &openjd_model::job::apply::PlannedOp<'_>) -> core::result::Result<(), openjd_model::job::apply::Refusal>
-pub fn openjd_model::job::apply::apply<A: openjd_model::job::apply::JobApplier>(&openjd_model::job::diff::DiffTree, &openjd_model::job::Job, &openjd_model::job::Job, &dyn openjd_model::job::apply::MutationPolicy, &mut A) -> core::result::Result<openjd_model::job::apply::ApplyReport, openjd_model::job::apply::ApplyError<<A as openjd_model::job::apply::JobApplier>::Error>>
+pub fn openjd_model::job::apply::apply<A: openjd_model::job::apply::JobApplier>(&openjd_model::job::Job, &openjd_model::job::Job, &dyn openjd_model::job::apply::MutationPolicy, &mut A) -> core::result::Result<openjd_model::job::apply::ApplyReport, openjd_model::job::apply::ApplyError<<A as openjd_model::job::apply::JobApplier>::Error>>
 pub fn openjd_model::job::apply::execute<A: openjd_model::job::apply::JobApplier>(&openjd_model::job::apply::ApplyPlan<'_>, &mut A, usize) -> core::result::Result<openjd_model::job::apply::ApplyReport, openjd_model::job::apply::ApplyError<<A as openjd_model::job::apply::JobApplier>::Error>>
-pub fn openjd_model::job::apply::plan<'a>(&openjd_model::job::diff::DiffTree, &'a openjd_model::job::Job, &'a openjd_model::job::Job) -> core::result::Result<openjd_model::job::apply::ApplyPlan<'a>, openjd_model::error::ModelError>
+pub fn openjd_model::job::apply::plan<'a>(&'a openjd_model::job::Job, &'a openjd_model::job::Job) -> core::result::Result<openjd_model::job::apply::ApplyPlan<'a>, openjd_model::error::ModelError>
 pub fn openjd_model::job::apply::validate<A: openjd_model::job::apply::JobApplier>(&openjd_model::job::apply::ApplyPlan<'_>, &dyn openjd_model::job::apply::MutationPolicy, &mut A) -> core::result::Result<(), openjd_model::job::apply::ApplyError<<A as openjd_model::job::apply::JobApplier>::Error>>
 pub type openjd_model::job::apply::StepIndex = usize
 pub mod openjd_model::job::create_job
