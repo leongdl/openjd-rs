@@ -22,7 +22,8 @@ use openjd_expr::ExprValue;
 
 fn job(yaml: &str, params: &[(&str, &str)]) -> Job {
     let v: serde_json::Value = serde_saphyr::from_str(yaml).unwrap();
-    let jt = decode_job_template(v, None, &CallerLimits::default()).unwrap();
+    let exts: &[&str] = &["TASK_CHUNKING"];
+    let jt = decode_job_template(v, Some(exts), &CallerLimits::default()).unwrap();
     let mut input = JobParameterInputValues::new();
     for (k, val) in params {
         input.insert((*k).into(), ExprValue::String((*val).into()));
@@ -723,4 +724,163 @@ fn adding_or_removing_a_step_with_step_environments_carries_env_kinds() {
         "{:?}",
         rm.kinds
     );
+}
+
+// ─── kind classification (one edit per row) ─────────────────────────
+
+const KINDS: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: Kinds
+parameterDefinitions:
+  - {name: P, type: STRING, default: a}
+jobEnvironments:
+  - {name: J1, description: d, variables: {V: "{{Param.P}}"}}
+  - {name: J2, variables: {V: "2"}}
+steps:
+  - name: A
+    stepEnvironments:
+      - {name: SE1, variables: {V: "1"}}
+      - {name: SE2, variables: {V: "2"}}
+    hostRequirements:
+      amounts:
+        - {name: amount.worker.vcpu, min: 2}
+    script:
+      actions:
+        onRun: {command: a}
+  - name: B
+    script:
+      actions:
+        onRun: {command: b}
+"#;
+
+fn kinds_for(edit: impl Fn(&str) -> String, params: &[(&str, &str)]) -> Vec<MutationKind> {
+    let (a, b) = (job(KINDS, &[]), job(&edit(KINDS), params));
+    roundtrip(&a, &b);
+    plan(&a, &b).unwrap().kinds().into_iter().collect()
+}
+
+#[test]
+fn each_kind_comes_from_its_own_edit() {
+    use MutationKind::*;
+    let same = |t: &str| t.to_string();
+    let cases: Vec<(&str, Vec<MutationKind>, Vec<MutationKind>)> = vec![
+        (
+            "job env reads P",
+            kinds_for(same, &[("P", "b")]),
+            vec![ParameterValue, EnvSymbols],
+        ),
+        (
+            "job env description",
+            kinds_for(|t| t.replace("description: d", "description: e"), &[]),
+            vec![EnvMetadata],
+        ),
+        (
+            "job envs reordered",
+            kinds_for(
+                |t| {
+                    t.replace(
+                        "  - {name: J1, description: d, variables: {V: \"{{Param.P}}\"}}\n  - {name: J2, variables: {V: \"2\"}}\n",
+                        "  - {name: J2, variables: {V: \"2\"}}\n  - {name: J1, description: d, variables: {V: \"{{Param.P}}\"}}\n",
+                    )
+                },
+                &[],
+            ),
+            vec![EnvReorder],
+        ),
+        (
+            "steps reordered",
+            kinds_for(
+                |t| {
+                    let (head, rest) = t.split_once("  - name: A\n").unwrap();
+                    let (a, b) = rest.split_once("  - name: B\n").unwrap();
+                    format!("{head}  - name: B\n{b}  - name: A\n{a}")
+                },
+                &[],
+            ),
+            vec![StepReorder],
+        ),
+        (
+            "extensions",
+            kinds_for(
+                |t| {
+                    t.replace(
+                        "name: Kinds\n",
+                        "name: Kinds\nextensions: [TASK_CHUNKING]\n",
+                    )
+                },
+                &[],
+            ),
+            vec![JobExtensions],
+        ),
+        (
+            "host requirements",
+            kinds_for(|t| t.replace("min: 2}", "min: 4}"), &[]),
+            vec![StepHostRequirements],
+        ),
+        (
+            "step envs reordered",
+            kinds_for(
+                |t| {
+                    t.replace(
+                        "      - {name: SE1, variables: {V: \"1\"}}\n      - {name: SE2, variables: {V: \"2\"}}\n",
+                        "      - {name: SE2, variables: {V: \"2\"}}\n      - {name: SE1, variables: {V: \"1\"}}\n",
+                    )
+                },
+                &[],
+            ),
+            vec![EnvReorder],
+        ),
+        (
+            "step env added",
+            kinds_for(
+                |t| {
+                    t.replace(
+                        "      - {name: SE2, variables: {V: \"2\"}}\n",
+                        "      - {name: SE2, variables: {V: \"2\"}}\n      - {name: SE3, variables: {V: \"3\"}}\n",
+                    )
+                },
+                &[],
+            ),
+            vec![EnvAdd],
+        ),
+        (
+            "step env removed",
+            kinds_for(
+                |t| t.replace("      - {name: SE2, variables: {V: \"2\"}}\n", ""),
+                &[],
+            ),
+            vec![EnvRemove],
+        ),
+        (
+            "step env variable",
+            kinds_for(
+                |t| {
+                    t.replace(
+                        "{name: SE1, variables: {V: \"1\"}}",
+                        "{name: SE1, variables: {V: \"9\"}}",
+                    )
+                },
+                &[],
+            ),
+            vec![EnvVariables],
+        ),
+    ];
+    for (what, got, want) in cases {
+        assert_eq!(got, want, "{what}");
+    }
+}
+
+#[test]
+fn a_step_named_like_a_parameter_is_not_a_parameter_change() {
+    let t = KINDS.replace("  - name: B\n", "  - name: P\n");
+    let (a, b) = (
+        job(&t, &[]),
+        job(&t.replace("command: b}", "command: b2}"), &[]),
+    );
+    let p = plan(&a, &b).unwrap();
+    assert_eq!(
+        p.kinds().into_iter().collect::<Vec<_>>(),
+        vec![MutationKind::StepScript]
+    );
+    roundtrip(&a, &b);
 }
