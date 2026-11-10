@@ -120,14 +120,24 @@ pub struct ProductDelta {
     pub removed: Vec<TaskBox>,
 }
 
+/// Whether definition order decides task order: no `combination`, or `*`,
+/// which is the plain product in definition order. An explicit combination
+/// decides task order itself.
+pub(crate) fn definitions_fix_task_order(space: &StepParameterSpace) -> bool {
+    matches!(
+        space.combination.as_deref().map(str::trim),
+        None | Some("*")
+    )
+}
+
 /// Compute the task delta between two steps' parameter spaces. `None` is a
 /// step without a parameter space (one task with no parameters).
 pub fn task_delta(old: Option<&StepParameterSpace>, new: Option<&StepParameterSpace>) -> TaskDelta {
     if old == new {
-        // `IndexMap ==` ignores definition order, but without a combination
-        // that order is the task order, so every task index moves.
+        // `IndexMap ==` ignores definition order, but without an explicit
+        // combination that order is the task order, so every task index moves.
         let order_changed = matches!((old, new), (Some(a), Some(b))
-            if a.combination.is_none()
+            if definitions_fix_task_order(a)
                 && !a.task_parameter_definitions.keys().eq(b.task_parameter_definitions.keys()));
         if order_changed {
             return TaskDelta::Fallback {

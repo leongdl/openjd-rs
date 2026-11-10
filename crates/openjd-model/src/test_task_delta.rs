@@ -302,6 +302,27 @@ fn repeated_range_values_fall_back() {
     let s = space(vec![("C", strs(&["x", "x"]))], None);
     let t = space(vec![("C", strs(&["x"]))], None);
     assert!(is_fallback(&task_delta(Some(&s), Some(&t))));
+    // The repeat is in a dimension that did not change.
+    let u = space(vec![("C", strs(&["a", "a"])), ("G", ints("1-2"))], None);
+    let v = space(vec![("C", strs(&["a", "a"])), ("G", ints("1"))], None);
+    assert!(is_fallback(&task_delta(Some(&u), Some(&v))));
+    assert!(is_fallback(&task_delta(Some(&v), Some(&u))));
+}
+
+#[test]
+fn a_retyped_parameter_falls_back() {
+    // STRING and PATH values can be spelled the same.
+    let a = space(vec![("F", strs(&["a", "b"]))], None);
+    let b = space(vec![("F", paths(&["a", "b", "c"]))], None);
+    assert!(is_fallback(&task_delta(Some(&a), Some(&b))));
+    assert!(is_fallback(&task_delta(Some(&b), Some(&a))));
+}
+
+#[test]
+fn a_star_combination_reorder_falls_back() {
+    let a = space(vec![("X", ints("1-2")), ("Y", ints("3-4"))], Some("*"));
+    let b = space(vec![("Y", ints("3-4")), ("X", ints("1-2"))], Some(" * "));
+    assert!(is_fallback(&task_delta(Some(&a), Some(&b))));
 }
 
 #[test]
@@ -320,6 +341,8 @@ fn combination_must_name_each_parameter_once_with_star_only() {
     fb("");
     fb("(A, B)");
     fb("A * C");
+    // A combination that leaves out a definition.
+    fb("A");
     // Whitespace is fine.
     assert!(!is_fallback(&task_delta(
         Some(&p(Some(" A *B "), "7-8")),

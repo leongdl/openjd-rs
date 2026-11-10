@@ -22,6 +22,11 @@ tree in `ApplyPlan::diff`. `Op::Modify::node` indexes that tree. A caller's tree
 with `max_depth` or `with_resolved_symtab(false)` can mark a changed step `Unchanged`, so
 the plan never takes one.
 
+`plan` refuses, with `ModelError::ModelValidation`, a job that repeats a step name, a job
+environment name, or a step environment name within one step. Template validation rejects
+these, so only a hand-built `Job` has one. The diff reports the copies as a single
+`<collection>.duplicates` field change, which has no op and no kind of its own to gate.
+
 ## Plan order
 
 1. `Action::Job`: one `Modify` when the root has its own field changes (name,
@@ -47,6 +52,14 @@ the plan never takes one.
      still writes the new definition.
 5. Removed steps in **reverse topological order of the old step graph**, dependents first.
 
+The index in `Step(j, Add)` is the step's final position, `new.steps[j]`. Adds arrive in
+topological order, not index order, so `j` can be past the end of the store's list at the
+time (`[A]` to `[B (dependsOn C), A, C]` adds C at 2, then B at 0). A store that keeps step
+rows in order places the added steps by `j` once the plan is done, in ascending `j`, after
+the removes and after any `Job` op's `StepReorder` of the shared steps. `Tasks { step: j }`
+also indexes `new.steps`, and needs no `Step` op before it: a store resolves `j` from the
+new job, as it does for `Step(j, …)`.
+
 Adds and modifies come before removes. A step therefore exists before any step gains an
 edge to it, and by the time a step is removed nothing still depends on it, because the
 new job can't name it. `StepIndex` is `DiffNode::step_index`: `new.steps[j]` for steps 4,
@@ -57,7 +70,12 @@ The planner classifies each modified step and job environment with a full
 
 A task-definition reorder under an explicit `combination` produces no op: the
 combination fixes task order, and the diff reports such a step `Unchanged`. A store
-that persists definition order verbatim keeps the old order.
+that persists definition order verbatim keeps the old order. `combination: "*"` is not
+explicit: it is the product in definition order, so there a reorder is a `Replace`.
+
+A float parameter whose literal changes form only (`1.0` to `1.00`) compares equal, so it
+plans no `ParameterValue` op and the store keeps the old spelling. A step or environment
+that reads the parameter still gets its symbol-table kind (see [job diff](job-diff.md)).
 
 ## Mutation kinds
 
@@ -66,7 +84,7 @@ every one. `AllowList` is the default policy.
 
 | kind | from |
 |---|---|
-| `JobMetadata`, `JobExtensions`, `StepReorder`, `EnvReorder` | root field changes |
+| `JobMetadata`, `JobExtensions`, `StepReorder`, `EnvReorder` | root field changes; `EnvReorder` also from a step's `stepEnvironments` order |
 | `ParameterValue`, `ParameterAdd`, `ParameterRemove` | parameter node status |
 | `EnvVariables`, `EnvScript`, `EnvMetadata`, `EnvSymbols`, `EnvAdd`, `EnvRemove` | environment fields, `script` child, status (job or step scope) |
 | `StepMetadata`, `StepScript`, `StepHostRequirements`, `StepDependencies`, `StepSymbols` | step fields and children |
@@ -83,6 +101,8 @@ space uses.
 - `validate` asks the policy about every op first, then `JobApplier::check` about every
   op. The first refusal returns `ApplyError::Refused` or `ApplyError::Store` with the
   op's index, and nothing has been written.
+- `execute` does not validate. `ApplyPlan::ops` is public, so a caller that edits a plan
+  after `validate` must validate it again. `apply` runs both.
 - `execute` calls `begin`, the trait method for each op from `resume_from` on, then
   `commit`. A failed write returns `ApplyError::Store { op }`. Ops before `op` were
   applied, so `execute(plan, store, op)` resumes, provided the store's writes are
@@ -95,15 +115,18 @@ like a real adapter, maps new step indices to its own ids once. It rejects:
 - a step whose dependency is missing;
 - the removal of a step that still has dependents;
 - an environment insert past the end of the list;
-- a modify at the wrong index.
+- a modify at the wrong index;
+- an added step placed past the end of the list. It places adds by index on `commit`.
 
-The oracle: after `apply(a, b)` the store holds `b`. That covers parameters and steps by
-name, and job environments in order. It also covers each step's task-definition order
+The oracle: after `apply(a, b)` the store holds `b`. That covers parameters, steps by
+name and in order, and job environments in order. It also covers each step's task-definition order
 where that decides task order (no `combination`), and its task list. The task list is
 compared in order, except after a `Boxes` op, where appends are expected to land after
 the old tasks.
 It is run in both directions for the example templates, for parameter-only changes,
 for job-environment inserts, moves and deletes, for a symbol-table-only step change,
-and for a definition reorder. Other tests cover plan
-order and kinds, policy refusal with zero writes, store veto, and resuming after a failed
-write.
+for a definition reorder, and for step graphs where topological order differs from index
+order (adds and removes). Other tests cover plan order and kinds, policy refusal with zero
+writes, store veto, resuming after a failed write, repeated names, and `combination: "*"`.
+Every kind is produced by some test, and for each one a policy that allows every other kind
+in that plan refuses it with no writes.

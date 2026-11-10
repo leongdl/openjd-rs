@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::error::ModelError;
 use crate::job::apply::{
     apply, execute, plan, validate, Action, AllowList, ApplyError, JobApplier, MutationKind, Op,
     TaskChange,
@@ -78,6 +79,11 @@ struct JobRebuilder {
     /// is allowed to differ from the new iterator order.
     boxed: std::collections::BTreeSet<String>,
     new_names: Vec<String>,
+    /// Step rows in store order.
+    order: Vec<String>,
+    /// Added steps, placed at their final index on commit: adds arrive in
+    /// topological order, so an index can be past the current end.
+    pending: Vec<(usize, String)>,
 }
 
 impl JobRebuilder {
@@ -104,6 +110,8 @@ impl JobRebuilder {
                 .collect(),
             boxed: Default::default(),
             new_names,
+            order: old.steps.iter().map(|s| s.name.clone()).collect(),
+            pending: Vec::new(),
         }
     }
 
@@ -125,13 +133,14 @@ impl JobRebuilder {
             .map(|s| (s.name.clone(), s.clone()))
             .collect();
         assert_eq!(self.steps, steps, "steps");
+        assert_eq!(self.order, self.new_names, "step order");
         for s in &new.steps {
             // `Step ==` ignores definition order; it decides task order only
             // without a combination.
             let order = |s: &Step| {
                 s.parameter_space
                     .as_ref()
-                    .filter(|p| p.combination.is_none())
+                    .filter(|p| crate::job::task_delta::definitions_fix_task_order(p))
                     .map(|p| {
                         p.task_parameter_definitions
                             .keys()
@@ -187,6 +196,20 @@ impl JobApplier for JobRebuilder {
                 .position(|n| **n == e.name)
                 .unwrap_or(usize::MAX)
         });
+        // Likewise the shared steps.
+        let names = &self.new_names;
+        self.order
+            .sort_by_key(|s| names.iter().position(|n| n == s).unwrap_or(usize::MAX));
+        Ok(())
+    }
+    fn commit(&mut self) -> Result<(), String> {
+        self.pending.sort();
+        for (j, name) in std::mem::take(&mut self.pending) {
+            if j > self.order.len() {
+                return Err(format!("step {name} at {j} is past the end"));
+            }
+            self.order.insert(j, name);
+        }
         Ok(())
     }
     fn parameter(&mut self, op: Op<'_, JobParameter>) -> Result<(), String> {
@@ -241,6 +264,9 @@ impl JobApplier for JobRebuilder {
                         return Err(format!("{} depends on missing {}", new.name, d.depends_on));
                     }
                 }
+                if matches!(op, Op::Add { .. }) {
+                    self.pending.push((j, new.name.clone()));
+                }
                 self.steps.insert(new.name.clone(), new.clone());
             }
             Op::Remove { old } => {
@@ -260,6 +286,7 @@ impl JobApplier for JobRebuilder {
                 }
                 self.steps.remove(&old.name);
                 self.tasks.remove(&old.name);
+                self.order.retain(|n| *n != old.name);
             }
         }
         Ok(())
@@ -566,8 +593,9 @@ steps:
 
 fn envs(list: &str) -> String {
     let mut out = String::new();
-    for n in list.split(',').filter(|n| !n.is_empty()) {
-        out.push_str(&format!("  - {{name: {n}, variables: {{X: \"{n}\"}}}}\n"));
+    for e in list.split(',').filter(|e| !e.is_empty()) {
+        let (n, x) = e.split_once('=').unwrap_or((e, e));
+        out.push_str(&format!("  - {{name: {n}, variables: {{X: \"{x}\"}}}}\n"));
     }
     let head = ENVS.split("jobEnvironments:\n").next().unwrap();
     let tail = &ENVS[ENVS.index_of("steps:")..];
@@ -631,6 +659,7 @@ fn a_definition_reorder_replaces_the_tasks() {
         vec![MutationKind::TaskReplace]
     );
     roundtrip(&a, &b);
+    each_kind_refused(&a, &b);
 }
 
 #[test]
@@ -697,6 +726,7 @@ fn a_space_rewrite_with_the_same_tasks_still_writes_the_step() {
     );
     roundtrip(&a, &b);
     roundtrip(&b, &a);
+    each_kind_refused(&a, &b);
     // `F * G` written out is the default order: same tasks, same order.
     let fg = one_step(&format!("{FG}      combination: \"F * G\"\n"));
     roundtrip(&a, &job(&fg, &[]));
@@ -756,7 +786,23 @@ steps:
 fn kinds_for(edit: impl Fn(&str) -> String, params: &[(&str, &str)]) -> Vec<MutationKind> {
     let (a, b) = (job(KINDS, &[]), job(&edit(KINDS), params));
     roundtrip(&a, &b);
-    plan(&a, &b).unwrap().kinds().into_iter().collect()
+    each_kind_refused(&a, &b).into_iter().collect()
+}
+
+/// For every kind in `plan(a, b)`, a policy allowing all the others refuses
+/// that kind with no writes. Returns the plan's kinds.
+fn each_kind_refused(a: &Job, b: &Job) -> std::collections::BTreeSet<MutationKind> {
+    let kinds = plan(a, b).unwrap().kinds();
+    for k in &kinds {
+        let others = AllowList::of(kinds.iter().copied().filter(|o| o != k));
+        let mut r = Recorder::default();
+        match apply(a, b, &others, &mut r) {
+            Err(ApplyError::Refused { refusal, .. }) => assert_eq!(refusal.kind, *k),
+            other => panic!("{k:?} not refused: {other:?}"),
+        }
+        assert_eq!(r.writes, 0);
+    }
+    kinds
 }
 
 #[test]
@@ -864,10 +910,59 @@ fn each_kind_comes_from_its_own_edit() {
             ),
             vec![EnvVariables],
         ),
+        (
+            "job name",
+            kinds_for(|t| t.replace("name: Kinds", "name: Kinds2"), &[]),
+            vec![JobMetadata],
+        ),
+        (
+            "job env gains a script",
+            kinds_for(
+                |t| {
+                    t.replace(
+                        "{name: J2, variables: {V: \"2\"}}",
+                        "{name: J2, variables: {V: \"2\"}, script: {actions: {onEnter: {command: e}}}}",
+                    )
+                },
+                &[],
+            ),
+            vec![EnvScript],
+        ),
+        (
+            "step description",
+            kinds_for(
+                |t| t.replace("  - name: B\n", "  - name: B\n    description: x\n"),
+                &[],
+            ),
+            vec![StepMetadata],
+        ),
+        (
+            "parameter added",
+            kinds_for(
+                |t| {
+                    t.replace(
+                        "  - {name: P, type: STRING, default: a}\n",
+                        "  - {name: P, type: STRING, default: a}\n  - {name: Q, type: STRING, default: q}\n",
+                    )
+                },
+                &[],
+            ),
+            vec![ParameterAdd],
+        ),
     ];
     for (what, got, want) in cases {
         assert_eq!(got, want, "{what}");
     }
+    // The reverse of the add.
+    let q = KINDS.replace(
+        "  - {name: P, type: STRING, default: a}\n",
+        "  - {name: P, type: STRING, default: a}\n  - {name: Q, type: STRING, default: q}\n",
+    );
+    let removed = each_kind_refused(&job(&q, &[]), &job(KINDS, &[]));
+    assert_eq!(
+        removed.into_iter().collect::<Vec<_>>(),
+        vec![ParameterRemove]
+    );
 }
 
 #[test]
@@ -883,4 +978,160 @@ fn a_step_named_like_a_parameter_is_not_a_parameter_change() {
         vec![MutationKind::StepScript]
     );
     roundtrip(&a, &b);
+}
+
+// ─── audit round 4 regressions ──────────────────────────────────────
+
+/// Steps from `"A>B,B,C@2"`: `A` depends on `B`; `@2` changes `C`'s command.
+fn graph(steps: &str, envs: &str) -> String {
+    let mut out = String::from("specificationVersion: jobtemplate-2023-09\nname: G\n");
+    if !envs.is_empty() {
+        out.push_str("jobEnvironments:\n");
+        for e in envs.split(',') {
+            out.push_str(&format!("  - {{name: {e}, variables: {{X: \"1\"}}}}\n"));
+        }
+    }
+    out.push_str("steps:\n");
+    for s in steps.split(',') {
+        let (s, cmd) = s.split_once('@').unwrap_or((s, ""));
+        let mut parts = s.split('>');
+        let name = parts.next().unwrap();
+        out.push_str(&format!("  - name: {name}\n"));
+        let deps: Vec<&str> = parts.collect();
+        if !deps.is_empty() {
+            out.push_str("    dependencies:\n");
+            for d in deps {
+                out.push_str(&format!("      - {{dependsOn: {d}}}\n"));
+            }
+        }
+        out.push_str(&format!(
+            "    script:\n      actions:\n        onRun: {{command: run{cmd}}}\n"
+        ));
+    }
+    out
+}
+
+#[test]
+fn adds_follow_dependencies_not_step_index() {
+    // A depends on B, which comes after it: index order would add A first.
+    // Reversed, the removes must go dependents first (A before B).
+    for (from, to) in [("C", "A>B,B,C"), ("A", "B>C,A,C"), ("A,B>A,C", "C")] {
+        let (a, b) = (job(&graph(from, ""), &[]), job(&graph(to, ""), &[]));
+        roundtrip(&a, &b);
+        roundtrip(&b, &a);
+    }
+}
+
+#[test]
+fn step_adds_carry_their_final_index() {
+    // The add of C (index 2) is planned before B (index 0), while the store
+    // holds one step: a store places adds by index once the plan is done.
+    let (a, b) = (job(&graph("A", ""), &[]), job(&graph("B>C,A,C", ""), &[]));
+    let p = plan(&a, &b).unwrap();
+    let adds: Vec<usize> = p
+        .ops
+        .iter()
+        .filter_map(|o| match o.action {
+            Action::Step(j, Op::Add { .. }) => Some(j),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(adds, vec![2, 0]);
+    roundtrip(&a, &b);
+}
+
+#[test]
+fn job_environment_writes_go_in_new_index_order() {
+    // The diff lists A (shared) before Z (added); Z goes in front of A, so
+    // modifying A first would use an index A does not have yet.
+    for (from, to) in [("A=1", "Z=1,A=2"), ("A=1,B=1", "Z=1,A=2,Q=1,B=2")] {
+        let (a, b) = (job(&envs(from), &[]), job(&envs(to), &[]));
+        roundtrip(&a, &b);
+        roundtrip(&b, &a);
+    }
+}
+
+#[test]
+fn a_step_change_is_not_an_environment_op() {
+    // Step B and job environment E2 are both at index 1.
+    let a = job(&graph("A,B", "E1,E2"), &[]);
+    let b = job(&graph("A,B@2", "E1,E2"), &[]);
+    let p = plan(&a, &b).unwrap();
+    assert!(
+        p.ops
+            .iter()
+            .all(|o| !matches!(o.action, Action::Environment(..))),
+        "{:?}",
+        p.ops
+    );
+    assert_eq!(
+        p.kinds().into_iter().collect::<Vec<_>>(),
+        vec![MutationKind::StepScript]
+    );
+    roundtrip(&a, &b);
+}
+
+#[test]
+fn repeated_names_are_refused() {
+    let a = job(&graph("A,B", "E1"), &[]);
+    let mut env = a.clone();
+    let mut e = env.job_environments.as_ref().unwrap()[0].clone();
+    e.variables = None;
+    env.job_environments.as_mut().unwrap().push(e);
+    let mut step = a.clone();
+    let mut s = step.steps[1].clone();
+    s.script = a.steps[0].script.clone();
+    step.steps.push(s);
+    let mut step_env = a.clone();
+    let se = env.job_environments.as_ref().unwrap()[0].clone();
+    step_env.steps[0].step_environments = Some(vec![se.clone(), se]);
+    for bad in [&env, &step, &step_env] {
+        assert!(matches!(plan(&a, bad), Err(ModelError::ModelValidation(_))));
+        assert!(matches!(plan(bad, &a), Err(ModelError::ModelValidation(_))));
+    }
+}
+
+#[test]
+fn a_star_combination_keeps_definition_order() {
+    // `*` is the plain product in definition order, so a reorder moves
+    // every task. Templates reject a bare `*`; only a built space has one.
+    let a = job(&one_step(FG), &[]);
+    let mut x = a.clone();
+    let mut y = a.clone();
+    let star = |j: &mut Job, rev: bool| {
+        let s = j.steps[0].parameter_space.as_mut().unwrap();
+        s.combination = Some("*".into());
+        if rev {
+            s.task_parameter_definitions.reverse();
+        }
+    };
+    star(&mut x, false);
+    star(&mut y, true);
+    let p = plan(&x, &y).unwrap();
+    assert!(
+        p.kinds().contains(&MutationKind::TaskReplace),
+        "{:?}",
+        p.kinds()
+    );
+    roundtrip(&x, &y);
+}
+
+#[test]
+fn every_kind_is_refused_on_its_own() {
+    let pairs = [
+        (job(V1, &[]), job(V2, &[])),
+        (job(CAMS1, &[]), job(CAMS2, &[])),
+        (job(ENVS, &[]), job(&envs("E3,E9"), &[("S", "z")])),
+        (
+            job(&graph("A,B>A", "E1"), &[]),
+            job(&graph("B,C>B@2", "E2"), &[]),
+        ),
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    for (a, b) in &pairs {
+        for (x, y) in [(a, b), (b, a)] {
+            seen.extend(each_kind_refused(x, y));
+        }
+    }
+    assert!(seen.len() >= 11, "{seen:?}");
 }

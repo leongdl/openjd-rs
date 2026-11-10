@@ -29,6 +29,8 @@ use std::fmt;
 use indexmap::IndexMap;
 use serde::Serialize;
 
+use crate::job::task_delta::definitions_fix_task_order;
+
 use crate::job::{
     Action, EmbeddedFile, Environment, EnvironmentActions, EnvironmentScript, HostRequirements,
     Job, JobParameter, Step, StepActions, StepParameterSpace, StepScript, TaskParameter,
@@ -432,11 +434,11 @@ impl Subject<'_> {
     }
 }
 
-/// Definition order decides task order only when there is no `combination`
-/// (an explicit one decides it instead, and `==` already compares it).
+/// Definition order decides task order only without an explicit
+/// `combination` (one decides it instead, and `==` already compares it).
 fn space_order_eq(a: Option<&StepParameterSpace>, b: Option<&StepParameterSpace>) -> bool {
     match (a, b) {
-        (Some(a), Some(b)) if a.combination.is_none() && b.combination.is_none() => a
+        (Some(a), Some(b)) if definitions_fix_task_order(a) && definitions_fix_task_order(b) => a
             .task_parameter_definitions
             .keys()
             .eq(b.task_parameter_definitions.keys()),
@@ -754,11 +756,11 @@ impl<'a> Builder<'a> {
                     combination,
                 } = a;
                 self.field(id, "combination", combination, &b.combination);
-                // Without a combination, definition order fixes task order.
+                // Without an explicit combination, definition order fixes task order.
                 self.keyed(
                     id,
                     "taskParameterDefinitions",
-                    combination.is_none() && b.combination.is_none(),
+                    definitions_fix_task_order(a) && definitions_fix_task_order(b),
                     task_parameter_definitions
                         .iter()
                         .map(|(k, v)| (k.as_str(), v)),

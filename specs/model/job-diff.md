@@ -32,7 +32,7 @@ calling `diff_environments`.
 2. Push the root pair. For each pair, the node's `DiffStatus` is decided **when the node is
    created**, by one `PartialEq` of the whole subtree: `Unchanged`, `Modified`, `Added`
    (new side only), or `Removed` (old side only). For a job, step or parameter space with
-   no `combination`, the check also compares task parameter definition order, which
+   no `combination` (or `*`), the check also compares task parameter definition order, which
    `IndexMap` equality ignores but which then fixes task iteration order and so task
    indices. With an explicit `combination`, that string decides the order instead.
 3. Pop pairs from a FIFO queue. Expanding a `Modified` node records its own differing
@@ -54,7 +54,7 @@ descended.
 | collection | matched by | order recorded as |
 |---|---|---|
 | `steps`, `jobEnvironments`, `stepEnvironments`, `embeddedFiles` | `name` | `<collection>.order` field change |
-| `taskParameterDefinitions` | map key | `taskParameterDefinitions.order` when there is no `combination` (then it fixes task order) |
+| `taskParameterDefinitions` | map key | `taskParameterDefinitions.order` when there is no `combination`, or it is `*` (then it fixes task order) |
 | `parameters` | map key | not a change |
 | `variables` | map key | not a change; entries are `variables.<KEY>` |
 | `hostRequirements.amounts` / `attributes` | `name` | `<collection>.order`; entries are `<collection>[<name>]` |
@@ -127,7 +127,7 @@ per-parameter range sizes, not their product. Each range value is keyed as a str
 hashed, so a 10^6-frame range takes seconds in a release build. Interval arithmetic on
 `RangeExpr` would remove that and is left for later. `old` is the whole old space, and
 `old.index_of(task)` is the row-major (rightmost fastest) position of a task at job
-creation. Equal spaces are `Unchanged`. A different dimension order (a definition reorder with no `combination`, or a `combination` that orders the dimensions differently), or a different relative order of the values both sides share in any range, is `Fallback`, because kept tasks move; anything else is `Fallback { reason }`, where
+creation. Equal spaces are `Unchanged`. A different dimension order (a definition reorder with no `combination` or with `*`, or a `combination` that orders the dimensions differently), or a different relative order of the values both sides share in any range, is `Fallback`, because kept tasks move; anything else is `Fallback { reason }`, where
 the caller enumerates and diffs by value. Tests: `src/test_task_delta.rs`, which checks
 each decomposition against brute-force enumeration.
 

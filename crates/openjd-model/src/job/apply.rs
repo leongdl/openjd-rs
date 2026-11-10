@@ -509,6 +509,46 @@ fn env_ops<'a>(
     out.extend(removes.into_iter().chain(writes).map(|(_, op)| op));
 }
 
+/// Refuse a job that repeats a step, job-environment or step-environment
+/// name. Template validation rejects these, so only a hand-built `Job` has
+/// one; the diff reports the copies as one `<collection>.duplicates` field
+/// change, which has no op and no kind of its own to gate.
+fn check_unique_names(job: &Job) -> Result<(), ModelError> {
+    use crate::error::{PathElement, ValidationErrors};
+    use std::collections::HashSet;
+    let mut errors = ValidationErrors::default();
+    let mut repeats = |path: &[PathElement], names: &mut dyn Iterator<Item = &String>| {
+        let mut seen = HashSet::new();
+        for (i, n) in names.enumerate() {
+            if !seen.insert(n) {
+                let mut at = path.to_vec();
+                at.extend([PathElement::Index(i), PathElement::Field("name".into())]);
+                errors.add(
+                    &at,
+                    format!("repeated name '{n}': job::apply needs unique names"),
+                );
+            }
+        }
+    };
+    let field = |f: &str| PathElement::Field(f.into());
+    repeats(&[field("steps")], &mut job.steps.iter().map(|s| &s.name));
+    repeats(
+        &[field("jobEnvironments")],
+        &mut job.job_environments.iter().flatten().map(|e| &e.name),
+    );
+    for (i, s) in job.steps.iter().enumerate() {
+        repeats(
+            &[
+                field("steps"),
+                PathElement::Index(i),
+                field("stepEnvironments"),
+            ],
+            &mut s.step_environments.iter().flatten().map(|e| &e.name),
+        );
+    }
+    errors.into_result("Job")
+}
+
 /// Build the ordered plan from the stored job `old` to the requested `new`.
 ///
 /// The plan diffs the jobs itself, always with the default [`DiffOptions`]:
@@ -516,6 +556,8 @@ fn env_ops<'a>(
 /// can mark a changed step `Unchanged`, and the plan must not miss writes.
 /// The tree is kept in [`ApplyPlan::diff`]; `Op::Modify::node` indexes it.
 pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError> {
+    check_unique_names(old)?;
+    check_unique_names(new)?;
     let diff = diff_jobs(old, new, &DiffOptions::default());
     let mut ops = Vec::new();
     if !diff.is_changed() {
@@ -528,7 +570,7 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
     for f in &root.field_changes {
         jk.insert(match f.field.as_str() {
             "extensions" => MutationKind::JobExtensions,
-            "steps.order" | "steps.duplicates" => MutationKind::StepReorder,
+            "steps.order" => MutationKind::StepReorder,
             "jobEnvironments" | "jobEnvironments.order" => MutationKind::EnvReorder,
             _ => MutationKind::JobMetadata,
         });
