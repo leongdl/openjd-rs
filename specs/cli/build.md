@@ -27,8 +27,9 @@ CLI's caller limits: the same decode, parameter preprocessing and `create_job` c
 ## Output
 
 The job as a `JobDocument` (`openjd_model::job::template_diff`), pretty JSON or YAML: the
-`Job`'s serde form with each environment's `variables` sorted by name, so the output is the
-same on every run (`Environment::variables` is a `HashMap`). It is serialized directly
+`Job`'s serde form with `parameters` and each environment's `variables` sorted by name, so
+the output is the same on every run (`create_job` fills `parameters` from a `HashMap`, and
+`Environment::variables` is a `HashMap`). It is serialized directly
 rather than through `serde_json::Value`. A `Value` object sorts its keys, which would
 reorder task parameter definitions and so change task order when the job is read back.
 `job_from_str` reads either format back, and `openjd diff --jobs` on two outputs of
@@ -38,4 +39,5 @@ reorder task parameter definitions and so change task order when the job is read
 Errors print `ERROR: …` and exit 1, as for every command.
 
 Tests: `crates/openjd-cli/tests/diff_tests.rs` (`jobs_round_trip_through_build`,
-`build_errors_and_bad_jobs`, `build_defaults_to_json_and_sorts_environment_variables`).
+`build_errors_and_bad_jobs`, `build_defaults_to_json_and_sorts_environment_variables`,
+`build_prints_the_same_job_on_every_run`).

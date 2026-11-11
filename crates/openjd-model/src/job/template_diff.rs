@@ -727,44 +727,48 @@ pub fn diff_built_jobs(old: Job, new: Job, options: &DiffOptions) -> TemplateDif
 
 // ─── assembly ───────────────────────────────────────────────────────
 
+/// A change's identity for the origin split: `(path, field, whole)`, where
+/// `whole` is the status of a whole-node change (added, removed, or
+/// modified and not expanded) and `None` for a field change. The status
+/// keeps an added node apart from a node at the same path that the other
+/// half leaves unexpanded, so the origin does not depend on the depth.
+type ChangeKey = (String, String, Option<DiffStatus>);
+
 enum OriginRule {
     All(Origin),
     Split {
-        template: HashSet<(String, String)>,
-        parameters: HashSet<(String, String)>,
+        template: HashSet<ChangeKey>,
+        parameters: HashSet<ChangeKey>,
     },
 }
 
 impl OriginRule {
-    fn classify(&self, path: &str, field: &str) -> Origin {
+    fn classify(&self, key: &ChangeKey) -> Origin {
         match self {
             Self::All(o) => *o,
             Self::Split {
                 template,
                 parameters,
-            } => {
-                let key = (path.to_string(), field.to_string());
-                match (template.contains(&key), parameters.contains(&key)) {
-                    (true, false) => Origin::Template,
-                    (false, true) => Origin::Parameters,
-                    _ => Origin::Both,
-                }
-            }
+            } => match (template.contains(key), parameters.contains(key)) {
+                (true, false) => Origin::Template,
+                (false, true) => Origin::Parameters,
+                _ => Origin::Both,
+            },
         }
     }
 }
 
-/// The `(path, field)` of every change in a job tree.
-fn change_keys(tree: &DiffTree) -> HashSet<(String, String)> {
+/// The key of every change in a job tree.
+fn change_keys(tree: &DiffTree) -> HashSet<ChangeKey> {
     let mut keys = HashSet::new();
     for (id, node) in tree.changed() {
         let path = tree.path(id);
         if node.status == DiffStatus::Modified && node.expanded {
             for fc in &node.field_changes {
-                keys.insert((path.clone(), fc.field.clone()));
+                keys.insert((path.clone(), fc.field.clone(), None));
             }
         } else {
-            keys.insert((path, String::new()));
+            keys.insert((path, String::new(), Some(node.status)));
         }
     }
     keys
@@ -784,13 +788,14 @@ fn assemble(
     old_job.parameters.sort_keys();
     new_job.parameters.sort_keys();
     let tree = diff_jobs(&old_job, &new_job, options);
-    let (old_doc, new_doc) = (to_json(&old_job), to_json(&new_job));
+    let (old_doc, new_doc) = (job_value(&old_job), job_value(&new_job));
     let mut changes = template;
     for (id, node) in tree.changed() {
         let path = tree.path(id);
         let segments = segments(&tree, id);
         let mut push = |field: String, before: Option<Shown>, after: Option<Shown>| {
-            let origin = rule.classify(&path, &field);
+            let whole = field.is_empty().then_some(node.status);
+            let origin = rule.classify(&(path.clone(), field.clone(), whole));
             let stage = job_stage(&path, &field, before.as_ref(), after.as_ref());
             changes.push(Change {
                 layer: Layer::Job,
@@ -873,6 +878,33 @@ fn to_json<T: Serialize + ?Sized>(v: &T) -> Value {
     serde_json::to_value(v).unwrap_or_else(|e| Value::String(format!("<not serializable: {e}>")))
 }
 
+/// A job as a `Value` for whole-node [`Shown::raw`]s: its [`JobDocument`]
+/// form, except that each step's `taskParameterDefinitions` is a list of
+/// `{name, definition}` in definition order. A `Value` object sorts its
+/// keys, and definition order is task order, so a map would lose it.
+fn job_value(job: &Job) -> Value {
+    let mut doc = to_json(&JobDocument(job));
+    for (i, step) in job.steps.iter().enumerate() {
+        let Some(space) = &step.parameter_space else {
+            continue;
+        };
+        let defs = space
+            .task_parameter_definitions
+            .iter()
+            .map(|(name, p)| json!({"name": name, "definition": to_json(p)}))
+            .collect();
+        if let Some(slot) = doc
+            .get_mut("steps")
+            .and_then(|s| s.get_mut(i))
+            .and_then(|s| s.get_mut("parameterSpace"))
+            .and_then(|s| s.get_mut("taskParameterDefinitions"))
+        {
+            *slot = Value::Array(defs);
+        }
+    }
+    doc
+}
+
 /// Path segments of a node, root first.
 fn segments(tree: &DiffTree, id: usize) -> Vec<String> {
     let mut out = Vec::new();
@@ -887,8 +919,9 @@ fn segments(tree: &DiffTree, id: usize) -> Vec<String> {
     out
 }
 
-/// Follow diff segments through a serialized job: `name[key]` selects a
-/// map entry, or the element of a list whose `name` is `key`.
+/// Follow diff segments through a [`job_value`]: `name[key]` selects a map
+/// entry, or the element of a list whose `name` is `key` (for a task
+/// parameter definition, that element's `definition`).
 ///
 /// Every diff segment is the serialized field name except an action's
 /// (`onRun`, `onEnter`, …), which the diff hangs on the script directly but
@@ -904,9 +937,16 @@ fn lookup<'v>(doc: &'v Value, segments: &[String]) -> Option<&'v Value> {
                 let key = rest.strip_suffix(']')?;
                 match v.get(coll)? {
                     Value::Object(m) => m.get(key),
-                    Value::Array(a) => a
-                        .iter()
-                        .find(|e| e.get("name").and_then(Value::as_str) == Some(key)),
+                    Value::Array(a) => {
+                        let e = a
+                            .iter()
+                            .find(|e| e.get("name").and_then(Value::as_str) == Some(key))?;
+                        if coll == "taskParameterDefinitions" {
+                            e.get("definition")
+                        } else {
+                            Some(e)
+                        }
+                    }
                     _ => None,
                 }
             }
@@ -998,24 +1038,47 @@ fn shown_node(node: &DiffNode, field: &str, raw: Value, job: &Job) -> Shown {
     Shown::new(raw, text)
 }
 
-/// A task parameter's range: `1-100`, `1-9:2`, `[1, 3]` or `[left, right]`.
+/// A task parameter's range: integers as range expressions (`1-100`,
+/// `1-9:2`, `1,3`; see [`int_range_text`]), other values as a list
+/// (`[left, right]`). A chunked one adds its chunk settings.
 fn range_text(p: &TaskParameter) -> String {
-    let ints = |r: &TaskParamRange<i64>| match r {
-        TaskParamRange::RangeExpr(e) => e.to_string(),
-        TaskParamRange::List(v) => list_text(v.iter().map(i64::to_string)),
-    };
     match p {
         TaskParameter::Int { range, chunks } => match chunks {
-            Some(c) => format!("{} chunks of {}", ints(range), c.default_task_count),
-            None => ints(range),
+            Some(c) => chunked_text(range, c),
+            None => int_range_text(range),
         },
-        TaskParameter::ChunkInt { range, chunks } => {
-            format!("{} chunks of {}", ints(range), chunks.default_task_count)
-        }
+        TaskParameter::ChunkInt { range, chunks } => chunked_text(range, chunks),
         TaskParameter::Float { range } => list_text(range.iter().map(Float64::to_display_string)),
         TaskParameter::String { range } | TaskParameter::Path { range } => {
             list_text(range.iter().cloned())
         }
+    }
+}
+
+/// `1-40 chunks of 10`, then `, target 5s` when `targetRuntimeSeconds` is
+/// set and `, noncontiguous` for a noncontiguous range constraint.
+fn chunked_text(range: &TaskParamRange<i64>, c: &crate::job::ResolvedChunks) -> String {
+    let mut s = format!(
+        "{} chunks of {}",
+        int_range_text(range),
+        c.default_task_count
+    );
+    if let Some(t) = c.target_runtime_seconds {
+        s.push_str(&format!(", target {t}s"));
+    }
+    if c.range_constraint == crate::template::RangeConstraint::Noncontiguous {
+        s.push_str(", noncontiguous");
+    }
+    s
+}
+
+/// Integer task parameter values, the same text in a change and in a task
+/// box: a range expression's canonical form, and a list as [`int_runs`],
+/// which writes an increasing list in that same form.
+fn int_range_text(r: &TaskParamRange<i64>) -> String {
+    match r {
+        TaskParamRange::RangeExpr(e) => e.to_string(),
+        TaskParamRange::List(v) => int_runs(v),
     }
 }
 
@@ -1428,14 +1491,13 @@ fn box_summary(b: &TaskBox) -> BoxSummary {
     }
 }
 
-/// A box dimension's values: integer runs as range expressions (`1-100`,
-/// `1-9:2`, `4`), other values comma-separated.
+/// A box dimension's values: integers as [`int_range_text`], other values
+/// comma-separated.
 fn values_text(p: &TaskParameter) -> String {
     match p {
-        TaskParameter::Int { range, .. } | TaskParameter::ChunkInt { range, .. } => match range {
-            TaskParamRange::RangeExpr(e) => e.to_string(),
-            TaskParamRange::List(v) => int_runs(v),
-        },
+        TaskParameter::Int { range, .. } | TaskParameter::ChunkInt { range, .. } => {
+            int_range_text(range)
+        }
         TaskParameter::Float { range } => range
             .iter()
             .map(Float64::to_display_string)
@@ -1445,7 +1507,8 @@ fn values_text(p: &TaskParameter) -> String {
     }
 }
 
-/// `[1,2,3,7,9,11]` -> `1-3,7-11:2`.
+/// `[1,2,3,7,9,11,4,5]` -> `1-3,7-11:2,4,5`: runs of three or more values
+/// with a positive step, as a range expression's canonical form writes them.
 fn int_runs(v: &[i64]) -> String {
     let mut parts = Vec::new();
     let mut i = 0;
@@ -1456,11 +1519,7 @@ fn int_runs(v: &[i64]) -> String {
             while j + 1 < v.len() && v[j + 1].checked_sub(v[j]) == Some(d) {
                 j += 1;
             }
-            // A step other than 1 needs three values to be a run.
-            if d != 1 && j - i < 2 {
-                j = i;
-            }
-            if j > i {
+            if j - i >= 2 {
                 parts.push(if d == 1 {
                     format!("{}-{}", v[i], v[j])
                 } else {
@@ -1676,7 +1735,9 @@ fn parameter_from_value(v: &Value) -> Result<JobParameter, String> {
 }
 
 /// An `ExprValue` from its derived serde form, e.g. `{"String": "x"}` or
-/// `{"ListString": [["a"], 48]}`. `hint` types an empty list.
+/// `{"ListString": [["a"], 48]}`. `hint` is the element type of a
+/// `ListList` (`list[int]` for `LIST[LIST[INT]]`), which an empty one
+/// cannot show; every other value's type comes from its tag.
 fn expr_value(v: &Value, hint: &ExprType) -> Result<ExprValue, String> {
     if v.as_str() == Some("Null") {
         return Ok(ExprValue::Null);
@@ -1780,11 +1841,14 @@ fn expr_value(v: &Value, hint: &ExprType) -> Result<ExprValue, String> {
 // ─── serde helpers ──────────────────────────────────────────────────
 
 /// A [`Job`] serialized as `openjd build` prints it: the job's serde form,
-/// except that environment `variables` are written sorted by name.
+/// except that `parameters` and each environment's `variables` are written
+/// sorted by name.
 ///
+/// `create_job` fills `Job::parameters` from a `HashMap` and
 /// `Environment::variables` is a `HashMap`, so the plain serde form of a job
-/// with more than one variable changes from run to run. This form is
-/// deterministic, and [`job_from_str`] reads it back.
+/// with more than one of either changes from run to run. This form is
+/// deterministic, and [`job_from_str`] reads it back. Task parameter
+/// definitions keep their order, which is task order.
 #[derive(Debug, Clone, Copy)]
 pub struct JobDocument<'a>(pub &'a Job);
 
@@ -1804,7 +1868,7 @@ impl Serialize for JobDocument<'_> {
             name,
             description,
             extensions,
-            parameters,
+            parameters: parameters.iter().collect(),
             steps: steps.iter().map(DocStep::new).collect(),
             job_environments: job_environments
                 .as_ref()
@@ -1814,14 +1878,14 @@ impl Serialize for JobDocument<'_> {
     }
 }
 
-/// Field names and attributes mirror [`Job`].
+/// Field names and attributes mirror [`Job`], with `parameters` sorted.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DocJob<'a> {
     name: &'a String,
     description: &'a Option<String>,
     extensions: &'a Option<Vec<ModelExtension>>,
-    parameters: &'a IndexMap<String, JobParameter>,
+    parameters: std::collections::BTreeMap<&'a String, &'a JobParameter>,
     steps: Vec<DocStep<'a>>,
     job_environments: Option<Vec<DocEnvironment<'a>>>,
 }
@@ -2194,11 +2258,13 @@ impl fmt::Display for DiffStat {
 }
 
 /// Job-level changes, then each changed step with its changes and task
-/// summary, then the [`DiffStat`] line. `no changes` when nothing differs.
+/// summary, then the [`DiffStat`] line, then one `note: …` line per note.
+/// `no changes` (and the notes) when nothing differs.
 impl fmt::Display for TemplateDiff {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !self.is_changed() {
-            return f.write_str("no changes");
+            f.write_str("no changes")?;
+            return self.write_notes(f);
         }
         let mut lines: Vec<String> = Vec::new();
         let push = |lines: &mut Vec<String>, line: String| {
@@ -2240,11 +2306,20 @@ impl fmt::Display for TemplateDiff {
         }
         lines.push(String::new());
         lines.push(self.stat().to_string());
-        f.write_str(&lines.join("\n"))
+        f.write_str(&lines.join("\n"))?;
+        self.write_notes(f)
     }
 }
 
 impl TemplateDiff {
+    /// `\nnote: …` for each note.
+    fn write_notes(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for n in &self.notes {
+            write!(f, "\nnote: {n}")?;
+        }
+        Ok(())
+    }
+
     /// The changes under one step, task parameters in definition order. An
     /// added or removed step's own change is left out: its header says it.
     fn step_changes<'a>(&'a self, s: &StepSummary, step_path: &'a str) -> Vec<&'a Change> {
@@ -2352,6 +2427,43 @@ mod tests {
         assert!(!refs_run_time(&s("{{Param.P}} }} Task.x {{"), false));
         assert!(refs_run_time(&s("Task.Param.F + 1"), true));
         assert!(!refs_run_time(&s("{{subTask.x}}"), false));
+    }
+
+    #[test]
+    fn int_runs_of_an_increasing_list_is_the_canonical_range_expression() {
+        // A small LCG, so the cases are the same on every run.
+        let mut seed: u64 = 7;
+        let mut next = |n: u64| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (seed >> 33) % n
+        };
+        for _ in 0..5000 {
+            let len = next(12) as usize + 1;
+            let mut v = vec![next(5) as i64 - 2];
+            for _ in 1..len {
+                let gap = [1, 1, 2, 2, 3, 5][next(6) as usize];
+                v.push(v[v.len() - 1] + gap);
+            }
+            let canonical = RangeExpr::from_values(v.clone()).unwrap().to_string();
+            assert_eq!(int_runs(&v), canonical, "{v:?}");
+        }
+        // A list that does not increase keeps its order.
+        assert_eq!(int_runs(&[5, 1, 2, 3, 9, 7]), "5,1-3,9,7");
+    }
+
+    #[test]
+    fn a_symbol_has_exactly_name_type_and_value() {
+        let yes = json!({"name": "Param.A", "type": "string", "value": "a"});
+        assert!(is_symbol(&yes));
+        for no in [
+            json!({"name": "a", "type": "t", "other": 1}),
+            json!({"name": "a", "other": 1, "value": 1}),
+            json!({"other": "a", "type": "t", "value": 1}),
+            json!({"name": "a", "type": "t", "value": 1, "x": 2}),
+            json!({"name": "a", "min": 2, "max": 4}),
+        ] {
+            assert!(!is_symbol(&no), "{no}");
+        }
     }
 
     #[test]

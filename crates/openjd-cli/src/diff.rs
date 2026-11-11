@@ -247,26 +247,32 @@ fn shown_steps(diff: &TemplateDiff) -> impl Iterator<Item = &StepSummary> {
 fn print_human(header: &str, diff: &TemplateDiff, plan: Option<&PlanDoc>, args: &DiffArgs) {
     println!("{header}");
     if !(args.tasks || args.stat) {
+        // `Display` ends with the notes.
         println!("{diff}");
-    } else if !diff.is_changed() {
-        println!("no changes");
     } else {
-        let lines: Vec<String> = shown_steps(diff)
-            .map(|s| {
-                if args.stat {
-                    s.stat_line()
-                } else {
-                    s.to_string()
-                }
-            })
-            .collect();
-        if lines.is_empty() {
-            println!("job-level changes only");
+        if !diff.is_changed() {
+            println!("no changes");
         } else {
-            println!("{}", lines.join("\n"));
+            let lines: Vec<String> = shown_steps(diff)
+                .map(|s| {
+                    if args.stat {
+                        s.stat_line()
+                    } else {
+                        s.to_string()
+                    }
+                })
+                .collect();
+            if lines.is_empty() {
+                println!("job-level changes only");
+            } else {
+                println!("{}", lines.join("\n"));
+            }
+            if args.stat {
+                println!("{}", diff.stat());
+            }
         }
-        if args.stat {
-            println!("{}", diff.stat());
+        for n in &diff.notes {
+            println!("note: {n}");
         }
     }
     if let Some(plan) = plan {

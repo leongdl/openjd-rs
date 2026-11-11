@@ -908,7 +908,8 @@ fn adaptive_chunking_task_count_is_unknown_with_a_note() {
     ~ script.onRun.command: old -> new  [template]
     tasks: unknown (adaptive chunking)
 
-1 step changed. Tasks: 0 kept, 0 added, 0 removed."
+1 step changed. Tasks: 0 kept, 0 added, 0 removed.
+note: steps[Chunked]: cannot count tasks: the chunk size is adaptive (targetRuntimeSeconds), so the number of chunks is decided at run time"
     );
     assert_eq!(
         d.notes,
@@ -1328,7 +1329,7 @@ fn added_and_removed_boxes_both_show_in_the_stat_line() {
     assert_eq!(d.steps[0].stat_line(), "~ Render  tasks 3 -> 3  (+1 -1)");
     assert_eq!(
         d.steps[0].tasks.to_string(),
-        "tasks: 3 -> 3\n  keep 2     N 1-2\n  add  1     N 4\n  drop 1     N 3"
+        "tasks: 3 -> 3\n  keep 2     N 1,2\n  add  1     N 4\n  drop 1     N 3"
     );
 }
 
@@ -1598,7 +1599,7 @@ fn every_whole_node_change_carries_the_sides_that_exist() {
 }
 
 #[test]
-fn job_document_matches_the_job_serde_form_up_to_variable_order() {
+fn job_document_matches_the_job_serde_form_up_to_map_order() {
     let job = input("render_v2.yaml")
         .environment(TemplateSource::Text(
             "specificationVersion: environment-2023-09\nenvironment:\n  name: Env\n  variables: {A: a}\n  script: {actions: {onEnter: {command: x}}}\n".into(),
@@ -1608,6 +1609,8 @@ fn job_document_matches_the_job_serde_form_up_to_variable_order() {
     let mut job = job;
     // A step environment, so every DocEnvironment path is written.
     job.steps[0].step_environments = job.job_environments.clone();
+    // The document writes parameters sorted; one variable has one order.
+    job.parameters.sort_keys();
     assert_eq!(
         serde_json::to_string(&JobDocument(&job)).unwrap(),
         serde_json::to_string(&job).unwrap()
@@ -1639,5 +1642,391 @@ fn product_counts_saturate() {
     assert_eq!(
         s.stat_line(),
         "~ S  tasks 18446744073709551615 -> 18446744073709551615  (+18446744073709551615 -2)"
+    );
+}
+
+// ─── audit round 2 ──────────────────────────────────────────────────
+
+/// A template with 10 job parameters and 8 job environment variables.
+fn many_params_job() -> String {
+    let defs: Vec<String> = (0..10)
+        .map(|i| format!("  - {{name: P{i}, type: STRING, default: v{i}}}"))
+        .collect();
+    let vars: Vec<String> = (0..8).map(|i| format!("V{i}: x{i}")).collect();
+    format!(
+        "specificationVersion: jobtemplate-2023-09\nname: J\nparameterDefinitions:\n{}\njobEnvironments:\n  - name: E\n    variables: {{{}}}\nsteps:\n  - name: S\n    script: {{actions: {{onRun: {{command: c}}}}}}\n",
+        defs.join("\n"),
+        vars.join(", ")
+    )
+}
+
+#[test]
+fn job_document_sorts_parameters_so_every_build_serializes_the_same() {
+    let t = many_params_job();
+    let json: std::collections::BTreeSet<String> = (0..20)
+        .map(|_| serde_json::to_string(&JobDocument(&text(&t).build().unwrap())).unwrap())
+        .collect();
+    assert_eq!(json.len(), 1, "{json:#?}");
+    let yaml: std::collections::BTreeSet<String> = (0..20)
+        .map(|_| serde_saphyr::to_string(&JobDocument(&text(&t).build().unwrap())).unwrap())
+        .collect();
+    assert_eq!(yaml.len(), 1);
+    let doc = json.into_iter().next().unwrap();
+    let names: Vec<String> = doc
+        .match_indices("\"paramType\"")
+        .map(|(i, _)| {
+            let name_at = doc[..i].rfind("\"name\":\"").unwrap() + 8;
+            doc[name_at..].split('"').next().unwrap().to_string()
+        })
+        .collect();
+    assert_eq!(
+        names,
+        ["P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9"]
+    );
+    assert_eq!(job_from_str(&doc).unwrap(), text(&t).build().unwrap());
+}
+
+const ORIGIN_OLD: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: J
+parameterDefinitions:
+  - {name: A, type: STRING, default: a}
+steps:
+  - name: S
+    script: {actions: {onRun: {command: "c {{Param.A}}"}}}
+"#;
+
+#[test]
+fn origin_of_an_added_node_does_not_depend_on_the_depth() {
+    let new = ORIGIN_OLD.replace(
+        "steps:",
+        "  - {name: B, type: INT, default: 7}\nsteps:\n  - name: T\n    script: {actions: {onRun: {command: \"t {{Param.A}}\"}}}",
+    );
+    for depth in [None, Some(0), Some(1), Some(2), Some(3), Some(4)] {
+        let o = depth.map_or_else(DiffOptions::default, |n| opts().with_max_depth(n));
+        let d = diff_templates(
+            &text(ORIGIN_OLD).param("A", "x"),
+            &text(&new).param("A", "y").param("B", "8"),
+            &o,
+        )
+        .unwrap();
+        let added: Vec<(&str, Origin)> = d
+            .changes
+            .iter()
+            .filter(|c| {
+                c.layer == Layer::Job && (c.path == "parameters[B]" || c.path == "steps[T]")
+            })
+            .map(|c| (c.path.as_str(), c.origin))
+            .collect();
+        let want: &[(&str, Origin)] = if depth == Some(0) {
+            &[]
+        } else {
+            &[
+                ("parameters[B]", Origin::Template),
+                ("steps[T]", Origin::Template),
+            ]
+        };
+        assert_eq!(added, want, "depth {depth:?}");
+    }
+}
+
+const REORDER_OLD: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: S
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: X, type: INT, range: "1-3"}
+        - {name: Y, type: STRING, range: [p, q]}
+    script: {actions: {onRun: {command: c}}}
+"#;
+
+fn reorder_new() -> String {
+    REORDER_OLD
+        .replace("        - {name: X, type: INT, range: \"1-3\"}\n", "")
+        .replace(
+            "range: [p, q]}\n",
+            "range: [p, q]}\n        - {name: X, type: INT, range: \"1-3\"}\n",
+        )
+}
+
+#[test]
+fn task_parameter_reorder_shows_in_whole_node_values_at_every_depth() {
+    let new = reorder_new();
+    let mut seen = Vec::new();
+    for depth in [0, 1, 2] {
+        let d = diff_templates(
+            &text(REORDER_OLD),
+            &text(&new),
+            &opts().with_max_depth(depth),
+        )
+        .unwrap();
+        assert_eq!(d.changes.len(), 1, "depth {depth}");
+        let c = &d.changes[0];
+        let (b, a) = (c.before.as_ref().unwrap(), c.after.as_ref().unwrap());
+        assert_ne!(b.raw, a.raw, "depth {depth}");
+        assert_ne!(b.text, a.text, "depth {depth}");
+        let space = |raw: &serde_json::Value| {
+            let steps = raw.get("steps").and_then(|s| s.get(0));
+            let step = steps.unwrap_or(raw);
+            let space = step.get("parameterSpace").unwrap_or(raw);
+            space["taskParameterDefinitions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["name"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(space(&b.raw), ["X", "Y"], "depth {depth}");
+        assert_eq!(space(&a.raw), ["Y", "X"], "depth {depth}");
+        seen.push(format!("{} | {}", b.text, a.text));
+    }
+    assert_eq!(seen, REORDER_TEXTS);
+}
+
+const REORDER_TEXTS: [&str; 3] = [
+    // Depths 0 and 1 cut both sides alike, so they show JSON from just before
+    // the first difference.
+    "…kParameterDefinitions\":[{\"definition\":{\"int\":{\"chunks\":null,\"range\":{\"rangeExpr\":{\"cumulative_lengths\":[3],\"length\":3,… | …kParameterDefinitions\":[{\"definition\":{\"string\":{\"range\":[\"p\",\"q\"]}},\"name\":\"Y\"},{\"definition\":{\"int\":{\"chunks\":null,\"…",
+    "…kParameterDefinitions\":[{\"definition\":{\"int\":{\"chunks\":null,\"range\":{\"rangeExpr\":{\"cumulative_lengths\":[3],\"length\":3,… | …kParameterDefinitions\":[{\"definition\":{\"string\":{\"range\":[\"p\",\"q\"]}},\"name\":\"Y\"},{\"definition\":{\"int\":{\"chunks\":null,\"…",
+    "{combination: null, taskParameterDefinitions: [{definition: {int: {chunks: null, range: {rangeExpr: {cumulative_lengths… | {combination: null, taskParameterDefinitions: [{definition: {string: {range: [p, q]}}, name: Y}, {definition: {int: {ch…",
+];
+
+#[test]
+fn display_prints_the_notes_after_the_totals() {
+    let old = std::fs::read_to_string(sample_path("render_v1.yaml")).unwrap();
+    let new = old.replace(
+        "  - {name: Scene, type: PATH}",
+        "  - {name: Scene, type: PATH}\n  - {name: Quality, type: INT}",
+    );
+    let d = diff_templates(
+        &text(&old).param("Scene", "s"),
+        &text(&new).param("Scene", "s").param("Quality", "3"),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        format!(
+            "\
++ parameter Quality: 3, defined as {{type: INT}}  [both]
+
+0 steps changed. Tasks: 100 kept, 0 added, 0 removed.
+note: {MID_NOTE}"
+        )
+    );
+    let d = diff_templates(
+        &text(ADAPTIVE),
+        &text(&ADAPTIVE.replace("command: old", "command: new")),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
+~ step Chunked
+    ~ script.onRun.command: old -> new  [template]
+    tasks: unknown (adaptive chunking)
+
+1 step changed. Tasks: 0 kept, 0 added, 0 removed.
+note: steps[Chunked]: cannot count tasks: the chunk size is adaptive (targetRuntimeSeconds), so the number of chunks is decided at run time"
+    );
+}
+
+const DEFS_A: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: S
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: A, type: INT, range: "1-2"}
+    script: {actions: {onRun: {command: c}}}
+"#;
+
+#[test]
+fn step_changes_follow_the_new_definition_order_then_the_old() {
+    let new = DEFS_A.replace(
+        "        - {name: A, type: INT, range: \"1-2\"}",
+        "        - {name: Z, type: INT, range: \"1-2\"}\n        - {name: A, type: INT, range: \"1-3\"}",
+    );
+    let d = diff_templates(&text(DEFS_A), &text(&new), &opts()).unwrap();
+    assert_eq!(d.to_string(), DEFS_ADDED);
+    let old = DEFS_A.replace(
+        "        - {name: A, type: INT, range: \"1-2\"}",
+        "        - {name: A, type: INT, range: \"1-2\"}\n        - {name: Z, type: INT, range: \"1-2\"}\n        - {name: Y, type: INT, range: \"1-2\"}",
+    );
+    let new = DEFS_A.replace("\"1-2\"", "\"1-3\"");
+    let d = diff_templates(&text(&old), &text(&new), &opts()).unwrap();
+    assert_eq!(d.to_string(), DEFS_REMOVED);
+}
+
+const DEFS_ADDED: &str = "\
+~ step S
+    + Z: 1,2  [template]
+    ~ A: 1,2 -> 1-3  [template]
+    tasks: 2 -> 6, all replaced (task parameter added or removed)
+
+1 step changed. Tasks: 0 kept, 0 added, 0 removed, 6 replaced.";
+const DEFS_REMOVED: &str = "\
+~ step S
+    ~ A: 1,2 -> 1-3  [template]
+    - Z: 1,2  [template]
+    - Y: 1,2  [template]
+    tasks: 8 -> 3, all replaced (task parameter added or removed)
+
+1 step changed. Tasks: 0 kept, 0 added, 0 removed, 3 replaced.";
+
+#[test]
+fn each_added_parameter_folds_in_its_own_definition() {
+    let t = "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n  - name: S\n    script: {actions: {onRun: {command: c}}}\n";
+    let new = t.replace(
+        "steps:",
+        "parameterDefinitions:\n  - {name: A, type: STRING, default: a}\n  - {name: B, type: INT, default: 7}\nsteps:",
+    );
+    let d = diff_templates(&text(t), &text(&new), &opts()).unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
++ parameter A: a, defined as {default: a, type: STRING}  [template]
++ parameter B: 7, defined as {default: 7, type: INT}  [template]
+
+0 steps changed. Tasks: 1 kept, 0 added, 0 removed."
+    );
+}
+
+#[test]
+fn an_object_with_a_name_is_not_a_symbol_unless_it_has_exactly_name_type_value() {
+    let t = "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n  - name: S\n    script: {actions: {onRun: {command: c}}}\n";
+    let new = format!(
+        "{t}  - name: T\n    hostRequirements:\n      amounts: [{{name: amount.worker.vcpu, min: 2, max: 4}}]\n    script: {{actions: {{onRun: {{command: c}}}}}}\n"
+    );
+    let d = diff_templates(
+        &text(t),
+        &text(&new),
+        &DiffOptions::default().with_max_depth(2),
+    )
+    .unwrap();
+    let c = d.changes.iter().find(|c| c.path == "steps[T]").unwrap();
+    assert_eq!(c.after.as_ref().unwrap().text, HOST_REQ_TEXT);
+}
+
+const HOST_REQ_TEXT: &str = "{dependencies: null, description: null, hostRequirements: {amounts: [{max: 4.0, min: 2.0, name: amount.worker.vcpu}], a…";
+
+#[test]
+fn built_job_path_and_list_path_parameters_read_back() {
+    use openjd_expr::path_mapping::PathFormat;
+    let mut job = input("render_v1.yaml").build().unwrap();
+    let p = job.parameters.get_mut("Scene").unwrap();
+    p.value = ExprValue::new_path("/a", PathFormat::Posix);
+    let mut lp = p.clone();
+    lp.name = "LP".into();
+    lp.param_type = openjd_model::types::JobParameterType::ListPath;
+    lp.value = ExprValue::make_list(
+        vec![
+            ExprValue::new_path("/x", PathFormat::Posix),
+            ExprValue::new_path("/y", PathFormat::Posix),
+        ],
+        openjd_expr::ExprType::PATH,
+    )
+    .unwrap();
+    job.parameters.insert("LP".into(), lp);
+    for doc in [
+        serde_json::to_string(&JobDocument(&job)).unwrap(),
+        serde_saphyr::to_string(&JobDocument(&job)).unwrap(),
+    ] {
+        let back = job_from_str(&doc).unwrap();
+        assert_eq!(back, job);
+        assert_eq!(
+            back.parameters["Scene"].value,
+            job.parameters["Scene"].value
+        );
+        assert_eq!(back.parameters["LP"].value, job.parameters["LP"].value);
+    }
+}
+
+const CHUNKED: &str = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [TASK_CHUNKING]
+name: C
+steps:
+  - name: S
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: F
+          type: CHUNK[INT]
+          range: "1-40"
+          chunks: {defaultTaskCount: 10, targetRuntimeSeconds: 0, rangeConstraint: CONTIGUOUS}
+    script: {actions: {onRun: {command: c, args: ["{{Task.Param.F}}"]}}}
+"#;
+
+#[test]
+fn a_chunk_settings_change_renders_the_chunk_settings() {
+    let new = CHUNKED
+        .replace("targetRuntimeSeconds: 0", "targetRuntimeSeconds: 5")
+        .replace("CONTIGUOUS}", "NONCONTIGUOUS}");
+    let d = diff_templates(&text(CHUNKED), &text(&new), &opts()).unwrap();
+    let c = d
+        .changes
+        .iter()
+        .find(|c| c.path.ends_with("taskParameterDefinitions[F]"))
+        .unwrap();
+    assert_eq!(
+        c.to_string(),
+        "~ steps[S].parameterSpace.taskParameterDefinitions[F].definition: 1-40 chunks of 10, target 0s -> 1-40 chunks of 10, target 5s, noncontiguous  [template]"
+    );
+}
+
+#[test]
+fn a_two_value_range_renders_the_same_in_the_change_and_the_boxes() {
+    let new = TASKS_6.replace("\"1-6\"", "\"1-2\"");
+    let d = diff_templates(&text(TASKS_6), &text(&new), &opts()).unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
+~ step Render
+    ~ N: 1-6 -> 1,2  [template]
+    tasks: 6 -> 2
+      keep 2     N 1,2
+      drop 4     N 3-6
+
+1 step changed. Tasks: 2 kept, 0 added, 4 removed."
+    );
+    let new = TASKS_6.replace("\"1-6\"", "[1, 2, 7]");
+    let d = diff_templates(&text(TASKS_6), &text(&new), &opts()).unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
+~ step Render
+    ~ N: 1-6 -> 1,2,7  [template]
+    tasks: 6 -> 3
+      keep 2     N 1,2
+      add  1     N 7
+      drop 4     N 3-6
+
+1 step changed. Tasks: 2 kept, 1 added, 4 removed."
+    );
+}
+
+#[test]
+fn a_run_time_reference_inside_a_cancelation_object_is_run_time() {
+    let t = "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n  - name: S\n    script:\n      actions:\n        onRun: {command: c, cancelation: {mode: NOTIFY_THEN_TERMINATE, notifyPeriodInSeconds: 5}}\n";
+    let old = text(t).build().unwrap();
+    let doc = serde_json::to_string(&JobDocument(&old)).unwrap();
+    assert!(doc.contains("\"notifyPeriodInSeconds\":\"5\""), "{doc}");
+    let new = job_from_str(&doc.replace(
+        "\"notifyPeriodInSeconds\":\"5\"",
+        "\"notifyPeriodInSeconds\":\"{{Task.Param.N}}\"",
+    ))
+    .unwrap();
+    let d = diff_built_jobs(old, new, &opts());
+    let got: Vec<(String, Stage)> = d.changes.iter().map(|c| (c.to_string(), c.stage)).collect();
+    assert_eq!(
+        got,
+        [(
+            "~ steps[S].script.onRun.cancelation: {mode: NOTIFY_THEN_TERMINATE, notifyPeriodInSeconds: 5} -> {mode: NOTIFY_THEN_TERMINATE, notifyPeriodInSeconds: {{Task.Param.N}}}  [job]".to_string(),
+            Stage::RunTime
+        )]
     );
 }

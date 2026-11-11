@@ -25,10 +25,10 @@ openjd diff <OLD> [NEW] [-p <PARAM>]... [--old-param <PARAM>]... [--new-param <P
 | `--environment`, `--env` | Environment template file for both sides, or `-` for stdin; repeatable. Each is read once and used by both sides |
 | `--extensions` | Extension allowlist, parsed as for `check` and `summary`; default every supported extension |
 | `--jobs` | `OLD` and `NEW` are built jobs (JSON or YAML from `openjd build`). Requires `NEW` (a usage error without it). Conflicts with the parameter, environment and extension flags |
-| `--step` | Keep only this step and the job-level changes, and with `--plan` only this step's ops and the job-level ops (job fields, parameters, job environments). A step in neither job is an error |
+| `--step` | Keep only this step and the job-level changes, and with `--plan` only this step's ops and the job-level ops (job fields, parameters, job environments). A step in neither job is an error. `--verbose` is not filtered: the job diff tree, and `oldJob` and `newJob`, are the whole jobs |
 | `--tasks` | Print only each shown step's task summary |
 | `--stat` | Print one line per shown step, then the totals |
-| `--plan` | Also print `job::apply::plan` on the two jobs: one op per line with its mutation kinds |
+| `--plan` | Also print `job::apply::plan` on the two jobs: one op per line with its mutation kinds. The plan always compares the whole jobs, so with `--ignore-symbols` it can list a `StepSymbols` op for a step the diff shows as unchanged (`0 steps changed`) |
 | `--depth` | `DiffOptions::with_max_depth` |
 | `--ignore-symbols` | `DiffOptions::with_resolved_symtab(false)` |
 | `--output` | `human-readable` (default), `json`, `yaml` |
@@ -110,12 +110,27 @@ job-level changes only
 `--verbose` appends a blank line, `job diff tree:`, and the job layer's `DiffTree`
 listing, or `no changes`.
 
+Every human-readable form ends its diff with one `note: …` line per entry of
+`TemplateDiff::notes`: after the totals line, after the `--tasks` lines, or after
+`no changes`. A note says why job-layer origins are `[both]` (the new template does not
+build with the old parameters) or why a step's tasks are unknown (adaptive chunking):
+
+```
+$ openjd diff render_v1.yaml quality.yaml -p Scene=/s --new-param Quality=3
+render_v1.yaml -> quality.yaml
++ parameter Quality: 3, defined as {type: INT}  [both]
+
+0 steps changed. Tasks: 100 kept, 0 added, 0 removed.
+note: origin: the new template does not build with the old parameters, so job-layer changes are marked both: Validation error: Values missing for required job parameters: Quality
+```
+
 `--output json` and `yaml` print one document and nothing else on stdout, with no header:
 `changed` (whether anything differs, the same test as `--exit-code`), then the
 `TemplateDiff` serde form with `changes`, `steps` and `notes`, plus `plan` with `--plan`
 (`{ops: [{action, kinds}], kinds}`, filtered as above with `--step`). `--verbose` adds
-`oldJob`, `newJob` (each a `JobDocument`, so environment variables are sorted) and `job`.
-Each `Shown` keeps `raw`, the exact serialized job value, next to `text`. The document is
+`oldJob`, `newJob` (each a `JobDocument`, so parameters and environment variables are
+sorted) and `job`.
+Each `Shown` keeps `raw`, the serialized job value, next to `text`. The document is
 serialized directly rather than through `serde_json::Value`, so the jobs keep their task
 parameter definition order. `--tasks` and `--stat` affect only human-readable output. Like
 `build`, the document is data rather than a command result: it has no `status` or
@@ -135,7 +150,8 @@ parameter definition order. `--tasks` and `--stat` affect only human-readable ou
 4 keeps "the inputs differ" apart from 1, which `openjd` already uses for every error,
 and from clap's 2. Errors name the path (`'nope.yaml' does not exist.`) or the input that
 failed: `old template: …` / `new template: …` for two templates, `old parameters: …` /
-`new parameters: …` for one template under two parameter sets.
+`new parameters: …` for one template under two parameter sets, and `the template: …` when
+that one template does not decode.
 
 ## Not implemented
 

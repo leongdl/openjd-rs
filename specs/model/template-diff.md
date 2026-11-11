@@ -71,7 +71,10 @@ Every changed node becomes `Change`s:
 
 A whole node's value is found by following its `DiffTree` segments through the serialized
 job. Every segment is the serialized field name except an action's (`onRun`, `onEnter`,
-…), which the tree hangs on the script but the job holds under `script.actions`.
+…), which the tree hangs on the script but the job holds under `script.actions`. The
+serialized job is the `JobDocument` form as a `serde_json::Value`, except that each step's
+`taskParameterDefinitions` is a list of `{name, definition}` in definition order: a `Value`
+object sorts its keys, and definition order is task order, so a map would hide a reorder.
 
 Before diffing, both jobs' `parameters` are sorted by name. `create_job` fills them from a
 `HashMap`, so their order varies between runs, and parameter order is not a change.
@@ -120,10 +123,14 @@ Template-layer changes are always `Template`. For job-layer changes in `diff_tem
    documents of the template and its environment templates, the allowlist, and the two
    PATH directories. A `Decoded` source has no document, so it never takes this shortcut;
    step 3 gives the same answer at the cost of one more build.
-3. Otherwise build `mid`, the new template with the old parameters. A change whose
-   `(path, field)` appears in `diff_jobs(old, mid)` only is `Template`, in
-   `diff_jobs(mid, new)` only is `Parameters`, and in both or neither is `Both`. The two
-   extra diffs use the caller's options, so the keys line up with the main diff.
+3. Otherwise build `mid`, the new template with the old parameters. A change whose key
+   appears in `diff_jobs(old, mid)` only is `Template`, in `diff_jobs(mid, new)` only is
+   `Parameters`, and in both or neither is `Both`. The key of a field change is
+   `(path, field)`; the key of a whole-node change is `(path, status)`, the status being
+   added, removed, or modified and not expanded. So a node one half adds is not confused
+   with the same node the other half leaves unexpanded at the depth limit, and the origin
+   does not depend on `max_depth`. The two extra diffs use the caller's options, so the
+   keys line up with the main diff.
 4. If `mid` does not build (the new template needs a parameter the old set lacks, for
    example), every job-layer change is `Both` and `TemplateDiff::notes` says why.
 
@@ -131,9 +138,9 @@ Comparing parameter values alone would get a template default change wrong: if `
 is not supplied and its `default` changes, the value changes but the cause is the template
 (rule 1 gives `Template`).
 
-The split compares `(path, field)` keys, not values. A whole node the template adds (an
-environment, a step, a task parameter) is therefore `Template` even when its contents also
-depend on the parameter values.
+The split compares keys, not values. A whole node the template adds (an environment, a
+step, a task parameter) is therefore `Template` even when its contents also depend on the
+parameter values.
 
 ## Stage
 
@@ -173,9 +180,8 @@ new-only steps. `status` is the step's status under the caller's options (one
 
 Counts are `u64` and count what `StepParameterSpaceIterator` yields (chunks, for a chunked
 step). Sums saturate at `u64::MAX` rather than overflow. A count that cannot be computed is
-0, with a note. A `BoxSummary` has each dimension's name and its values: integer runs as
-range expressions (`1-100`, `1-9:2`; a step other than 1 needs three values, so `1,3` stays
-a list), other values comma-separated.
+0, with a note. A `BoxSummary` has each dimension's name and its values: integers as the
+same text a change shows (see [Rendering](#rendering)), other values comma-separated.
 
 A step with adaptive chunking (`CHUNK[INT]` with `targetRuntimeSeconds` above 0) on either
 side decides its chunk count at run time. Its `tasks_unknown` is `Some("adaptive
@@ -216,19 +222,30 @@ serialize as lowercase camelCase strings (`template`, `parameters`, `both`, `job
 `TemplateDiff::job` serializes as its changed nodes, `{path, status, expanded,
 fieldChanges}`.
 
-`JobDocument` serializes a `Job` as its serde form with each environment's `variables`
-sorted by name. `Environment::variables` is a `HashMap`, so the plain serde form of a job
-with more than one variable differs from run to run. `TemplateDiff` writes `oldJob` and
-`newJob` as `JobDocument`s, so its serde form is deterministic. `openjd build` prints the
-same form, and `job_from_str` reads it back.
+`JobDocument` serializes a `Job` as its serde form with `parameters` and each
+environment's `variables` sorted by name. `create_job` fills `Job::parameters` from a
+`HashMap` and `Environment::variables` is a `HashMap`, so the plain serde form of a job
+with more than one of either differs from run to run. Task parameter definitions keep their
+order, which is task order. Every other map in a `Job` is already ordered: resolved symbol
+tables are lists sorted by name. `TemplateDiff` writes `oldJob` and `newJob` as
+`JobDocument`s, so its serde form is deterministic. `openjd build` prints the same form,
+and `job_from_str` reads it back.
 
 ### Rendering
 
-`Shown::raw` is the value exactly as the job serializes it (for a job parameter,
-`{"String":"1-200"}`), in full; it is meant for programs. `Shown::text` is for people:
+`Shown::raw` is the value as the job serializes it (for a job parameter,
+`{"String":"1-200"}`), in full; it is meant for programs. A whole node's `raw` writes task
+parameter definitions as a list of `{name, definition}` in definition order (see [The job
+layer](#the-job-layer)). `Shown::text` is for people:
 
-- a task parameter range is its range expression (`1-100`, `1-9:2`) or a list
-  (`[left, right]`); a chunked one adds `chunks of N`;
+- an integer task parameter range is a range expression's canonical form (`1-100`,
+  `1-9:2`, `1,2`, `1,3`: a run needs three values), whether the job holds a range
+  expression or a list; a list whose values do not increase is written as runs in its own
+  order (`5,1-3`). The same text is used in task boxes;
+- other task parameter ranges are lists (`[left, right]`);
+- a chunked task parameter adds `chunks of N`, then `, target Ts` when
+  `targetRuntimeSeconds` is set and `, noncontiguous` for a noncontiguous range
+  constraint (`1-40 chunks of 10, target 5s, noncontiguous`);
 - a job parameter value is bare (`1-200`, not `{"String":"1-200"}`), and its type is the
   spec name (`INT`);
 - a symbol table is `name=value` pairs;
@@ -254,8 +271,9 @@ same form, and `job_from_str` reads it back.
 ```
 
 - Job-level changes come first, then each step that changed or has a change under it,
-  with its changes relative to the step and its task summary, then the `DiffStat` line.
-  Nothing changed prints `no changes`.
+  with its changes relative to the step and its task summary, then the `DiffStat` line,
+  then one `note: …` line per entry of `notes` (why origins are `both`, why a task count
+  is unknown). Nothing changed prints `no changes`, followed by the notes.
 - Under a step, task parameter changes follow the step's definition order (new side, then
   definitions only on the old side), not path order.
 - `~` is changed, `+` added, `-` removed. Every line ends with the origin tag. The tags are

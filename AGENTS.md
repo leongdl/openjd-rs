@@ -87,6 +87,7 @@ Template parsing, validation, and job creation. Parses YAML/JSON templates, vali
 - **Template types** (`src/template/`) — All v2023-09 model types including parameters, steps, environments, actions, host requirements.
 - **Validation** (`src/validate.rs`, `src/validate/`) — Structural and cross-field constraint validation with Pydantic-compatible error paths.
 - **Job creation** (`src/job/`) — Instantiates jobs from templates: parameter resolution, format string evaluation, parameter space iteration, step dependency graphs.
+- **Job diff and apply** (`src/job/`) — `job::diff` (a tree diff of two built jobs), `job::task_delta` (how a step's tasks change), `job::apply` (an ordered plan for applying a diff to a store), and `job::template_diff` (**experimental**: diff two templates or parameter sets, with origin and stage per change; used by `openjd diff` and `openjd build`).
 - **Capabilities** (`src/capabilities.rs`) — Host requirement capability matching.
 
 Spec entry point: `specs/model/README.md`

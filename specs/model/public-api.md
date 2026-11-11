@@ -798,7 +798,7 @@ pub fn job::template_diff::diff_templates(old: &TemplateInput, new: &TemplateInp
 pub fn job::template_diff::diff_parameter_sets(template: &TemplateInput, old: &JobParameterInputValues, new: &JobParameterInputValues, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
 pub fn job::template_diff::diff_built_jobs(old: Job, new: Job, options: &DiffOptions) -> TemplateDiff;   // origin Job, no template layer
 pub fn job::template_diff::job_from_str(text: &str) -> Result<Job, ModelError>;   // JSON or YAML serde form of a Job
-pub struct job::template_diff::JobDocument<'a>(pub &'a Job);   // Serialize: the Job serde form, environment variables sorted; Debug, Clone, Copy
+pub struct job::template_diff::JobDocument<'a>(pub &'a Job);   // Serialize: the Job serde form, parameters and environment variables sorted; Debug, Clone, Copy
 
 pub enum job::template_diff::TemplateSource { Path(PathBuf), Text(String), Value(serde_json::Value), Decoded(Box<JobTemplate>) }
 impl TemplateSource { pub fn guess(s: &str) -> Self; }   // Path if s names an existing file, else Text
@@ -848,7 +848,8 @@ The result types derive `Debug`, `Clone`, `PartialEq` (`Eq` except `TemplateDiff
 `Serialize` (camelCase), and implement `Display`: `TemplateDiff` the grouped listing,
 `Change` one line, `StepSummary` the step's task block, `TaskSummary` and `BoxSummary`
 their parts, `DiffStat` the totals line, and `Layer`, `Origin`, `Stage` and `Shown` their
-text. `Layer`, `Origin` and `Stage` are also `Copy`, `Eq` and `Hash`, and `Layer` is `Ord`
+text. `TemplateDiff`'s listing ends with one `note: …` line per note. `Layer`, `Origin`
+and `Stage` are also `Copy`, `Eq` and `Hash`, and `Layer` is `Ord`
 (changes sort by it). Inputs that fail to build return `ModelError` naming the input
 (`old template`, `new parameters`, `the template`). `TemplateDiff` serializes `oldJob`
 and `newJob` as `JobDocument`s, so its serde form is deterministic; `openjd build` prints

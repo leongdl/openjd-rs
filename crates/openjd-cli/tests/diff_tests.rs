@@ -759,3 +759,100 @@ fn job_level_changes_only() {
     );
     assert_eq!(o.status.code(), Some(4));
 }
+
+// ─── audit round 2 ──────────────────────────────────────────────────
+
+#[test]
+fn build_prints_the_same_job_on_every_run() {
+    let args = ["build", "render_v1.yaml", "-p", "Scene=/s"];
+    let outputs: std::collections::BTreeSet<String> =
+        (0..20).map(|_| stdout(&openjd(&args, None))).collect();
+    assert_eq!(outputs.len(), 1, "{outputs:#?}");
+    let text = outputs.into_iter().next().unwrap();
+    let frames = text.find("\"Frames\": {").unwrap();
+    let scene = text.find("\"Scene\": {").unwrap();
+    assert!(frames < scene, "{text}");
+}
+
+fn quality_template() -> String {
+    std::fs::read_to_string(samples().join("render_v1.yaml"))
+        .unwrap()
+        .replace(
+            "  - {name: Scene, type: PATH}",
+            "  - {name: Scene, type: PATH}\n  - {name: Quality, type: INT}",
+        )
+}
+
+const MID_NOTE: &str = "note: origin: the new template does not build with the old parameters, so job-layer changes are marked both: Validation error: Values missing for required job parameters: Quality\n";
+
+#[test]
+fn human_output_prints_the_notes() {
+    let args = [
+        "diff",
+        "render_v1.yaml",
+        "-",
+        "-p",
+        "Scene=/s",
+        "--new-param",
+        "Quality=3",
+    ];
+    let o = openjd(&args, Some(&quality_template()));
+    assert_ok(
+        &o,
+        &format!(
+            "render_v1.yaml -> -\n+ parameter Quality: 3, defined as {{type: INT}}  [both]\n\n0 steps changed. Tasks: 100 kept, 0 added, 0 removed.\n{MID_NOTE}"
+        ),
+    );
+    let o = openjd(&with(&args, &["--stat"]), Some(&quality_template()));
+    assert_ok(
+        &o,
+        &format!(
+            "render_v1.yaml -> -\njob-level changes only\n0 steps changed. Tasks: 100 kept, 0 added, 0 removed.\n{MID_NOTE}"
+        ),
+    );
+}
+
+#[test]
+fn task_parameter_reorder_at_depth_1() {
+    let swapped = std::fs::read_to_string(samples().join("render_v1.yaml"))
+        .unwrap()
+        .replace(
+            "        - {name: Frame, type: INT, range: \"{{Param.Frames}}\"}\n        - {name: Eye, type: STRING, range: [left]}",
+            "        - {name: Eye, type: STRING, range: [left]}\n        - {name: Frame, type: INT, range: \"{{Param.Frames}}\"}",
+        );
+    let args = [
+        "diff",
+        "render_v1.yaml",
+        "-",
+        "-p",
+        "Scene=/s",
+        "--depth",
+        "1",
+    ];
+    let o = openjd(&args, Some(&swapped));
+    assert_ok(
+        &o,
+        "\
+render_v1.yaml -> -
+~ step Render
+    ~ (not expanded)  [template]
+    tasks: 100 -> 100, all replaced (task parameter definition order changed, so task order changed)
+
+1 step changed. Tasks: 0 kept, 0 added, 0 removed, 100 replaced.
+",
+    );
+    let o = openjd(&with(&args, &["--output", "json"]), Some(&swapped));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let c = &v["changes"][0];
+    let names = |side: &str| -> Vec<String> {
+        c[side]["raw"]["parameterSpace"]["taskParameterDefinitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(names("before"), ["Frame", "Eye"]);
+    assert_eq!(names("after"), ["Eye", "Frame"]);
+    assert_ne!(c["before"]["text"], c["after"]["text"]);
+}

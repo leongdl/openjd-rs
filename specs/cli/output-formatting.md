@@ -166,11 +166,17 @@ match args.output.as_str() {
 This ensures JSON and YAML outputs contain identical structured data — the only difference
 is the serialization format.
 
+`build` and `diff` are exceptions: they serialize their structs (`JobDocument`, and the
+`TemplateDiff` document) directly with `serde_json::to_string_pretty` or
+`serde_saphyr::to_string`, never through a `serde_json::Value`. A `Value` object sorts its
+keys, which would reorder task parameter definitions, and definition order is task order.
+
 ### JSON/YAML Construction
 
 Output values are built using `serde_json::Map` and `serde_json::json!()` macro rather than
 serializing a dedicated struct. This avoids defining output-specific structs but means the
-output schema is implicit in the code rather than enforced by types.
+output schema is implicit in the code rather than enforced by types. `build` and `diff`
+are the exceptions above: their schema is the serde form of the openjd-model types.
 
 The Python CLI uses dataclass-based result types (`OpenJDCliResult`, `OpenJDJobSummaryResult`,
 etc.) that are serialized via the `@print_cli_result` decorator. This is more type-safe
