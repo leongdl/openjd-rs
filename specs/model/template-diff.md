@@ -26,7 +26,11 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError>;
 - `job_from_str` reads a job back from its serde form (JSON when the text starts with `{`,
   YAML otherwise), as `openjd build` prints it. It takes text rather than a
   `serde_json::Value` because a `Value` object sorts its keys, which would reorder task
-  parameter definitions and so change task order. Unknown fields are rejected.
+  parameter definitions and so change task order. Unknown fields are rejected, and so is a
+  parameter whose value does not have its `paramType`'s type, with
+  `parameters[P]: paramType 'ListInt' cannot hold a 'ListList' value`. A `Path` parameter
+  holds a `String` value and a `ListPath` one a `ListString`, as `create_job` stores them;
+  a `Path` or `ListPath` value is accepted too.
 
 ## Inputs
 
@@ -94,7 +98,8 @@ What the built job cannot show, compared on the decoded templates:
 | `steps[S]` | `let` | the step-level `let` text, for steps on both sides |
 
 Definitions are matched by name. `extensions` is also a field of the built job, so both
-layers report it; `Display` prints the line once.
+layers report it; `Display` prints only the template layer's line, whatever the job
+layer's origin.
 
 **Deferred**, and recorded here so they are not mistaken for gaps:
 

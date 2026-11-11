@@ -856,3 +856,33 @@ render_v1.yaml -> -
     assert_eq!(names("after"), ["Eye", "Frame"]);
     assert_ne!(c["before"]["text"], c["after"]["text"]);
 }
+
+// ─── audit round 3 ──────────────────────────────────────────────────
+
+/// `--exit-code` and `changed` count only what `--step` keeps.
+#[test]
+fn step_filter_decides_exit_code_and_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = |b: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n  - name: A\n    script: {{actions: {{onRun: {{command: a}}}}}}\n  - name: B\n    script: {{actions: {{onRun: {{command: {b}}}}}}}\n"
+        )
+    };
+    std::fs::write(dir.path().join("old.yaml"), t("b1")).unwrap();
+    std::fs::write(dir.path().join("new.yaml"), t("b2")).unwrap();
+    let base = ["diff", "old.yaml", "new.yaml", "--exit-code"];
+    let run = |extra: &[&str]| {
+        let mut args = base.to_vec();
+        args.extend(extra);
+        openjd_in(dir.path(), &args, None)
+    };
+    assert_ok(&run(&["--step", "A"]), "old.yaml -> new.yaml\nno changes\n");
+    let o = run(&["--step", "A", "--output", "json"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["changed"], serde_json::json!(false));
+    let o = run(&["--step", "B", "--output", "json"]);
+    assert_eq!(o.status.code(), Some(4), "{}", stderr(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["changed"], serde_json::json!(true));
+}

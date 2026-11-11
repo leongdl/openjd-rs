@@ -1657,7 +1657,8 @@ struct BuiltJob {
 
 /// Read a [`Job`] back from the JSON or YAML that `openjd build` prints
 /// (the job's serde form). JSON when the text starts with `{`, YAML
-/// otherwise. Unknown fields are rejected.
+/// otherwise. Unknown fields are rejected, and so is a parameter whose
+/// value's type is not its `paramType`'s.
 ///
 /// It takes text, not a `serde_json::Value`, because a `Value` object
 /// sorts its keys, which would reorder task parameter definitions and so
@@ -1703,45 +1704,62 @@ fn parameter_from_value(v: &Value) -> Result<JobParameter, String> {
         .get("paramType")
         .and_then(Value::as_str)
         .ok_or("'paramType' must be a string")?;
-    let param_type = match type_name {
-        "String" => JobParameterType::String,
-        "Int" => JobParameterType::Int,
-        "Float" => JobParameterType::Float,
-        "Path" => JobParameterType::Path,
-        "Bool" => JobParameterType::Bool,
-        "RangeExpr" => JobParameterType::RangeExpr,
-        "ListString" => JobParameterType::ListString,
-        "ListInt" => JobParameterType::ListInt,
-        "ListFloat" => JobParameterType::ListFloat,
-        "ListPath" => JobParameterType::ListPath,
-        "ListBool" => JobParameterType::ListBool,
-        "ListListInt" => JobParameterType::ListListInt,
-        other => return Err(format!("unknown paramType '{other}'")),
-    };
-    let elem_hint = match param_type {
-        JobParameterType::ListBool => ExprType::BOOL,
-        JobParameterType::ListInt => ExprType::INT,
-        JobParameterType::ListFloat => ExprType::FLOAT,
-        JobParameterType::ListPath => ExprType::PATH,
-        JobParameterType::ListListInt => ExprType::parse("list[int]")?,
-        _ => ExprType::STRING,
-    };
-    let value = expr_value(v.get("value").ok_or("missing 'value'")?, &elem_hint)?;
+    let &(_, param_type, tags) = PARAM_TYPES
+        .iter()
+        .find(|(n, _, _)| *n == type_name)
+        .ok_or_else(|| format!("unknown paramType '{type_name}'"))?;
+    let value = v.get("value").ok_or("missing 'value'")?;
+    if let Some(tag) = value_tag(value) {
+        if !tags.contains(&tag) {
+            return Err(format!(
+                "paramType '{type_name}' cannot hold a '{tag}' value"
+            ));
+        }
+    }
     Ok(JobParameter {
         name,
         param_type,
-        value,
+        value: expr_value(value)?,
     })
 }
 
-/// An `ExprValue` from its derived serde form, e.g. `{"String": "x"}` or
-/// `{"ListString": [["a"], 48]}`. `hint` is the element type of a
-/// `ListList` (`list[int]` for `LIST[LIST[INT]]`), which an empty one
-/// cannot show; every other value's type comes from its tag.
-fn expr_value(v: &Value, hint: &ExprType) -> Result<ExprValue, String> {
+/// Each `paramType`, and the `ExprValue` tags its value may have.
+/// `create_job` stores a PATH as a `String` and a `LIST[PATH]` as a
+/// `ListString`; a `Path` or `ListPath` value is read as well.
+const PARAM_TYPES: [(&str, JobParameterType, &[&str]); 12] = [
+    ("String", JobParameterType::String, &["String"]),
+    ("Int", JobParameterType::Int, &["Int"]),
+    ("Float", JobParameterType::Float, &["Float"]),
+    ("Path", JobParameterType::Path, &["String", "Path"]),
+    ("Bool", JobParameterType::Bool, &["Bool"]),
+    ("RangeExpr", JobParameterType::RangeExpr, &["RangeExpr"]),
+    ("ListString", JobParameterType::ListString, &["ListString"]),
+    ("ListInt", JobParameterType::ListInt, &["ListInt"]),
+    ("ListFloat", JobParameterType::ListFloat, &["ListFloat"]),
+    (
+        "ListPath",
+        JobParameterType::ListPath,
+        &["ListString", "ListPath"],
+    ),
+    ("ListBool", JobParameterType::ListBool, &["ListBool"]),
+    ("ListListInt", JobParameterType::ListListInt, &["ListList"]),
+];
+
+/// The tag of an `ExprValue`'s serde form (`Null`, or the one key of
+/// `{"Int": 3}`), or `None` when it has no single tag.
+fn value_tag(v: &Value) -> Option<&str> {
     if v.as_str() == Some("Null") {
-        return Ok(ExprValue::Null);
+        return Some("Null");
     }
+    let m = v.as_object().filter(|m| m.len() == 1)?;
+    m.keys().next().map(String::as_str)
+}
+
+/// An `ExprValue` from its derived serde form, e.g. `{"String": "x"}` or
+/// `{"ListString": [["a"], 48]}`. Its type comes from its tag. A
+/// `ListList` is a `LIST[LIST[INT]]`, the only list of lists a job
+/// parameter holds, which an empty one cannot show.
+fn expr_value(v: &Value) -> Result<ExprValue, String> {
     let bad = || format!("unrecognized value {v}");
     let Some((tag, inner)) = v
         .as_object()
@@ -1824,16 +1842,13 @@ fn expr_value(v: &Value, hint: &ExprType) -> Result<ExprValue, String> {
                 ExprType::PATH,
             )
         }
-        "ListList" => {
-            let inner_hint = hint.list_element_type().cloned().unwrap_or(ExprType::INT);
-            list(
-                elements()?
-                    .iter()
-                    .map(|e| expr_value(e, &inner_hint))
-                    .collect::<Result<_, _>>()?,
-                hint.clone(),
-            )
-        }
+        "ListList" => list(
+            elements()?
+                .iter()
+                .map(expr_value)
+                .collect::<Result<_, _>>()?,
+            ExprType::list(ExprType::INT),
+        ),
         _ => Err(bad()),
     }
 }
@@ -2267,22 +2282,16 @@ impl fmt::Display for TemplateDiff {
             return self.write_notes(f);
         }
         let mut lines: Vec<String> = Vec::new();
-        let push = |lines: &mut Vec<String>, line: String| {
-            // Both layers report `extensions`; print a repeated line once.
-            if lines.last() != Some(&line) {
-                lines.push(line);
-            }
-        };
         let job_level: Vec<&Change> = self
             .changes
             .iter()
-            .filter(|c| !c.path.starts_with("steps["))
+            .filter(|c| !c.path.starts_with("steps[") && !is_repeated_extensions(c, &self.changes))
             .collect();
         for c in &job_level {
             if let Some(line) = folded_parameter_line(c, &job_level) {
-                push(&mut lines, line);
+                lines.push(line);
             } else if !is_folded_definition(c, &job_level) {
-                push(&mut lines, c.line(&c.job_label()));
+                lines.push(c.line(&c.job_label()));
             }
         }
         for s in &self.steps {
@@ -2298,7 +2307,7 @@ impl fmt::Display for TemplateDiff {
                 } else {
                     format!("    {}", c.line(&c.step_label(&step_path)))
                 };
-                push(&mut lines, line);
+                lines.push(line);
             }
             for line in s.tasks_text().lines() {
                 lines.push(format!("    {line}"));
@@ -2359,6 +2368,14 @@ impl TemplateDiff {
     fn old_step(&self, s: &StepSummary) -> Option<&Step> {
         s.old_index.and_then(|i| self.old_job.steps.get(i))
     }
+}
+
+/// The job layer's `extensions` change when the template layer reports one
+/// too. The two say the same thing, so `Display` prints the template one.
+fn is_repeated_extensions(c: &Change, changes: &[Change]) -> bool {
+    let is_extensions =
+        |x: &Change, layer: Layer| x.layer == layer && x.path.is_empty() && x.field == "extensions";
+    is_extensions(c, Layer::Job) && changes.iter().any(|x| is_extensions(x, Layer::Template))
 }
 
 /// The template-layer definition change that a whole-parameter change folds
@@ -2449,6 +2466,8 @@ mod tests {
         }
         // A list that does not increase keeps its order.
         assert_eq!(int_runs(&[5, 1, 2, 3, 9, 7]), "5,1-3,9,7");
+        // A repeated value is not a run: its step is 0.
+        assert_eq!(int_runs(&[3, 3, 3]), "3,3,3");
     }
 
     #[test]

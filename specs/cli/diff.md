@@ -25,7 +25,7 @@ openjd diff <OLD> [NEW] [-p <PARAM>]... [--old-param <PARAM>]... [--new-param <P
 | `--environment`, `--env` | Environment template file for both sides, or `-` for stdin; repeatable. Each is read once and used by both sides |
 | `--extensions` | Extension allowlist, parsed as for `check` and `summary`; default every supported extension |
 | `--jobs` | `OLD` and `NEW` are built jobs (JSON or YAML from `openjd build`). Requires `NEW` (a usage error without it). Conflicts with the parameter, environment and extension flags |
-| `--step` | Keep only this step and the job-level changes, and with `--plan` only this step's ops and the job-level ops (job fields, parameters, job environments). A step in neither job is an error. `--verbose` is not filtered: the job diff tree, and `oldJob` and `newJob`, are the whole jobs |
+| `--step` | Keep only this step and the job-level changes, and with `--plan` only this step's ops and the job-level ops (job fields, parameters, job environments). A step in neither job is an error. `--exit-code` and `changed` see only what is kept, so a change in another step alone gives exit 0 and `"changed": false`. `--verbose` is not filtered: the job diff tree, and `oldJob` and `newJob`, are the whole jobs |
 | `--tasks` | Print only each shown step's task summary |
 | `--stat` | Print one line per shown step, then the totals |
 | `--plan` | Also print `job::apply::plan` on the two jobs: one op per line with its mutation kinds. The plan always compares the whole jobs, so with `--ignore-symbols` it can list a `StepSymbols` op for a step the diff shows as unchanged (`0 steps changed`) |
@@ -33,7 +33,7 @@ openjd diff <OLD> [NEW] [-p <PARAM>]... [--old-param <PARAM>]... [--new-param <P
 | `--ignore-symbols` | `DiffOptions::with_resolved_symtab(false)` |
 | `--output` | `human-readable` (default), `json`, `yaml` |
 | `--verbose` | Human-readable: also print the job diff tree (`DiffTree`'s `Display`) after the summary. `json` or `yaml`: also include `oldJob`, `newJob` and the `job` tree |
-| `--exit-code` | Exit 0 with no differences, 4 with differences |
+| `--exit-code` | Exit 0 with no differences, 4 with differences. With `--step`, only the differences it keeps count |
 
 Which library call runs:
 
@@ -125,7 +125,8 @@ note: origin: the new template does not build with the old parameters, so job-la
 ```
 
 `--output json` and `yaml` print one document and nothing else on stdout, with no header:
-`changed` (whether anything differs, the same test as `--exit-code`), then the
+`changed` (whether anything differs, the same test as `--exit-code`, so with `--step` only
+what that step and the job level show), then the
 `TemplateDiff` serde form with `changes`, `steps` and `notes`, plus `plan` with `--plan`
 (`{ops: [{action, kinds}], kinds}`, filtered as above with `--step`). `--verbose` adds
 `oldJob`, `newJob` (each a `JobDocument`, so parameters and environment variables are

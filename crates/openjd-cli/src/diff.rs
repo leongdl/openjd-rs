@@ -99,7 +99,8 @@ pub struct DiffArgs {
     #[arg(long)]
     pub verbose: bool,
 
-    /// Exit 0 when there are no differences and 4 when there are (errors exit 1)
+    /// Exit 0 when there are no differences and 4 when there are (errors exit 1);
+    /// with --step, only the differences shown count
     #[arg(long)]
     pub exit_code: bool,
 }

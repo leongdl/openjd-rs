@@ -2030,3 +2030,153 @@ fn a_run_time_reference_inside_a_cancelation_object_is_run_time() {
         )]
     );
 }
+
+// ─── audit round 3 ──────────────────────────────────────────────────
+
+fn f_list_diff(old: &str, new: &str) -> String {
+    let t = |range: &str| {
+        TASKS_6
+            .replace("name: N", "name: F")
+            .replace("\"1-6\"", range)
+    };
+    diff_templates(&text(&t(old)), &text(&t(new)), &opts())
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn a_list_that_does_not_increase_renders_in_its_own_order() {
+    assert_eq!(
+        f_list_diff("[5, 1, 2, 3]", "[5, 1, 2, 3, 4]"),
+        "\
+~ step Render
+    ~ F: 5,1-3 -> 5,1-4  [template]
+    tasks: 4 -> 5
+      keep 4     F 5,1-3
+      add  1     F 4
+
+1 step changed. Tasks: 4 kept, 1 added, 0 removed."
+    );
+}
+
+#[test]
+fn repeated_integer_values_are_not_a_run() {
+    assert_eq!(
+        f_list_diff("[3, 3, 3]", "[3, 3, 3, 4]"),
+        "\
+~ step Render
+    ~ F: 3,3,3 -> 3,3,3,4  [template]
+    tasks: 3 -> 4, all replaced (not an exact plain product: association, chunking, a repeated range value or name, or a task count overflow)
+
+1 step changed. Tasks: 0 kept, 0 added, 0 removed, 4 replaced."
+    );
+}
+
+#[test]
+fn job_from_str_names_each_malformed_parameter() {
+    let job =
+        |param: &str| format!(r#"{{"name": "x", "steps": [], "parameters": {{"LI": {param}}}}}"#);
+    let cases = [
+        (
+            r#"{"paramType": "ListInt", "value": {"ListInt": []}}"#,
+            "'name' must be a string",
+        ),
+        (
+            r#"{"name": "LI", "value": {"ListInt": []}}"#,
+            "'paramType' must be a string",
+        ),
+        (
+            r#"{"name": "LI", "paramType": "Matrix", "value": {"ListInt": []}}"#,
+            "unknown paramType 'Matrix'",
+        ),
+        (
+            r#"{"name": "LI", "paramType": "ListInt"}"#,
+            "missing 'value'",
+        ),
+        (
+            r#"{"name": "LI", "paramType": "ListInt", "value": {"ListInt": [[1, 2]]}}"#,
+            r#"unrecognized value {"ListInt":[[1,2]]}"#,
+        ),
+        (
+            r#"{"name": "LI", "paramType": "ListBool", "value": {"ListBool": [[true]]}}"#,
+            r#"unrecognized value {"ListBool":[[true]]}"#,
+        ),
+        (
+            r#"{"name": "LI", "paramType": "ListFloat", "value": {"ListFloat": [["1.5"]]}}"#,
+            "Expected a float or a float string",
+        ),
+        (
+            r#"{"name": "LI", "paramType": "Int", "value": {"Int": "3"}}"#,
+            r#"unrecognized value {"Int":"3"}"#,
+        ),
+        (
+            r#"{"name": "LI", "paramType": "Int", "value": {"Int": 3, "Bool": true}}"#,
+            r#"unrecognized value {"Bool":true,"Int":3}"#,
+        ),
+    ];
+    for (param, message) in cases {
+        let err = job_from_str(&job(param)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("Validation error: not a built job: parameters[LI]: {message}"),
+            "{param}"
+        );
+    }
+}
+
+#[test]
+fn job_from_str_rejects_a_value_that_is_not_of_the_parameter_type() {
+    let job = |ty: &str, value: &str| {
+        format!(
+            r#"{{"name": "x", "steps": [], "parameters": {{"P": {{"name": "P", "paramType": "{ty}", "value": {value}}}}}}}"#
+        )
+    };
+    let cases = [
+        ("ListInt", r#"{"ListList": [[], 48]}"#, "ListList"),
+        ("ListBool", r#"{"ListInt": [1]}"#, "ListInt"),
+        ("ListListInt", r#"{"ListInt": [1]}"#, "ListInt"),
+        ("String", r#"{"Int": 3}"#, "Int"),
+        ("Int", r#""Null""#, "Null"),
+    ];
+    for (ty, value, tag) in cases {
+        let err = job_from_str(&job(ty, value)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Validation error: not a built job: parameters[P]: paramType '{ty}' cannot hold a '{tag}' value"
+            ),
+            "{ty} {value}"
+        );
+    }
+}
+
+#[test]
+fn extensions_print_once_when_the_job_layer_origin_is_both() {
+    let old = std::fs::read_to_string(sample_path("render_v1.yaml")).unwrap();
+    let new = old
+        .replace(
+            "name: Render\nparameterDefinitions",
+            "extensions: [EXPR]\nname: Render\nparameterDefinitions",
+        )
+        .replace(
+            "  - {name: Scene, type: PATH}",
+            "  - {name: Scene, type: PATH}\n  - {name: Quality, type: INT}",
+        );
+    let d = diff_templates(
+        &text(&old).param("Scene", "s"),
+        &text(&new).param("Scene", "s").param("Quality", "3"),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        format!(
+            "\
++ extensions: [EXPR]  [template]
++ parameter Quality: 3, defined as {{type: INT}}  [both]
+
+0 steps changed. Tasks: 100 kept, 0 added, 0 removed.
+note: {MID_NOTE}"
+        )
+    );
+}
