@@ -78,9 +78,9 @@ const CASE3_OUT: &str = "\
     ~ Frame: 1-100 -> 1-200  [parameters]
     ~ Eye: [left] -> [left, right]  [template]
     tasks: 100 -> 400
-      keep 100   Frame 1-100 × Eye left
-      add  200   Frame 101-200 × Eye left, right
-      add  100   Frame 1-100 × Eye right
+      keep   100   Frame 1-100 × Eye left
+      add    200   Frame 101-200 × Eye left, right
+      add    100   Frame 1-100 × Eye right
 
 1 step changed. Tasks: 100 kept, 300 added, 0 removed.
 ";
@@ -102,8 +102,8 @@ render_v1.yaml -> render_v2.yaml
 ~ step Render
     ~ Eye: [left] -> [left, right]  [template]
     tasks: 100 -> 200
-      keep 100   Frame 1-100 × Eye left
-      add  100   Frame 1-100 × Eye right
+      keep   100   Frame 1-100 × Eye left
+      add    100   Frame 1-100 × Eye right
 
 1 step changed. Tasks: 100 kept, 100 added, 0 removed.
 ",
@@ -133,8 +133,8 @@ render_v1.yaml: old parameters -> new parameters
 ~ step Render
     ~ Frame: 1-100 -> 1-200  [parameters]
     tasks: 100 -> 200
-      keep 100   Frame 1-100 × Eye left
-      add  100   Frame 101-200 × Eye left
+      keep   100   Frame 1-100 × Eye left
+      add    100   Frame 101-200 × Eye left
 
 1 step changed. Tasks: 100 kept, 100 added, 0 removed.
 ",
@@ -162,9 +162,9 @@ fn tasks() {
 render_v1.yaml -> render_v2.yaml
 ~ step Render
     tasks: 100 -> 400
-      keep 100   Frame 1-100 × Eye left
-      add  200   Frame 101-200 × Eye left, right
-      add  100   Frame 1-100 × Eye right
+      keep   100   Frame 1-100 × Eye left
+      add    200   Frame 101-200 × Eye left, right
+      add    100   Frame 1-100 × Eye right
 ",
     );
 }
@@ -578,8 +578,8 @@ fn multi_step_full_output() {
 ~ step Shrink
     ~ N: 1-6 -> 1-3  [template]
     tasks: 6 -> 3
-      keep 3     N 1-3
-      drop 3     N 4-6
+      keep   3     N 1-3
+      remove 3     N 4-6
 ~ step Modify
     ~ script.onRun.command: old -> new  [template]
     tasks: 1 unchanged
@@ -615,8 +615,8 @@ fn multi_step_stat_and_tasks() {
             "{MULTI_HEADER}\
 ~ step Shrink
     tasks: 6 -> 3
-      keep 3     N 1-3
-      drop 3     N 4-6
+      keep   3     N 1-3
+      remove 3     N 4-6
 ~ step Modify
     tasks: 1 unchanged
 ~ step LetOnly
@@ -1132,8 +1132,8 @@ fn step_filter_keeps_the_steps_own_unexpanded_change() {
 ~ step Render
     ~ (not expanded)  [template]
     tasks: 100 -> 200
-      keep 100   Frame 1-100 × Eye left
-      add  100   Frame 1-100 × Eye right
+      keep   100   Frame 1-100 × Eye left
+      add    100   Frame 1-100 × Eye right
 
 1 step changed. Tasks: 100 kept, 100 added, 0 removed.
 "

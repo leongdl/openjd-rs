@@ -312,23 +312,33 @@ layer](#the-job-layer)). `Shown::text` is for people:
   constraint (`1-40 chunks of 10, target 5s, noncontiguous`);
 - a job parameter value is bare (`1-200`, not `{"String":"1-200"}`), and its type is the
   spec name (`INT`). When the parameter's type differs between the two sides, each value
-  is its JSON with its type: `~ parameter Count: "5" (STRING) -> 5 (INT)`;
+  is its JSON with its type: `~ parameter Count: "5" (STRING) -> 5 (INT)`. A long value is
+  cut as below, from 40 characters before the first difference, and its type is always
+  shown: `…aaaa1" (STRING) -> …aaaa2" (PATH)`;
 - a symbol table is `name=value` pairs, and an empty one is `(none)`;
 - a whole parameter space is each task parameter's range in definition order, then the
   `combination` when one is set: `{Frame: 1-10, Eye: [left, right]}, combination (Frame, Eye)`;
-- a whole environment leaves out its `name` (the path has it), its `null` fields, and an
-  empty `resolvedSymTab`, so job and step environments look alike:
-  `+ jobEnvironments[Tools]: {variables: {TOOL: v1}}`. Any other value under an
-  environment leaves out its `null` fields too (`{actions: {onEnter: {command: setup}}}`);
+- step dependencies are the names of the steps depended on: `[Prep, Render]`;
+- an object leaves out its `null` fields. A value whose line already names it (a whole
+  step, environment or embedded file, a host requirement entry such as
+  `amounts[amount.worker.vcpu]`) leaves out its `name`, and a whole node leaves out an
+  empty `resolvedSymTab`. This depends only on the value and the node, so a value looks
+  the same wherever it is: `+ jobEnvironments[Tools].script.embeddedFiles[F]: {data: hi,
+  fileType: TEXT}` and `+ steps[S].script.embeddedFiles[F]: {data: hi, fileType: TEXT}`;
+- a float that is a whole number is written without its fraction (`min: 4`, not `4.0`);
+  `raw` keeps the number as the job holds it;
 - other strings are bare, lists are `[a, b]`, objects are `{key: value}`;
 - text longer than 120 characters is cut to 119 and ends with `…`;
 - when both sides render the same text but differ, a task parameter definition shows how
   each side's range is written: an integer range as `range expression 1,2` or
   `list [1, 2]`, any other type as its type and list (`FLOAT [1.5, 2.5] -> STRING [1.5,
-  2.5]`), then its chunk settings. Any other pair, and a definition pair that still
-  renders alike, shows both sides as JSON (`"3"` and `3`); when the JSON first differs
-  past the cut, both start with `…` 40 characters before the first difference, so the two
-  sides stay distinguishable.
+  2.5]`), then its chunk settings. The built job keeps only a range expression's canonical
+  form, so `"1-2"` shows as `range expression 1,2`. Any other pair, and a definition pair
+  that still renders alike, shows both sides as JSON (`"3"` and `3`); when the JSON first
+  differs past the cut, both start with `…` 40 characters before the first difference, so
+  the two sides stay distinguishable. `create_job` never builds a definition pair that
+  renders alike; a hand-made `--jobs` pair can (an `INT` with `chunks` against the
+  `CHUNK[INT]` it mirrors).
 
 `Display` is deterministic, so tests assert whole outputs:
 
@@ -338,9 +348,9 @@ layer](#the-job-layer)). `Shown::text` is for people:
     ~ Frame: 1-100 -> 1-200  [parameters]
     ~ Eye: [left] -> [left, right]  [template]
     tasks: 100 -> 400
-      keep 100   Frame 1-100 × Eye left
-      add  200   Frame 101-200 × Eye left, right
-      add  100   Frame 1-100 × Eye right
+      keep   100   Frame 1-100 × Eye left
+      add    200   Frame 101-200 × Eye left, right
+      add    100   Frame 1-100 × Eye right
 
 1 step changed. Tasks: 100 kept, 300 added, 0 removed.
 ```
@@ -363,6 +373,10 @@ layer](#the-job-layer)). `Shown::text` is for people:
 - A step left unexpanded by the depth limit prints `~ (not expanded)  [origin]` under its
   header. An added or removed step's own change is not repeated under its `+`/`-` header.
 - `Change` alone prints `~ path.field: before -> after  [origin]`.
+- A task summary prints `tasks: 100 -> 400`, then one `keep`, `add` or `remove` line per
+  box. A product that adds and removes nothing prints `tasks: N unchanged`, as unchanged
+  tasks do; other summaries print `tasks: N added`, `tasks: N removed` or
+  `tasks: 1 -> 2, all replaced (reason)`.
 - `StepSummary` prints the step header and its task summary; `stat_line` prints
   `~ Render  tasks 100 -> 400  (+300 -0)`, or `~ Render  tasks unknown (adaptive
   chunking)`.

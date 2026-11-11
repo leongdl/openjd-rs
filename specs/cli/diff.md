@@ -74,9 +74,9 @@ render_v1.yaml -> render_v2.yaml
     ~ Frame: 1-100 -> 1-200  [parameters]
     ~ Eye: [left] -> [left, right]  [template]
     tasks: 100 -> 400
-      keep 100   Frame 1-100 × Eye left
-      add  200   Frame 101-200 × Eye left, right
-      add  100   Frame 1-100 × Eye right
+      keep   100   Frame 1-100 × Eye left
+      add    200   Frame 101-200 × Eye left, right
+      add    100   Frame 1-100 × Eye right
 
 1 step changed. Tasks: 100 kept, 300 added, 0 removed.
 ```

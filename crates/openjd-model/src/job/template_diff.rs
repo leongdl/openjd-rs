@@ -879,7 +879,7 @@ fn assemble(
             });
         };
         let side = |doc: &Value, job: &Job| {
-            lookup(doc, &segments).map(|v| shown_node(node, &path, "", v.clone(), job))
+            lookup(doc, &segments).map(|v| shown_node(node, "", v.clone(), job))
         };
         match node.status {
             DiffStatus::Added => push(String::new(), None, side(&new_doc, &new_job)),
@@ -892,7 +892,7 @@ fn assemble(
             DiffStatus::Modified => {
                 for fc in &node.field_changes {
                     let shown = |v: &Value, job: &Job| {
-                        (!v.is_null()).then(|| shown_node(node, &path, &fc.field, v.clone(), job))
+                        (!v.is_null()).then(|| shown_node(node, &fc.field, v.clone(), job))
                     };
                     push(
                         fc.field.clone(),
@@ -939,8 +939,10 @@ fn disambiguate(c: &mut Change, old_job: &Job, new_job: &Job) {
             let types = (old_job.parameters.get(name), new_job.parameters.get(name));
             if let (Some(o), Some(n)) = types {
                 if o.param_type != n.param_type {
-                    b.text = truncate(typed_text(&b.raw, o.param_type.as_spec_str()));
-                    a.text = truncate(typed_text(&a.raw, n.param_type.as_spec_str()));
+                    (b.text, a.text) = typed_texts(
+                        (&b.raw, o.param_type.as_spec_str()),
+                        (&a.raw, n.param_type.as_spec_str()),
+                    );
                     return;
                 }
             }
@@ -967,14 +969,26 @@ fn disambiguate(c: &mut Change, old_job: &Job, new_job: &Job) {
     (b.text, a.text) = around_difference(&b.raw.to_string(), &a.raw.to_string());
 }
 
-/// A job parameter value with its type, `"5" (STRING)`: the value as JSON
-/// (strings quoted) without the variant tag the job writes around it.
-fn typed_text(raw: &Value, spec_type: &str) -> String {
-    let inner = match raw {
+/// Both sides of a job parameter value whose type changes, each with its
+/// type: `"5" (STRING)`. The values are cut as [`around_difference`] cuts
+/// them, in the room the longer type suffix leaves, so the suffix is always
+/// shown and a late difference is too.
+fn typed_texts(old: (&Value, &str), new: (&Value, &str)) -> (String, String) {
+    let suffix = |t: &str| format!(" ({t})");
+    let (os, ns) = (suffix(old.1), suffix(new.1));
+    let room = MAX_TEXT_CHARS - os.chars().count().max(ns.chars().count());
+    let (ov, nv) = cut_around_difference(&typed_value(old.0), &typed_value(new.0), room);
+    (ov + &os, nv + &ns)
+}
+
+/// A job parameter value as JSON (strings quoted), without the variant tag
+/// the job writes around it.
+fn typed_value(raw: &Value) -> String {
+    match raw {
         Value::Object(m) if m.len() == 1 => m.values().next().unwrap_or(raw),
         _ => raw,
-    };
-    format!("{inner} ({spec_type})")
+    }
+    .to_string()
 }
 
 /// A task parameter definition by how its range is written: an integer
@@ -1000,14 +1014,23 @@ fn written_text(p: &TaskParameter) -> String {
 /// Both texts cut at [`MAX_TEXT_CHARS`]; when the first difference would
 /// be cut off, both start with `…` a few characters before it.
 fn around_difference(x: &str, y: &str) -> (String, String) {
+    cut_around_difference(x, y, MAX_TEXT_CHARS)
+}
+
+/// [`around_difference`] with `max` characters in place of
+/// [`MAX_TEXT_CHARS`]. `max` must exceed the 40 characters of context.
+fn cut_around_difference(x: &str, y: &str, max: usize) -> (String, String) {
     const CONTEXT: usize = 40;
     let first_diff = x.chars().zip(y.chars()).take_while(|(p, q)| p == q).count();
-    if first_diff < MAX_TEXT_CHARS - 1 {
-        return (truncate(x.to_string()), truncate(y.to_string()));
+    if first_diff < max - 1 {
+        return (
+            truncate_to(x.to_string(), max),
+            truncate_to(y.to_string(), max),
+        );
     }
     let from = |s: &str| {
         let tail: String = s.chars().skip(first_diff - CONTEXT).collect();
-        truncate(format!("…{tail}"))
+        truncate_to(format!("…{tail}"), max)
     };
     (from(x), from(y))
 }
@@ -1160,17 +1183,21 @@ fn names_run_time_symbol(expr: &str) -> bool {
 // ─── rendering ──────────────────────────────────────────────────────
 
 fn truncate(s: String) -> String {
-    if s.chars().count() <= MAX_TEXT_CHARS {
+    truncate_to(s, MAX_TEXT_CHARS)
+}
+
+/// `s` cut to `max - 1` characters and `…` when it is longer than `max`.
+fn truncate_to(s: String, max: usize) -> String {
+    if s.chars().count() <= max {
         return s;
     }
-    let mut out: String = s.chars().take(MAX_TEXT_CHARS - 1).collect();
+    let mut out: String = s.chars().take(max - 1).collect();
     out.push('…');
     out
 }
 
-/// A job-layer value, rendered by what the node holds. `path` is the
-/// node's path.
-fn shown_node(node: &DiffNode, path: &str, field: &str, raw: Value, job: &Job) -> Shown {
+/// A job-layer value, rendered by what the node holds.
+fn shown_node(node: &DiffNode, field: &str, raw: Value, job: &Job) -> Shown {
     use crate::job::diff::DiffNodeKind;
     let text = match (node.kind, field) {
         (DiffNodeKind::TaskParameter, "definition" | "") => {
@@ -1188,23 +1215,33 @@ fn shown_node(node: &DiffNode, path: &str, field: &str, raw: Value, job: &Job) -
             .map_or_else(|| render(&raw), |p| p.param_type.as_spec_str().to_string()),
         (DiffNodeKind::ParameterSpace, "") => space_text(&raw),
         (_, "resolvedSymTab") if raw.as_array().is_some_and(Vec::is_empty) => NO_SYMBOLS.into(),
-        (DiffNodeKind::Environment, "") => {
-            let mut env = raw.clone();
-            if let Some(m) = env.as_object_mut() {
-                m.remove("name");
-                if m.get("resolvedSymTab")
-                    .and_then(Value::as_array)
-                    .is_some_and(Vec::is_empty)
-                {
-                    m.remove("resolvedSymTab");
-                }
-            }
-            render_compact(&env)
-        }
-        _ if path.contains("Environments[") => render_compact(&raw),
-        _ => render(&raw),
+        (_, "") => render(&without_label(&raw, node.key.as_deref())),
+        _ => render(&without_label(&raw, field_key(field))),
     };
     Shown::new(raw, text)
+}
+
+/// The key of a keyed field, `vcpu` in `amounts[vcpu]`.
+fn field_key(field: &str) -> Option<&str> {
+    field.strip_suffix(']')?.split_once('[').map(|(_, k)| k)
+}
+
+/// A value without what its line's label already says: its `name` when
+/// that is `key`, the key the label shows, and an empty `resolvedSymTab`.
+fn without_label(raw: &Value, key: Option<&str>) -> Value {
+    let mut v = raw.clone();
+    if let Some(m) = v.as_object_mut() {
+        if key.is_some() && m.get("name").and_then(Value::as_str) == key {
+            m.remove("name");
+        }
+        if m.get("resolvedSymTab")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            m.remove("resolvedSymTab");
+        }
+    }
+    v
 }
 
 /// How an empty symbol table is shown.
@@ -1290,23 +1327,15 @@ fn list_text(items: impl Iterator<Item = String>) -> String {
     format!("[{}]", items.collect::<Vec<_>>().join(", "))
 }
 
-/// Generic rendering: strings bare, lists as `[a, b]`, symbol tables as
-/// `name=value` pairs, objects as `{key: value}`.
+/// Generic rendering: strings bare, integral floats without `.0`, lists as
+/// `[a, b]`, symbol tables as `name=value` pairs, step dependencies as the
+/// names they depend on, objects as `{key: value}` without their `null`
+/// fields.
 fn render(v: &Value) -> String {
-    render_with(v, false)
-}
-
-/// [`render`], leaving out object fields that are `null`.
-fn render_compact(v: &Value) -> String {
-    render_with(v, true)
-}
-
-fn render_with(v: &Value, compact: bool) -> String {
-    let render = |v: &Value| render_with(v, compact);
     match v {
         Value::Null => "null".into(),
         Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
+        Value::Number(n) => number_text(n),
         Value::String(s) => s.clone(),
         Value::Array(a) if !a.is_empty() && a.iter().all(is_symbol) => a
             .iter()
@@ -1319,16 +1348,34 @@ fn render_with(v: &Value, compact: bool) -> String {
             })
             .collect::<Vec<_>>()
             .join(", "),
+        Value::Array(a) if !a.is_empty() && a.iter().all(is_dependency) => {
+            list_text(a.iter().filter_map(|e| e.get("dependsOn")).map(render))
+        }
         Value::Array(a) => list_text(a.iter().map(render)),
         Value::Object(m) => format!(
             "{{{}}}",
             m.iter()
-                .filter(|(_, v)| !(compact && v.is_null()))
+                .filter(|(_, v)| !v.is_null())
                 .map(|(k, v)| format!("{k}: {}", render(v)))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
     }
+}
+
+/// A JSON number; a float whose value is a whole number is written without
+/// its `.0` (`4`, not `4.0`).
+fn number_text(n: &serde_json::Number) -> String {
+    match n.as_f64() {
+        Some(f) if n.is_f64() && f.fract() == 0.0 && f.abs() < 1e15 => format!("{f:.0}"),
+        _ => n.to_string(),
+    }
+}
+
+/// A step dependency: `{dependsOn}`.
+fn is_dependency(v: &Value) -> bool {
+    v.as_object()
+        .is_some_and(|m| m.len() == 1 && m.get("dependsOn").is_some_and(Value::is_string))
 }
 
 /// A symbol table entry: `{name, type, value}`.
@@ -2641,7 +2688,8 @@ impl TaskSummary {
     }
 }
 
-/// `tasks: 100 -> 400`, then one `keep`, `add` or `drop` line per box.
+/// `tasks: 100 -> 400`, then one `keep`, `add` or `remove` line per box. A
+/// product that adds and removes nothing prints `tasks: N unchanged`.
 impl fmt::Display for TaskSummary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (old, new) = self.counts();
@@ -2656,14 +2704,21 @@ impl fmt::Display for TaskSummary {
                 kept,
                 added,
                 removed,
+            } if added.is_empty() && removed.is_empty() => {
+                write!(f, "tasks: {} unchanged", kept.count)
+            }
+            Self::Product {
+                kept,
+                added,
+                removed,
             } => {
                 write!(f, "tasks: {old} -> {new}")?;
                 let boxes = std::iter::once(("keep", kept))
                     .filter(|(_, b)| b.count > 0)
                     .chain(added.iter().map(|b| ("add", b)))
-                    .chain(removed.iter().map(|b| ("drop", b)));
+                    .chain(removed.iter().map(|b| ("remove", b)));
                 for (verb, b) in boxes {
-                    write!(f, "\n  {verb:<4} {:<5} {b}", b.count)?;
+                    write!(f, "\n  {verb:<6} {:<5} {b}", b.count)?;
                 }
                 Ok(())
             }

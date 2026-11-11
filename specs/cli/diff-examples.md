@@ -56,10 +56,10 @@ changes, and `plan kinds` the mutation kinds of `--plan`.
 | step order | [step_reordered](#step_reordered) | `~ steps.order: [Render, Composite] -> [Composite, Render]  [template]` | template | job | StepReorder |
 | step `description` | [step_description](#step_description) | `~ steps[Render].description: draft -> final  [template]` | template | job | StepMetadata |
 | step `dependencies` | [step_dependencies](#step_dependencies) | `~ steps[Composite].dependencies: [] -> [Render]  [template]` | template | job | StepDependencies |
-| step `dependencies` order | [step_dependencies_reordered](#step_dependencies_reordered) | `~ steps[Composite].dependencies.order: [{dependsOn: Prep}, {dependsOn: Render}] -> [{dependsOn: Render}, {dependsOn: Prep}]  [template]` | template | job | StepDependencies |
-| `hostRequirements` added | [host_added](#host_added) | `+ steps[Render].hostRequirements: {amounts: [{max: null, min: 4.0, name: amount.worker.vcpu}], attributes: null}  [template]` | template | job | StepHostRequirements |
-| host requirement amount | [host_amount](#host_amount) | `~ steps[Render].hostRequirements.amounts[amount.worker.vcpu]: {max: null, min: 4.0, name: amount.worker.vcpu} -> {max: null, min: 8.0, name: amount.worker.vcpu}  [template]` | template | job | StepHostRequirements |
-| host requirement attribute | [host_attribute](#host_attribute) | `~ steps[Render].hostRequirements.attributes[attr.worker.os.family]: {allOf: null, anyOf: [linux], name: attr.worker.os.family} -> {allOf: null, anyOf: [linux, windows], name: attr.worker.os.family}  [template]` | template | job | StepHostRequirements |
+| step `dependencies` order | [step_dependencies_reordered](#step_dependencies_reordered) | `~ steps[Composite].dependencies.order: [Prep, Render] -> [Render, Prep]  [template]` | template | job | StepDependencies |
+| `hostRequirements` added | [host_added](#host_added) | `+ steps[Render].hostRequirements: {amounts: [{min: 4, name: amount.worker.vcpu}]}  [template]` | template | job | StepHostRequirements |
+| host requirement amount | [host_amount](#host_amount) | `~ steps[Render].hostRequirements.amounts[amount.worker.vcpu]: {min: 4} -> {min: 8}  [template]` | template | job | StepHostRequirements |
+| host requirement attribute | [host_attribute](#host_attribute) | `~ steps[Render].hostRequirements.attributes[attr.worker.os.family]: {anyOf: [linux]} -> {anyOf: [linux, windows]}  [template]` | template | job | StepHostRequirements |
 | host requirement `amounts`, `attributes` order | [host_reordered](#host_reordered) | `~ steps[Render].hostRequirements.amounts.order: [amount.worker.vcpu, amount.worker.memory] -> [amount.worker.memory, amount.worker.vcpu]  [template]` | template | job | StepHostRequirements |
 | action `command` | [script_command](#script_command) | `~ steps[Render].script.onRun.command: render -> render2  [template]` | template | job | StepScript |
 | action `args` | [script_args](#script_args) | `~ steps[Render].script.onRun.args: [--fast] -> [--fast, --denoise]  [template]` | template | job | StepScript |
@@ -103,7 +103,8 @@ Not shown:
 | parameter, environment or embedded file `name` | Entries are matched by name, so a rename is a remove and an add, as `step_renamed` shows. |
 | `<collection>.duplicates` | Template validation rejects repeated names; only a hand-edited built job has them. |
 | an empty list versus none (`jobEnvironments: []`) | Template validation rejects an empty list, so only a hand-edited built job has one. |
-| embedded file `type`, `endOfLine`; other actions (`onExit`, `onWrap*`) | Shown like the fields above: one line per field, under the same path. |
+| embedded file `type` | `TEXT` is the only embedded file type, so it cannot change. |
+| embedded file `endOfLine`; other actions (`onExit`, `onWrap*`) | Shown like the fields above: one line per field, under the same path. |
 
 ## Job
 
@@ -321,7 +322,7 @@ crates/openjd-cli/examples/diff/param_added_v2.yaml -> crates/openjd-cli/example
 
 ### param_def_type
 
-`Count` changes from `STRING` to `INT`, with the same default.
+`Count` changes from `STRING` to `INT`, and its default from `"5"` to `5`.
 
 ```console
 $ openjd diff crates/openjd-cli/examples/diff/param_type_v1.yaml crates/openjd-cli/examples/diff/param_type_v2.yaml
@@ -358,8 +359,8 @@ crates/openjd-model/examples/template_diff/render_v1.yaml -> crates/openjd-model
 ~ step Render
     ~ Frame: 1-100 -> 1-200  [template]
     tasks: 100 -> 200
-      keep 100   Frame 1-100 × Eye left
-      add  100   Frame 101-200 × Eye left
+      keep   100   Frame 1-100 × Eye left
+      add    100   Frame 101-200 × Eye left
 
 1 step changed. Tasks: 100 kept, 100 added, 0 removed.
 ```
@@ -465,8 +466,8 @@ crates/openjd-cli/examples/diff/frames.yaml: old parameters -> new parameters
 ~ step Render
     ~ Frame: 1-100 -> 1-200  [parameters]
     tasks: 100 -> 200
-      keep 100   Frame 1-100
-      add  100   Frame 101-200
+      keep   100   Frame 1-100
+      add    100   Frame 101-200
 
 1 step changed. Tasks: 100 kept, 100 added, 0 removed.
 ```
@@ -478,8 +479,8 @@ crates/openjd-cli/examples/diff/frames.yaml: old parameters -> new parameters
 ~ step Render
     ~ Frame: 1-100 -> 1-200  [parameters]
     tasks: 100 -> 200
-      keep 100   Frame 1-100
-      add  100   Frame 101-200
+      keep   100   Frame 1-100
+      add    100   Frame 101-200
 
 1 step changed. Tasks: 100 kept, 100 added, 0 removed.
 
@@ -835,7 +836,7 @@ crates/openjd-cli/examples/diff/step_dependencies_v1.yaml -> crates/openjd-cli/e
 $ openjd diff crates/openjd-cli/examples/diff/dependencies_order_v1.yaml crates/openjd-cli/examples/diff/dependencies_order_v2.yaml
 crates/openjd-cli/examples/diff/dependencies_order_v1.yaml -> crates/openjd-cli/examples/diff/dependencies_order_v2.yaml
 ~ step Composite
-    ~ dependencies.order: [{dependsOn: Prep}, {dependsOn: Render}] -> [{dependsOn: Render}, {dependsOn: Prep}]  [template]
+    ~ dependencies.order: [Prep, Render] -> [Render, Prep]  [template]
     tasks: 1 unchanged
 
 1 step changed. Tasks: 3 kept, 0 added, 0 removed.
@@ -849,7 +850,7 @@ A step that had no host requirements gets one.
 $ openjd diff crates/openjd-cli/examples/diff/host_added_v1.yaml crates/openjd-cli/examples/diff/host_added_v2.yaml
 crates/openjd-cli/examples/diff/host_added_v1.yaml -> crates/openjd-cli/examples/diff/host_added_v2.yaml
 ~ step Render
-    + hostRequirements: {amounts: [{max: null, min: 4.0, name: amount.worker.vcpu}], attributes: null}  [template]
+    + hostRequirements: {amounts: [{min: 4, name: amount.worker.vcpu}]}  [template]
     tasks: 1 unchanged
 
 1 step changed. Tasks: 1 kept, 0 added, 0 removed.
@@ -863,7 +864,7 @@ The minimum vCPU count changes.
 $ openjd diff crates/openjd-cli/examples/diff/host_amount_v1.yaml crates/openjd-cli/examples/diff/host_amount_v2.yaml
 crates/openjd-cli/examples/diff/host_amount_v1.yaml -> crates/openjd-cli/examples/diff/host_amount_v2.yaml
 ~ step Render
-    ~ hostRequirements.amounts[amount.worker.vcpu]: {max: null, min: 4.0, name: amount.worker.vcpu} -> {max: null, min: 8.0, name: amount.worker.vcpu}  [template]
+    ~ hostRequirements.amounts[amount.worker.vcpu]: {min: 4} -> {min: 8}  [template]
     tasks: 1 unchanged
 
 1 step changed. Tasks: 1 kept, 0 added, 0 removed.
@@ -877,7 +878,7 @@ Windows hosts are allowed as well as Linux.
 $ openjd diff crates/openjd-cli/examples/diff/host_attribute_v1.yaml crates/openjd-cli/examples/diff/host_attribute_v2.yaml
 crates/openjd-cli/examples/diff/host_attribute_v1.yaml -> crates/openjd-cli/examples/diff/host_attribute_v2.yaml
 ~ step Render
-    ~ hostRequirements.attributes[attr.worker.os.family]: {allOf: null, anyOf: [linux], name: attr.worker.os.family} -> {allOf: null, anyOf: [linux, windows], name: attr.worker.os.family}  [template]
+    ~ hostRequirements.attributes[attr.worker.os.family]: {anyOf: [linux]} -> {anyOf: [linux, windows]}  [template]
     tasks: 1 unchanged
 
 1 step changed. Tasks: 1 kept, 0 added, 0 removed.
@@ -1275,8 +1276,8 @@ crates/openjd-cli/examples/diff/frames_extended_v1.yaml -> crates/openjd-cli/exa
 ~ step Render
     ~ Frame: 1-10 -> 1-20  [template]
     tasks: 10 -> 20
-      keep 10    Frame 1-10
-      add  10    Frame 11-20
+      keep   10    Frame 1-10
+      add    10    Frame 11-20
 
 1 step changed. Tasks: 10 kept, 10 added, 0 removed.
 ```
@@ -1291,8 +1292,8 @@ crates/openjd-cli/examples/diff/frames_shrunk_v1.yaml -> crates/openjd-cli/examp
 ~ step Render
     ~ Frame: 1-20 -> 1-10  [template]
     tasks: 20 -> 10
-      keep 10    Frame 1-10
-      drop 10    Frame 11-20
+      keep   10    Frame 1-10
+      remove 10    Frame 11-20
 
 1 step changed. Tasks: 10 kept, 0 added, 10 removed.
 ```
@@ -1307,8 +1308,8 @@ crates/openjd-model/examples/template_diff/render_v1.yaml -> crates/openjd-model
 ~ step Render
     ~ Eye: [left] -> [left, right]  [template]
     tasks: 100 -> 200
-      keep 100   Frame 1-100 × Eye left
-      add  100   Frame 1-100 × Eye right
+      keep   100   Frame 1-100 × Eye left
+      add    100   Frame 1-100 × Eye right
 
 1 step changed. Tasks: 100 kept, 100 added, 0 removed.
 ```
@@ -1319,8 +1320,8 @@ crates/openjd-model/examples/template_diff/render_v1.yaml -> crates/openjd-model
 ~ step Render
     ~ Eye: [left] -> [left, right]  [template]
     tasks: 100 -> 200
-      keep 100   Frame 1-100 × Eye left
-      add  100   Frame 1-100 × Eye right
+      keep   100   Frame 1-100 × Eye left
+      add    100   Frame 1-100 × Eye right
 
 1 step changed. Tasks: 100 kept, 100 added, 0 removed.
 
@@ -1520,8 +1521,7 @@ $ openjd diff crates/openjd-cli/examples/diff/range_rewritten_v1.yaml crates/ope
 crates/openjd-cli/examples/diff/range_rewritten_v1.yaml -> crates/openjd-cli/examples/diff/range_rewritten_v2.yaml
 ~ step Render
     ~ Frame: range expression 1,2 -> list [1, 2]  [template]
-    tasks: 2 -> 2
-      keep 2     Frame 1,2
+    tasks: 2 unchanged
 
 1 step changed. Tasks: 2 kept, 0 added, 0 removed.
 ```
@@ -1626,8 +1626,8 @@ crates/openjd-cli/examples/diff/origin_both_v1.yaml -> crates/openjd-cli/example
 ~ step Render
     ~ Frame: 1-10 -> 1-20,50  [both]
     tasks: 10 -> 21
-      keep 10    Frame 1-10
-      add  11    Frame 11-20,50
+      keep   10    Frame 1-10
+      add    11    Frame 11-20,50
 
 1 step changed. Tasks: 10 kept, 11 added, 0 removed.
 ```
@@ -1658,8 +1658,8 @@ jobs: crates/openjd-cli/examples/diff/frames_1_100.json -> crates/openjd-cli/exa
 ~ step Render
     ~ Frame: 1-100 -> 1-200  [job]
     tasks: 100 -> 200
-      keep 100   Frame 1-100
-      add  100   Frame 101-200
+      keep   100   Frame 1-100
+      add    100   Frame 101-200
 
 1 step changed. Tasks: 100 kept, 100 added, 0 removed.
 ```

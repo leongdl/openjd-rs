@@ -52,8 +52,8 @@ const CASE1: &str = "\
 ~ step Render
     ~ Frame: 1-100 -> 1-200  [parameters]
     tasks: 100 -> 200
-      keep 100   Frame 1-100 × Eye left
-      add  100   Frame 101-200 × Eye left
+      keep   100   Frame 1-100 × Eye left
+      add    100   Frame 101-200 × Eye left
 
 1 step changed. Tasks: 100 kept, 100 added, 0 removed.";
 
@@ -93,8 +93,8 @@ fn case2_template_adds_right_eye() {
 ~ step Render
     ~ Eye: [left] -> [left, right]  [template]
     tasks: 100 -> 200
-      keep 100   Frame 1-100 × Eye left
-      add  100   Frame 1-100 × Eye right
+      keep   100   Frame 1-100 × Eye left
+      add    100   Frame 1-100 × Eye right
 
 1 step changed. Tasks: 100 kept, 100 added, 0 removed."
     );
@@ -108,9 +108,9 @@ const CASE3: &str = "\
     ~ Frame: 1-100 -> 1-200  [parameters]
     ~ Eye: [left] -> [left, right]  [template]
     tasks: 100 -> 400
-      keep 100   Frame 1-100 × Eye left
-      add  200   Frame 101-200 × Eye left, right
-      add  100   Frame 1-100 × Eye right
+      keep   100   Frame 1-100 × Eye left
+      add    200   Frame 101-200 × Eye left, right
+      add    100   Frame 1-100 × Eye right
 
 1 step changed. Tasks: 100 kept, 300 added, 0 removed.";
 
@@ -244,8 +244,8 @@ fn template_default_change_with_parameter_unsupplied_is_template_origin() {
 ~ step Render
     ~ Frame: 1-100 -> 1-200  [template]
     tasks: 100 -> 200
-      keep 100   Frame 1-100 × Eye left
-      add  100   Frame 101-200 × Eye left
+      keep   100   Frame 1-100 × Eye left
+      add    100   Frame 101-200 × Eye left
 
 1 step changed. Tasks: 100 kept, 100 added, 0 removed."
     );
@@ -297,7 +297,7 @@ fn parameter_definition_changes_are_compared_field_by_field() {
     assert_eq!(
         d.to_string(),
         r#"+ parameter definition F.maxValue: 9.5  [template]
-- parameter definition F.minValue: 0.0  [template]
+- parameter definition F.minValue: 0  [template]
 ~ parameter definition F.userInterface.label: old -> new  [template]
 ~ parameter definition I.maxValue: 10 -> 20  [template]
 ~ parameter definition I.minValue: 1 -> 2  [template]
@@ -740,9 +740,9 @@ fn max_depth_reports_unexpanded_nodes_whole() {
 ~ step Render
     ~ (not expanded)  [both]
     tasks: 100 -> 400
-      keep 100   Frame 1-100 × Eye left
-      add  200   Frame 101-200 × Eye left, right
-      add  100   Frame 1-100 × Eye right
+      keep   100   Frame 1-100 × Eye left
+      add    200   Frame 101-200 × Eye left, right
+      add    100   Frame 1-100 × Eye right
 
 1 step changed. Tasks: 100 kept, 300 added, 0 removed."
     );
@@ -786,7 +786,7 @@ steps:
     assert!(after.text.ends_with('…'));
     assert_eq!(
         d.step("S").unwrap().tasks.to_string(),
-        "tasks: 4 -> 6\n  keep 4     N 1-7:2\n  add  2     N 8,20"
+        "tasks: 4 -> 6\n  keep   4     N 1-7:2\n  add    2     N 8,20"
     );
 }
 
@@ -870,7 +870,7 @@ fn whole_action_added_or_removed_carries_its_side() {
     .unwrap();
     assert_eq!(
         lines(&d.changes),
-        ["~ steps[S].script.onRun: {args: null, cancelation: null, command: a, timeout: null} -> {args: null, cancelation: null, command: b, timeout: null}  [template]"]
+        ["~ steps[S].script.onRun: {command: a} -> {command: b}  [template]"]
     );
 }
 
@@ -1050,8 +1050,8 @@ fn unexpanded_step_change_is_shown_under_the_step() {
 ~ step Render
     ~ (not expanded)  [template]
     tasks: 100 -> 200
-      keep 100   Frame 1-100 × Eye left
-      add  100   Frame 1-100 × Eye right
+      keep   100   Frame 1-100 × Eye left
+      add    100   Frame 1-100 × Eye right
 
 1 step changed. Tasks: 100 kept, 100 added, 0 removed."
     );
@@ -1357,8 +1357,8 @@ fn removed_tasks_are_counted_and_listed() {
 ~ step Render
     ~ N: 1-6 -> 1-3  [template]
     tasks: 6 -> 3
-      keep 3     N 1-3
-      drop 3     N 4-6
+      keep   3     N 1-3
+      remove 3     N 4-6
 
 1 step changed. Tasks: 3 kept, 0 added, 3 removed."
     );
@@ -1373,7 +1373,7 @@ fn added_and_removed_boxes_both_show_in_the_stat_line() {
     assert_eq!(d.steps[0].stat_line(), "~ Render  tasks 3 -> 3  (+1 -1)");
     assert_eq!(
         d.steps[0].tasks.to_string(),
-        "tasks: 3 -> 3\n  keep 2     N 1,2\n  add  1     N 4\n  drop 1     N 3"
+        "tasks: 3 -> 3\n  keep   2     N 1,2\n  add    1     N 4\n  remove 1     N 3"
     );
 }
 
@@ -1406,15 +1406,15 @@ fn integer_lists_render_as_runs_only_with_three_values() {
     };
     assert_eq!(
         d("[1, 3]", "[1, 3, 5]").steps[0].tasks.to_string(),
-        "tasks: 2 -> 3\n  keep 2     N 1,3\n  add  1     N 5"
+        "tasks: 2 -> 3\n  keep   2     N 1,3\n  add    1     N 5"
     );
     assert_eq!(
         d("[1, 3, 5]", "[1, 3, 5, 9]").steps[0].tasks.to_string(),
-        "tasks: 3 -> 4\n  keep 3     N 1-5:2\n  add  1     N 9"
+        "tasks: 3 -> 4\n  keep   3     N 1-5:2\n  add    1     N 9"
     );
     assert_eq!(
         d("[2]", "[1, 5, 7]").steps[0].tasks.to_string(),
-        "tasks: 1 -> 3\n  add  3     N 1,5,7\n  drop 1     N 2"
+        "tasks: 1 -> 3\n  add    3     N 1,5,7\n  remove 1     N 2"
     );
 }
 
@@ -1830,10 +1830,8 @@ fn task_parameter_reorder_shows_in_whole_node_values_at_every_depth() {
 }
 
 const REORDER_TEXTS: [&str; 3] = [
-    // Depths 0 and 1 cut both sides alike, so they show JSON from just before
-    // the first difference.
-    "…kParameterDefinitions\":[{\"definition\":{\"int\":{\"chunks\":null,\"range\":{\"rangeExpr\":{\"cumulative_lengths\":[3],\"length\":3,… | …kParameterDefinitions\":[{\"definition\":{\"string\":{\"range\":[\"p\",\"q\"]}},\"name\":\"Y\"},{\"definition\":{\"int\":{\"chunks\":null,\"…",
-    "…kParameterDefinitions\":[{\"definition\":{\"int\":{\"chunks\":null,\"range\":{\"rangeExpr\":{\"cumulative_lengths\":[3],\"length\":3,… | …kParameterDefinitions\":[{\"definition\":{\"string\":{\"range\":[\"p\",\"q\"]}},\"name\":\"Y\"},{\"definition\":{\"int\":{\"chunks\":null,\"…",
+    "{name: J, parameters: {}, steps: [{name: S, parameterSpace: {taskParameterDefinitions: [{definition: {int: {range: {ran… | {name: J, parameters: {}, steps: [{name: S, parameterSpace: {taskParameterDefinitions: [{definition: {string: {range: […",
+    "{parameterSpace: {taskParameterDefinitions: [{definition: {int: {range: {rangeExpr: {cumulative_lengths: [3], length: 3… | {parameterSpace: {taskParameterDefinitions: [{definition: {string: {range: [p, q]}}, name: Y}, {definition: {int: {rang…",
     "{X: 1-3, Y: [p, q]} | {Y: [p, q], X: 1-3}",
 ];
 
@@ -1956,7 +1954,7 @@ fn an_object_with_a_name_is_not_a_symbol_unless_it_has_exactly_name_type_value()
     assert_eq!(c.after.as_ref().unwrap().text, HOST_REQ_TEXT);
 }
 
-const HOST_REQ_TEXT: &str = "{dependencies: null, description: null, hostRequirements: {amounts: [{max: 4.0, min: 2.0, name: amount.worker.vcpu}], a…";
+const HOST_REQ_TEXT: &str = "{hostRequirements: {amounts: [{max: 4, min: 2, name: amount.worker.vcpu}]}, script: {actions: {onRun: {command: c}}}}";
 
 #[test]
 fn built_job_path_and_list_path_parameters_read_back() {
@@ -2032,8 +2030,8 @@ fn a_two_value_range_renders_the_same_in_the_change_and_the_boxes() {
 ~ step Render
     ~ N: 1-6 -> 1,2  [template]
     tasks: 6 -> 2
-      keep 2     N 1,2
-      drop 4     N 3-6
+      keep   2     N 1,2
+      remove 4     N 3-6
 
 1 step changed. Tasks: 2 kept, 0 added, 4 removed."
     );
@@ -2045,9 +2043,9 @@ fn a_two_value_range_renders_the_same_in_the_change_and_the_boxes() {
 ~ step Render
     ~ N: 1-6 -> 1,2,7  [template]
     tasks: 6 -> 3
-      keep 2     N 1,2
-      add  1     N 7
-      drop 4     N 3-6
+      keep   2     N 1,2
+      add    1     N 7
+      remove 4     N 3-6
 
 1 step changed. Tasks: 2 kept, 1 added, 4 removed."
     );
@@ -2096,8 +2094,8 @@ fn a_list_that_does_not_increase_renders_in_its_own_order() {
 ~ step Render
     ~ F: 5,1-3 -> 5,1-4  [template]
     tasks: 4 -> 5
-      keep 4     F 5,1-3
-      add  1     F 4
+      keep   4     F 5,1-3
+      add    1     F 4
 
 1 step changed. Tasks: 4 kept, 1 added, 0 removed."
     );
@@ -2468,8 +2466,8 @@ fn an_unexpanded_node_differing_in_both_halves_is_both() {
 ~ step S
     ~ B: [q1] -> [q2]  [parameters]
     tasks: 1 -> 1
-      add  1     A a × B q2
-      drop 1     A a × B q1
+      add    1     A a × B q2
+      remove 1     A a × B q1
 
 1 step changed. Tasks: 0 kept, 1 added, 1 removed."
     );
@@ -2481,8 +2479,8 @@ fn an_unexpanded_node_differing_in_both_halves_is_both() {
 ~ step S
     ~ (not expanded)  [both]
     tasks: 1 -> 1
-      add  1     A a × B q2
-      drop 1     A a × B q1
+      add    1     A a × B q2
+      remove 1     A a × B q1
 
 1 step changed. Tasks: 0 kept, 1 added, 1 removed."
     );
@@ -2798,9 +2796,9 @@ fn mid_is_built_with_the_new_sides_limits() {
     ~ Frame: 1-100 -> 1-50  [both]
     ~ Eye: [left] -> [left, right]  [both]
     tasks: 100 -> 100
-      keep 50    Frame 1-50 × Eye left
-      add  50    Frame 1-50 × Eye right
-      drop 50    Frame 51-100 × Eye left
+      keep   50    Frame 1-50 × Eye left
+      add    50    Frame 1-50 × Eye right
+      remove 50    Frame 51-100 × Eye left
 
 1 step changed. Tasks: 50 kept, 50 added, 50 removed.
 note: origin: the new template does not build with the old parameters, so job-layer changes are marked both: Model validation error: 1 validation error for Template
@@ -2868,8 +2866,8 @@ fn a_decreasing_integer_list_is_not_a_run() {
 ~ step S
     ~ N: 3,2,1 -> 3,2,1,0  [template]
     tasks: 3 -> 4
-      keep 3     N 3,2,1
-      add  1     N 0
+      keep   3     N 3,2,1
+      add    1     N 0
 
 1 step changed. Tasks: 3 kept, 1 added, 0 removed."
     );
@@ -2976,8 +2974,7 @@ fn a_range_rewritten_with_the_same_values_shows_how_each_side_is_written() {
         "\
 ~ step S
     ~ P: range expression 1,2 -> list [1, 2]  [template]
-    tasks: 2 -> 2
-      keep 2     P 1,2
+    tasks: 2 unchanged
 
 1 step changed. Tasks: 2 kept, 0 added, 0 removed."
     );
@@ -3122,4 +3119,225 @@ steps:
         lines(&d.changes),
         ["+ steps[S].parameterSpace: {F: 1-3, E: [l, r, c]}, combination (F, E)  [template]"]
     );
+}
+
+#[test]
+fn a_long_parameter_value_whose_type_changes_shows_the_difference_and_both_types() {
+    let long = "a".repeat(200);
+    let job = |ty: &str, v: &str| {
+        let t = format!(
+            "\
+specificationVersion: jobtemplate-2023-09
+name: J
+parameterDefinitions:
+  - {{name: X, type: {ty}}}
+steps:
+  - name: S
+    script: {{actions: {{onRun: {{command: a}}}}}}
+"
+        );
+        text(&t).param("X", format!("//srv/{long}{v}"))
+    };
+    let d = diff_templates(&job("STRING", "1"), &job("PATH", "2"), &opts()).unwrap();
+    let value = d
+        .changes
+        .iter()
+        .find(|c| c.path == "parameters[X]" && c.field == "value")
+        .unwrap();
+    let (b, a) = (
+        value.before.as_ref().unwrap(),
+        value.after.as_ref().unwrap(),
+    );
+    let tail = "a".repeat(40);
+    assert_eq!(b.text, format!("…{tail}1\" (STRING)"));
+    assert_eq!(a.text, format!("…{tail}2\" (PATH)"));
+}
+
+/// A job with `files` embedded in a job environment's script and a step's.
+fn embedded_file_job(env_files: &str, step: &str, step_files: &str) -> String {
+    format!(
+        "\
+specificationVersion: jobtemplate-2023-09
+name: J
+jobEnvironments:
+  - name: E
+    script:
+      actions: {{onEnter: {{command: a}}}}
+      embeddedFiles: [{env_files}]
+steps:
+  - name: \"{step}\"
+    script:
+      actions: {{onRun: {{command: a}}}}
+      embeddedFiles: [{step_files}]
+"
+    )
+}
+
+#[test]
+fn whole_values_drop_nulls_and_the_name_the_label_shows_wherever_they_are() {
+    const KEEP: &str = "{name: K, type: TEXT, data: k}";
+    const F: &str = "{name: K, type: TEXT, data: k}, {name: F, type: TEXT, data: hi}";
+    for step in ["S", "MyEnvironments[1]"] {
+        let d = diff_templates(
+            &text(&embedded_file_job(KEEP, step, KEEP)),
+            &text(&embedded_file_job(F, step, F)),
+            &opts(),
+        )
+        .unwrap();
+        assert_eq!(
+            lines(&d.changes),
+            [
+                "+ jobEnvironments[E].script.embeddedFiles[F]: {data: hi, fileType: TEXT}  [template]"
+                    .to_string(),
+                format!("+ steps[{step}].script.embeddedFiles[F]: {{data: hi, fileType: TEXT}}  [template]"),
+            ],
+            "step {step}"
+        );
+    }
+    // A step at the depth limit, by any name, is shown the same way.
+    let shown = |step: &str| {
+        let d = diff_templates(
+            &text(&embedded_file_job(KEEP, step, KEEP)),
+            &text(&embedded_file_job(KEEP, step, F)),
+            &opts().with_max_depth(1),
+        )
+        .unwrap();
+        d.changes[0].after.as_ref().unwrap().text.clone()
+    };
+    assert_eq!(shown("S"), shown("MyEnvironments[1]"));
+    assert!(
+        shown("S").starts_with(
+            "{script: {actions: {onRun: {command: a}}, embeddedFiles: [{data: k, fileType: TEXT, name: K}"
+        ),
+        "{}",
+        shown("S")
+    );
+}
+
+#[test]
+fn a_host_requirement_shows_no_nulls_and_whole_numbers_without_a_fraction() {
+    let job = |host: &str| {
+        format!(
+            "\
+specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: S
+{host}    script: {{actions: {{onRun: {{command: a}}}}}}
+"
+        )
+    };
+    let d = diff_templates(
+        &text(&job("")),
+        &text(&job(
+            "    hostRequirements: {amounts: [{name: amount.worker.vcpu, min: 4}]}\n",
+        )),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        lines(&d.changes),
+        ["+ steps[S].hostRequirements: {amounts: [{min: 4, name: amount.worker.vcpu}]}  [template]"]
+    );
+}
+
+#[test]
+fn reordered_dependencies_show_the_step_names() {
+    let job = |deps: &str| {
+        format!(
+            "\
+specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - {{name: A, script: {{actions: {{onRun: {{command: a}}}}}}}}
+  - {{name: B, script: {{actions: {{onRun: {{command: a}}}}}}}}
+  - name: C
+    dependencies: {deps}
+    script: {{actions: {{onRun: {{command: a}}}}}}
+"
+        )
+    };
+    let d = diff_templates(
+        &text(&job("[{dependsOn: A}, {dependsOn: B}]")),
+        &text(&job("[{dependsOn: B}, {dependsOn: A}]")),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        lines(&d.changes),
+        ["~ steps[C].dependencies.order: [A, B] -> [B, A]  [template]"]
+    );
+}
+
+#[test]
+fn a_string_range_rewritten_as_a_path_range_shows_both_types() {
+    let d = diff_templates(
+        &text(&one_param_job("{name: P, type: STRING, range: [a]}")),
+        &text(&one_param_job("{name: P, type: PATH, range: [a]}")),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        lines(&d.changes),
+        ["~ steps[S].parameterSpace.taskParameterDefinitions[P].definition: STRING [a] -> PATH [a]  [template]"]
+    );
+}
+
+/// One step whose only task parameter is a `CHUNK[INT]` with `range`.
+fn chunked_job(range: &str) -> String {
+    format!(
+        "\
+specificationVersion: jobtemplate-2023-09
+extensions: [TASK_CHUNKING]
+name: J
+steps:
+  - name: S
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: P
+          type: CHUNK[INT]
+          range: {range}
+          chunks: {{defaultTaskCount: 1, rangeConstraint: CONTIGUOUS}}
+    script: {{actions: {{onRun: {{command: a, args: [\"{{{{Task.Param.P}}}}\"]}}}}}}
+"
+    )
+}
+
+#[test]
+fn a_chunked_range_rewritten_with_the_same_values_shows_its_chunk_settings() {
+    let d = diff_templates(
+        &text(&chunked_job("\"1-2\"")),
+        &text(&chunked_job("[1, 2]")),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        lines(&d.changes),
+        ["~ steps[S].parameterSpace.taskParameterDefinitions[P].definition: range expression 1,2 chunks of 1 -> list [1, 2] chunks of 1  [template]"]
+    );
+}
+
+#[test]
+fn a_definition_pair_written_alike_shows_as_json() {
+    // `create_job` never builds an `INT` with `chunks`, but `job_from_str`
+    // reads one, and it is written exactly as the `CHUNK[INT]` it mirrors.
+    let old = TemplateInput::new(TemplateSource::Text(chunked_job("\"1-2\"")))
+        .build()
+        .unwrap();
+    let doc = serde_json::to_string(&JobDocument(&old)).unwrap();
+    assert!(doc.contains("\"chunkInt\""), "{doc}");
+    let new = job_from_str(&doc.replace("\"chunkInt\"", "\"int\"")).unwrap();
+    let d = diff_built_jobs(old, new, &opts());
+    let c = d
+        .changes
+        .iter()
+        .find(|c| c.path.ends_with("taskParameterDefinitions[P]"))
+        .unwrap();
+    let (b, a) = (c.before.as_ref().unwrap(), c.after.as_ref().unwrap());
+    assert!(
+        b.text.starts_with("{\"chunkInt\":{\"chunks\":"),
+        "{}",
+        b.text
+    );
+    assert!(a.text.starts_with("{\"int\":{\"chunks\":"), "{}", a.text);
 }

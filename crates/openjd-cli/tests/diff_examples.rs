@@ -99,7 +99,7 @@ const CASES: &[Case] = &[
         "diff @param_added_v1.yaml @param_added_v2.yaml", "+ parameter Quality"),
     case(DEFS, "param_def_removed", "parameter definition removed", "The parameter is removed again.",
         "diff @param_added_v2.yaml @param_added_v1.yaml", "- parameter Quality"),
-    case(DEFS, "param_def_type", "parameter `type`", "`Count` changes from `STRING` to `INT`, with the same default.",
+    case(DEFS, "param_def_type", "parameter `type`", "`Count` changes from `STRING` to `INT`, and its default from `\"5\"` to `5`.",
         "diff @param_type_v1.yaml @param_type_v2.yaml", "Count.type"),
     case(DEFS, "param_def_description", "parameter `description`", "The parameter description changes; the job does not.",
         "diff @param_description_v1.yaml @param_description_v2.yaml", "Quality.description"),
@@ -266,7 +266,11 @@ const NOT_COVERED: &[(&str, &str)] = &[
         "Template validation rejects an empty list, so only a hand-edited built job has one.",
     ),
     (
-        "embedded file `type`, `endOfLine`; other actions (`onExit`, `onWrap*`)",
+        "embedded file `type`",
+        "`TEXT` is the only embedded file type, so it cannot change.",
+    ),
+    (
+        "embedded file `endOfLine`; other actions (`onExit`, `onWrap*`)",
         "Shown like the fields above: one line per field, under the same path.",
     ),
 ];
