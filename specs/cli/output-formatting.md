@@ -32,6 +32,14 @@ JSON and YAML outputs include `status` and `message` fields, following the Pytho
 This convention enables simple programmatic checks (`jq .status`) without parsing the
 full output.
 
+`build` and `diff` are exceptions. Their documents are data, not command results: `build`
+prints a job, which `diff --jobs` reads back, and `diff` prints a `TemplateDiff`. Neither
+has `status` or `message`. A failure prints `ERROR: …` on stderr and exits 1, as for every
+command, and `diff` puts `changed` first in its document. Their keys are camelCase
+(`oldJob`, `oldIndex`), because they are the serde form of the openjd-model types, while
+`summary` and `run` use snake_case (`total_environments`). See [build.md](build.md) and
+[diff.md](diff.md).
+
 ### Summary Command Output
 
 **Human-readable:**

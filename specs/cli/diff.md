@@ -19,20 +19,20 @@ openjd diff <OLD> [NEW] [-p <PARAM>]... [--old-param <PARAM>]... [--new-param <P
 
 | Argument | Description |
 |----------|-------------|
-| `OLD`, `NEW` | Template files, or `-` for stdin (at most one side). With only `OLD`, both sides use that template and differ in `--old-param` / `--new-param` |
+| `OLD`, `NEW` | Template files, or `-` for stdin (at most one input of the command, counting `--environment`). With only `OLD`, both sides use that template and differ in `--old-param` / `--new-param` |
 | `-p`, `--job-param` | Job parameter for both sides. Same parser as `run` ([parameter-parsing.md](parameter-parsing.md)): `Key=Value`, `file://path`, inline JSON; repeatable, later wins |
 | `--old-param`, `--new-param` | Job parameter for one side, same parser; applied after `-p`, so it wins |
-| `--environment`, `--env` | Environment template file for both sides; repeatable |
+| `--environment`, `--env` | Environment template file for both sides, or `-` for stdin; repeatable. Each is read once and used by both sides |
 | `--extensions` | Extension allowlist, parsed as for `check` and `summary`; default every supported extension |
-| `--jobs` | `OLD` and `NEW` are built jobs (JSON or YAML from `openjd build`). Conflicts with the parameter, environment and extension flags |
-| `--step` | Keep only this step and the job-level changes. A step in neither job is an error |
+| `--jobs` | `OLD` and `NEW` are built jobs (JSON or YAML from `openjd build`). Requires `NEW` (a usage error without it). Conflicts with the parameter, environment and extension flags |
+| `--step` | Keep only this step and the job-level changes, and with `--plan` only this step's ops and the job-level ops (job fields, parameters, job environments). A step in neither job is an error |
 | `--tasks` | Print only each shown step's task summary |
 | `--stat` | Print one line per shown step, then the totals |
 | `--plan` | Also print `job::apply::plan` on the two jobs: one op per line with its mutation kinds |
 | `--depth` | `DiffOptions::with_max_depth` |
 | `--ignore-symbols` | `DiffOptions::with_resolved_symtab(false)` |
 | `--output` | `human-readable` (default), `json`, `yaml` |
-| `--verbose` | With `json` or `yaml`, also include `oldJob`, `newJob` and the `job` tree |
+| `--verbose` | Human-readable: also print the job diff tree (`DiffTree`'s `Display`) after the summary. `json` or `yaml`: also include `oldJob`, `newJob` and the `job` tree |
 | `--exit-code` | Exit 0 with no differences, 4 with differences |
 
 Which library call runs:
@@ -53,14 +53,18 @@ not accepted on the command line, because YAML is hard to quote in a shell argum
 
 ## Output
 
-Human-readable is `TemplateDiff`'s `Display` ([model/template-diff.md](../model/template-diff.md#rendering)):
+Human-readable output starts with a header naming the two sides, then `TemplateDiff`'s
+`Display` ([model/template-diff.md](../model/template-diff.md#rendering)). The header is
+`OLD -> NEW` for two templates, `OLD: old parameters -> new parameters` for one template,
+and `jobs: OLD -> NEW` with `--jobs`, each argument as given (`-` for stdin).
 
 ```
 $ openjd diff render_v1.yaml render_v2.yaml --new-param Frames=1-200 -p Scene=/proj/shot010.blend
+render_v1.yaml -> render_v2.yaml
 ~ parameter Frames: 1-100 -> 1-200  [parameters]
 ~ step Render
-    ~ Eye: [left] -> [left, right]  [template]
     ~ Frame: 1-100 -> 1-200  [parameters]
+    ~ Eye: [left] -> [left, right]  [template]
     tasks: 100 -> 400
       keep 100   Frame 1-100 × Eye left
       add  200   Frame 101-200 × Eye left, right
@@ -72,6 +76,7 @@ $ openjd diff render_v1.yaml render_v2.yaml --new-param Frames=1-200 -p Scene=/p
 `--stat`:
 
 ```
+render_v1.yaml -> render_v2.yaml
 ~ Render  tasks 100 -> 400  (+300 -0)
 1 step changed. Tasks: 100 kept, 300 added, 0 removed.
 ```
@@ -86,16 +91,36 @@ apply plan:
 kinds: ParameterValue, TaskAppend
 ```
 
-A step is shown when its status is not `unchanged` or when a change is under it (a
-step-level `let` that nothing reads, for example). With nothing to show, `--tasks` and
-`--stat` print `no changes`.
+With `--step`, the plan keeps that step's `step` and `tasks of` ops and every job-level op,
+and `kinds` is the union over the ops kept.
 
-`--output json` and `yaml` print one document and nothing else on stdout: the
+A step is shown when its status is not `unchanged` or when a change is under it (a
+step-level `let` that nothing reads, for example). `--tasks` and `--stat` print
+`no changes` only when nothing differs. When only job-level changes differ (a job rename,
+an added job environment, a parameter that no step reads), they print
+`job-level changes only` in place of the step lines, and `--stat` still prints the totals:
+
+```
+$ openjd diff wrap_simple_job.yaml wrap_job_with_inner_env.yaml --stat
+wrap_simple_job.yaml -> wrap_job_with_inner_env.yaml
+job-level changes only
+0 steps changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
+`--verbose` appends a blank line, `job diff tree:`, and the job layer's `DiffTree`
+listing, or `no changes`.
+
+`--output json` and `yaml` print one document and nothing else on stdout, with no header:
+`changed` (whether anything differs, the same test as `--exit-code`), then the
 `TemplateDiff` serde form with `changes`, `steps` and `notes`, plus `plan` with `--plan`
-(`{ops: [{action, kinds}], kinds}`). `--verbose` adds `oldJob`, `newJob` and `job`. The
-document is serialized directly rather than through `serde_json::Value`, so the jobs keep
-their task parameter definition order. `--tasks` and `--stat` affect only human-readable
-output.
+(`{ops: [{action, kinds}], kinds}`, filtered as above with `--step`). `--verbose` adds
+`oldJob`, `newJob` (each a `JobDocument`, so environment variables are sorted) and `job`.
+Each `Shown` keeps `raw`, the exact serialized job value, next to `text`. The document is
+serialized directly rather than through `serde_json::Value`, so the jobs keep their task
+parameter definition order. `--tasks` and `--stat` affect only human-readable output. Like
+`build`, the document is data rather than a command result: it has no `status` or
+`message`, and its keys are camelCase (see
+[output-formatting.md](output-formatting.md#status-convention)).
 
 ## Exit codes
 
@@ -105,11 +130,12 @@ output.
 | `--exit-code`, no differences | 0 |
 | `--exit-code`, differences | 4 |
 | any error (missing file, bad parameter, a template that does not build) | 1, with `ERROR: …` on stderr |
-| usage error (clap) | 2 |
+| usage error (clap), including `--jobs` without `NEW` | 2 |
 
 4 keeps "the inputs differ" apart from 1, which `openjd` already uses for every error,
-and from clap's 2. Errors name the path (`'nope.yaml' does not exist.`) or the side
-(`old template: …`).
+and from clap's 2. Errors name the path (`'nope.yaml' does not exist.`) or the input that
+failed: `old template: …` / `new template: …` for two templates, `old parameters: …` /
+`new parameters: …` for one template under two parameter sets.
 
 ## Not implemented
 

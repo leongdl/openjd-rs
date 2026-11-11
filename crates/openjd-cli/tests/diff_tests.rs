@@ -3,21 +3,26 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 //! `openjd diff` and `openjd build`, run as a binary on the samples in
-//! `crates/openjd-model/examples/template_diff/`.
+//! `crates/openjd-model/examples/template_diff/` and on the multi-step
+//! fixtures `tests/templates/diff_multi_v*.yaml`.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 fn samples() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../openjd-model/examples/template_diff")
 }
 
-/// Run `openjd` in the samples directory, with `stdin` piped in.
-fn openjd(args: &[&str], stdin: Option<&str>) -> Output {
+fn templates() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/templates")
+}
+
+/// Run `openjd` in `dir`, with `stdin` piped in.
+fn openjd_in(dir: &Path, args: &[&str], stdin: Option<&str>) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_openjd"))
         .args(args)
-        .current_dir(samples())
+        .current_dir(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -27,6 +32,11 @@ fn openjd(args: &[&str], stdin: Option<&str>) -> Output {
     pipe.write_all(stdin.unwrap_or("").as_bytes()).unwrap();
     drop(pipe);
     child.wait_with_output().unwrap()
+}
+
+/// Run `openjd` in the samples directory, with `stdin` piped in.
+fn openjd(args: &[&str], stdin: Option<&str>) -> Output {
+    openjd_in(&samples(), args, stdin)
 }
 
 fn stdout(o: &Output) -> String {
@@ -53,11 +63,13 @@ const CASE3: &[&str] = &[
     "Scene=/s",
 ];
 
+const V1_V2: &str = "render_v1.yaml -> render_v2.yaml\n";
+
 const CASE3_OUT: &str = "\
 ~ parameter Frames: 1-100 -> 1-200  [parameters]
 ~ step Render
-    ~ Eye: [left] -> [left, right]  [template]
     ~ Frame: 1-100 -> 1-200  [parameters]
+    ~ Eye: [left] -> [left, right]  [template]
     tasks: 100 -> 400
       keep 100   Frame 1-100 × Eye left
       add  200   Frame 101-200 × Eye left, right
@@ -79,6 +91,7 @@ fn two_files() {
     assert_ok(
         &o,
         "\
+render_v1.yaml -> render_v2.yaml
 ~ step Render
     ~ Eye: [left] -> [left, right]  [template]
     tasks: 100 -> 200
@@ -108,6 +121,7 @@ fn one_file_with_old_and_new_params() {
     assert_ok(
         &o,
         "\
+render_v1.yaml: old parameters -> new parameters
 ~ parameter Frames: 1-100 -> 1-200  [parameters]
 ~ step Render
     ~ Frame: 1-100 -> 1-200  [parameters]
@@ -122,14 +136,14 @@ fn one_file_with_old_and_new_params() {
 
 #[test]
 fn both_changes() {
-    assert_ok(&openjd(CASE3, None), CASE3_OUT);
+    assert_ok(&openjd(CASE3, None), &format!("{V1_V2}{CASE3_OUT}"));
 }
 
 #[test]
 fn stat() {
     assert_ok(
         &openjd(&with(CASE3, &["--stat"]), None),
-        "~ Render  tasks 100 -> 400  (+300 -0)\n1 step changed. Tasks: 100 kept, 300 added, 0 removed.\n",
+        &format!("{V1_V2}~ Render  tasks 100 -> 400  (+300 -0)\n1 step changed. Tasks: 100 kept, 300 added, 0 removed.\n"),
     );
 }
 
@@ -138,6 +152,7 @@ fn tasks() {
     assert_ok(
         &openjd(&with(CASE3, &["--tasks"]), None),
         "\
+render_v1.yaml -> render_v2.yaml
 ~ step Render
     tasks: 100 -> 400
       keep 100   Frame 1-100 × Eye left
@@ -153,7 +168,7 @@ fn plan() {
     assert_ok(
         &o,
         &format!(
-            "{CASE3_OUT}
+            "{V1_V2}{CASE3_OUT}
 apply plan:
   1. parameter modify Frames  [ParameterValue]
   2. tasks of Render: keep 100, add 300 at index 100..399, drop 0  [TaskAppend]
@@ -168,7 +183,7 @@ fn step_filter() {
     let o = openjd(&with(CASE3, &["--step", "Render", "--stat"]), None);
     assert_ok(
         &o,
-        "~ Render  tasks 100 -> 400  (+300 -0)\n1 step changed. Tasks: 100 kept, 300 added, 0 removed.\n",
+        &format!("{V1_V2}~ Render  tasks 100 -> 400  (+300 -0)\n1 step changed. Tasks: 100 kept, 300 added, 0 removed.\n"),
     );
     let o = openjd(&with(CASE3, &["--step", "Nope"]), None);
     assert_eq!(
@@ -200,22 +215,20 @@ fn jobs_round_trip_through_build() {
     let (a, b) = (dir.path().join("old.json"), dir.path().join("new.yaml"));
     std::fs::write(&a, &old.stdout).unwrap();
     std::fs::write(&b, &new.stdout).unwrap();
-    let o = openjd(
-        &["diff", "--jobs", a.to_str().unwrap(), b.to_str().unwrap()],
-        None,
-    );
+    let (a, b) = (a.to_str().unwrap(), b.to_str().unwrap());
+    let o = openjd(&["diff", "--jobs", a, b], None);
     assert_ok(
         &o,
-        &CASE3_OUT
-            .replace("[parameters]", "[job]")
-            .replace("[template]", "[job]"),
+        &format!(
+            "jobs: {a} -> {b}\n{}",
+            CASE3_OUT
+                .replace("[parameters]", "[job]")
+                .replace("[template]", "[job]")
+        ),
     );
     // A job diffed against itself, one side from stdin.
-    let o = openjd(
-        &["diff", "--jobs", a.to_str().unwrap(), "-"],
-        Some(&stdout(&old)),
-    );
-    assert_ok(&o, "no changes\n");
+    let o = openjd(&["diff", "--jobs", a, "-"], Some(&stdout(&old)));
+    assert_ok(&o, &format!("jobs: {a} -> -\nno changes\n"));
 }
 
 #[test]
@@ -224,7 +237,8 @@ fn output_json_is_one_document() {
     assert_eq!(o.status.code(), Some(0));
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
-    assert_eq!(keys, ["changes", "notes", "plan", "steps"]);
+    assert_eq!(keys, ["changed", "changes", "notes", "plan", "steps"]);
+    assert_eq!(v["changed"], true);
     assert_eq!(v["changes"].as_array().unwrap().len(), 3);
     assert_eq!(v["changes"][1]["origin"], "template");
     assert_eq!(
@@ -237,12 +251,35 @@ fn output_json_is_one_document() {
     let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
     assert_eq!(
         keys,
-        ["changes", "job", "newJob", "notes", "oldJob", "steps"]
+        ["changed", "changes", "job", "newJob", "notes", "oldJob", "steps"]
     );
+    // The document is written in field order, `changed` first.
+    assert!(stdout(&o).starts_with("{\n  \"changed\": true,\n  \"changes\": ["));
 
     let o = openjd(&with(CASE3, &["--output", "yaml"]), None);
     assert_eq!(o.status.code(), Some(0));
-    assert!(stdout(&o).starts_with("changes:\n"), "{}", stdout(&o));
+    assert!(
+        stdout(&o).starts_with("changed: true\nchanges:\n"),
+        "{}",
+        stdout(&o)
+    );
+
+    let o = openjd(
+        &[
+            "diff",
+            "render_v1.yaml",
+            "render_v1.yaml",
+            "-p",
+            "Scene=/s",
+            "--output",
+            "json",
+        ],
+        None,
+    );
+    assert_eq!(
+        stdout(&o),
+        "{\n  \"changed\": false,\n  \"changes\": [],\n  \"steps\": [\n    {\n      \"name\": \"Render\",\n      \"status\": \"unchanged\",\n      \"oldIndex\": 0,\n      \"newIndex\": 0,\n      \"tasks\": {\n        \"kind\": \"unchanged\",\n        \"count\": 100\n      }\n    }\n  ],\n  \"notes\": []\n}\n"
+    );
 }
 
 #[test]
@@ -260,7 +297,7 @@ fn exit_code() {
     );
     assert_eq!(
         (stdout(&same).as_str(), same.status.code()),
-        ("no changes\n", Some(0))
+        ("render_v1.yaml -> render_v1.yaml\nno changes\n", Some(0))
     );
     let differ = openjd(&with(CASE3, &["--exit-code", "--stat"]), None);
     assert_eq!(differ.status.code(), Some(4));
@@ -286,7 +323,7 @@ fn stdin() {
     );
     assert_ok(
         &o,
-        "~ Render  tasks 100 -> 200  (+100 -0)\n1 step changed. Tasks: 100 kept, 100 added, 0 removed.\n",
+        "render_v1.yaml -> -\n~ Render  tasks 100 -> 200  (+100 -0)\n1 step changed. Tasks: 100 kept, 100 added, 0 removed.\n",
     );
     let o = openjd(&["diff", "-", "-"], Some(&v2));
     assert_eq!(
@@ -294,6 +331,38 @@ fn stdin() {
         "ERROR: Only one input can be read from stdin ('-').\n"
     );
     assert_eq!(o.status.code(), Some(1));
+}
+
+/// An environment template from stdin is read once and used by both sides.
+#[test]
+fn environment_from_stdin_with_two_templates() {
+    let env = "\
+specificationVersion: environment-2023-09
+parameterDefinitions:
+  - {name: Tool, type: STRING, default: t1}
+environment:
+  name: Env
+  variables: {TOOL: \"{{Param.Tool}}\"}
+";
+    let o = openjd(
+        &[
+            "diff",
+            "render_v1.yaml",
+            "render_v2.yaml",
+            "-p",
+            "Scene=/s",
+            "--environment",
+            "-",
+            "--new-param",
+            "Tool=t2",
+            "--stat",
+        ],
+        Some(env),
+    );
+    assert_ok(
+        &o,
+        &format!("{V1_V2}~ Render  tasks 100 -> 200  (+100 -0)\n1 step changed. Tasks: 100 kept, 100 added, 0 removed.\n"),
+    );
 }
 
 #[test]
@@ -304,8 +373,46 @@ fn missing_file_names_the_path() {
     assert_eq!(o.status.code(), Some(1));
     let o = openjd(&["diff", "--jobs", "nope.json", "other.json"], None);
     assert_eq!(stderr(&o), "ERROR: 'nope.json' does not exist.\n");
+}
+
+#[test]
+fn jobs_with_one_input_is_a_usage_error() {
     let o = openjd(&["diff", "--jobs", "render_v1.yaml"], None);
-    assert_eq!(stderr(&o), "ERROR: --jobs needs both OLD and NEW.\n");
+    assert_eq!(
+        stderr(&o),
+        "error: the following required arguments were not provided:\n  <NEW>\n\nUsage: openjd diff --jobs <OLD> <NEW>\n\nFor more information, try '--help'.\n"
+    );
+    assert_eq!(stdout(&o), "");
+    assert_eq!(o.status.code(), Some(2));
+}
+
+#[test]
+fn errors_name_the_parameter_set_or_the_template() {
+    let o = openjd(&["diff", "render_v1.yaml", "--old-param", "Scene=/s"], None);
+    assert_eq!(
+        stderr(&o),
+        "ERROR: Validation error: new parameters: Values missing for required job parameters: Scene\n"
+    );
+    assert_eq!(o.status.code(), Some(1));
+    let o = openjd(&["diff", "render_v1.yaml", "--new-param", "Scene=/s"], None);
+    assert_eq!(
+        stderr(&o),
+        "ERROR: Validation error: old parameters: Values missing for required job parameters: Scene\n"
+    );
+    let o = openjd(
+        &[
+            "diff",
+            "render_v1.yaml",
+            "render_v2.yaml",
+            "--old-param",
+            "Scene=/s",
+        ],
+        None,
+    );
+    assert_eq!(
+        stderr(&o),
+        "ERROR: Validation error: new template: Values missing for required job parameters: Scene\n"
+    );
 }
 
 #[test]
@@ -324,4 +431,331 @@ fn build_errors_and_bad_jobs() {
         stderr(&o),
         "ERROR: '-': Validation error: not a built job: unknown field `bogus`, expected one of `name`, `description`, `extensions`, `parameters`, `steps`, `jobEnvironments` at line 1 column 34\n"
     );
+}
+
+#[test]
+fn build_defaults_to_json_and_sorts_environment_variables() {
+    let template = "\
+specificationVersion: jobtemplate-2023-09
+name: Vars
+jobEnvironments:
+  - name: Env
+    variables: {V5: e, V3: c, V1: a, V4: d, V2: b, V0: z, V7: g, V6: f, V9: i, V8: h}
+steps:
+  - name: S
+    script: {actions: {onRun: {command: c}}}
+";
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("vars.yaml"), template).unwrap();
+    let args = ["build", "vars.yaml"];
+    let first = openjd_in(dir.path(), &args, None);
+    assert_eq!(first.status.code(), Some(0), "{}", stderr(&first));
+    let text = stdout(&first);
+    assert!(text.starts_with("{\n  \"name\": \"Vars\",\n"), "{text}");
+    assert!(text.contains(
+        "\"variables\": {\n        \"V0\": \"z\",\n        \"V1\": \"a\",\n        \"V2\": \"b\",\n        \"V3\": \"c\",\n        \"V4\": \"d\",\n        \"V5\": \"e\",\n        \"V6\": \"f\",\n        \"V7\": \"g\",\n        \"V8\": \"h\",\n        \"V9\": \"i\"\n      }"
+    ), "{text}");
+    for _ in 0..5 {
+        assert_eq!(stdout(&openjd_in(dir.path(), &args, None)), text);
+    }
+}
+
+#[test]
+fn ignore_symbols_hides_resolved_symbol_tables() {
+    let args = [
+        "diff",
+        "render_v1.yaml",
+        "--old-param",
+        "Scene=/a",
+        "--new-param",
+        "Scene=/b",
+    ];
+    assert_ok(
+        &openjd(&args, None),
+        "\
+render_v1.yaml: old parameters -> new parameters
+~ parameter Scene: /a -> /b  [parameters]
+~ step Render
+    ~ resolvedSymTab: RawParam.Scene=/a -> RawParam.Scene=/b  [parameters]
+    tasks: 100 unchanged
+
+1 step changed. Tasks: 100 kept, 0 added, 0 removed.
+",
+    );
+    assert_ok(
+        &openjd(&with(&args, &["--ignore-symbols"]), None),
+        "\
+render_v1.yaml: old parameters -> new parameters
+~ parameter Scene: /a -> /b  [parameters]
+
+0 steps changed. Tasks: 100 kept, 0 added, 0 removed.
+",
+    );
+}
+
+#[test]
+fn verbose_human_output_appends_the_job_diff_tree() {
+    let o = openjd(
+        &[
+            "diff",
+            "render_v1.yaml",
+            "--old-param",
+            "Scene=/a",
+            "--new-param",
+            "Scene=/b",
+            "--verbose",
+        ],
+        None,
+    );
+    assert_ok(
+        &o,
+        r#"render_v1.yaml: old parameters -> new parameters
+~ parameter Scene: /a -> /b  [parameters]
+~ step Render
+    ~ resolvedSymTab: RawParam.Scene=/a -> RawParam.Scene=/b  [parameters]
+    tasks: 100 unchanged
+
+1 step changed. Tasks: 100 kept, 0 added, 0 removed.
+
+job diff tree:
+~ <root>
+  ~ parameters[Scene]
+      value: {"String":"/a"} -> {"String":"/b"}
+  ~ steps[Render]
+      resolvedSymTab: [{"name":"RawParam.Scene","type":"string","value":"/a"}] -> [{"name":"RawParam.Scene","type":"string","value":"/b"}]
+"#,
+    );
+    let o = openjd(
+        &[
+            "diff",
+            "render_v1.yaml",
+            "render_v1.yaml",
+            "-p",
+            "Scene=/s",
+            "--verbose",
+        ],
+        None,
+    );
+    assert_ok(
+        &o,
+        "render_v1.yaml -> render_v1.yaml\nno changes\n\njob diff tree:\nno changes\n",
+    );
+}
+
+// ─── multi-step fixture ─────────────────────────────────────────────
+
+const MULTI: &[&str] = &["diff", "diff_multi_v1.yaml", "diff_multi_v2.yaml"];
+const MULTI_HEADER: &str = "diff_multi_v1.yaml -> diff_multi_v2.yaml\n";
+
+fn multi(extra: &[&'static str]) -> Output {
+    openjd_in(&templates(), &with(MULTI, extra), None)
+}
+
+const MULTI_JOB_LEVEL: &str = "\
+~ description: first -> second  [template]
+~ jobEnvironments[Tools].variables.TOOL: v1 -> v2  [template]
+";
+
+#[test]
+fn multi_step_full_output() {
+    assert_ok(
+        &multi(&[]),
+        &format!(
+            "{MULTI_HEADER}{MULTI_JOB_LEVEL}\
+~ step Shrink
+    ~ N: 1-6 -> 1-3  [template]
+    tasks: 6 -> 3
+      keep 3     N 1-3
+      drop 3     N 4-6
+~ step Modify
+    ~ script.onRun.command: old -> new  [template]
+    tasks: 1 unchanged
+~ step LetOnly
+    ~ let: [unused = 1] -> [unused = 2]  [template]
+    tasks: 1 unchanged
++ step Added
+    tasks: 2 added
+
+3 steps changed, 1 added. Tasks: 6 kept, 2 added, 3 removed.
+"
+        ),
+    );
+}
+
+#[test]
+fn multi_step_stat_and_tasks() {
+    assert_ok(
+        &multi(&["--stat"]),
+        &format!(
+            "{MULTI_HEADER}\
+~ Shrink  tasks 6 -> 3  (+0 -3)
+~ Modify  tasks 1 -> 1  (+0 -0)
+~ LetOnly  tasks 1 -> 1  (+0 -0)
++ Added  tasks 0 -> 2  (+2 -0)
+3 steps changed, 1 added. Tasks: 6 kept, 2 added, 3 removed.
+"
+        ),
+    );
+    assert_ok(
+        &multi(&["--tasks"]),
+        &format!(
+            "{MULTI_HEADER}\
+~ step Shrink
+    tasks: 6 -> 3
+      keep 3     N 1-3
+      drop 3     N 4-6
+~ step Modify
+    tasks: 1 unchanged
+~ step LetOnly
+    tasks: 1 unchanged
++ step Added
+    tasks: 2 added
+"
+        ),
+    );
+}
+
+#[test]
+fn multi_step_plan_has_every_op_kind() {
+    let o = multi(&["--plan", "--stat"]);
+    assert_ok(
+        &o,
+        &format!(
+            "{MULTI_HEADER}\
+~ Shrink  tasks 6 -> 3  (+0 -3)
+~ Modify  tasks 1 -> 1  (+0 -0)
+~ LetOnly  tasks 1 -> 1  (+0 -0)
++ Added  tasks 0 -> 2  (+2 -0)
+3 steps changed, 1 added. Tasks: 6 kept, 2 added, 3 removed.
+
+apply plan:
+  1. job modify  [JobMetadata]
+  2. job environment modify Tools  [EnvVariables]
+  3. tasks of Shrink: keep 3, add 0, drop 3  [TaskRemove]
+  4. step modify Modify  [StepScript]
+  5. step add Added  [StepAdd]
+  6. tasks of Added: all  [TaskAppend]
+kinds: JobMetadata, EnvVariables, StepScript, StepAdd, TaskAppend, TaskRemove
+"
+        ),
+    );
+    // Reversed: a step removed, tasks appended.
+    let o = openjd_in(
+        &templates(),
+        &[
+            "diff",
+            "diff_multi_v2.yaml",
+            "diff_multi_v1.yaml",
+            "--plan",
+            "--stat",
+        ],
+        None,
+    );
+    let out = stdout(&o);
+    let plan = out.split("apply plan:\n").nth(1).unwrap();
+    assert_eq!(
+        plan,
+        "  1. job modify  [JobMetadata]
+  2. job environment modify Tools  [EnvVariables]
+  3. tasks of Shrink: keep 3, add 3 at index 3..5, drop 0  [TaskAppend]
+  4. step modify Modify  [StepScript]
+  5. step remove Added  [StepRemove]
+kinds: JobMetadata, EnvVariables, StepScript, StepRemove, TaskAppend
+"
+    );
+}
+
+#[test]
+fn step_keeps_job_level_changes_and_its_own_plan_ops() {
+    assert_ok(
+        &multi(&["--step", "Modify", "--plan"]),
+        &format!(
+            "{MULTI_HEADER}{MULTI_JOB_LEVEL}\
+~ step Modify
+    ~ script.onRun.command: old -> new  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+
+apply plan:
+  1. job modify  [JobMetadata]
+  2. job environment modify Tools  [EnvVariables]
+  3. step modify Modify  [StepScript]
+kinds: JobMetadata, EnvVariables, StepScript
+"
+        ),
+    );
+    let o = multi(&["--step", "Shrink", "--plan", "--output", "json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(
+        v["plan"],
+        serde_json::json!({
+            "ops": [
+                {"action": "job modify", "kinds": ["JobMetadata"]},
+                {"action": "job environment modify Tools", "kinds": ["EnvVariables"]},
+                {"action": "tasks of Shrink: keep 3, add 0, drop 3", "kinds": ["TaskRemove"]},
+            ],
+            "kinds": ["JobMetadata", "EnvVariables", "TaskRemove"],
+        })
+    );
+    let paths: Vec<&str> = v["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "",
+            "jobEnvironments[Tools]",
+            "steps[Shrink].parameterSpace.taskParameterDefinitions[N]"
+        ]
+    );
+    let steps: Vec<&str> = v["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(steps, ["Shrink"]);
+}
+
+/// Only job-level changes: `--stat` and `--tasks` say so rather than
+/// printing `no changes`.
+#[test]
+fn job_level_changes_only() {
+    for (extra, body) in [
+        (
+            &["--step", "Same", "--stat"][..],
+            "job-level changes only\n0 steps changed. Tasks: 1 kept, 0 added, 0 removed.\n",
+        ),
+        (
+            &["--step", "Same", "--tasks"][..],
+            "job-level changes only\n",
+        ),
+    ] {
+        let mut args = MULTI.to_vec();
+        args.extend(extra);
+        assert_ok(
+            &openjd_in(&templates(), &args, None),
+            &format!("{MULTI_HEADER}{body}"),
+        );
+    }
+    let o = openjd_in(
+        &templates(),
+        &[
+            "diff",
+            "wrap_simple_job.yaml",
+            "wrap_job_with_inner_env.yaml",
+            "--stat",
+            "--exit-code",
+        ],
+        None,
+    );
+    assert_eq!(
+        stdout(&o),
+        "wrap_simple_job.yaml -> wrap_job_with_inner_env.yaml\njob-level changes only\n0 steps changed. Tasks: 1 kept, 0 added, 0 removed.\n"
+    );
+    assert_eq!(o.status.code(), Some(4));
 }

@@ -723,6 +723,14 @@ impl core::marker::Copy for openjd_model::job::template_diff::DiffStat
 impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::DiffStat
 impl serde_core::ser::Serialize for openjd_model::job::template_diff::DiffStat
 pub fn openjd_model::job::template_diff::DiffStat::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct openjd_model::job::template_diff::JobDocument<'a>(pub &'a openjd_model::job::Job)
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::JobDocument<'_>
+pub fn openjd_model::job::template_diff::JobDocument<'_>::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'a> core::clone::Clone for openjd_model::job::template_diff::JobDocument<'a>
+pub fn openjd_model::job::template_diff::JobDocument<'a>::clone(&self) -> openjd_model::job::template_diff::JobDocument<'a>
+impl<'a> core::fmt::Debug for openjd_model::job::template_diff::JobDocument<'a>
+pub fn openjd_model::job::template_diff::JobDocument<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for openjd_model::job::template_diff::JobDocument<'a>
 pub struct openjd_model::job::template_diff::Shown
 pub openjd_model::job::template_diff::Shown::raw: serde_json::value::Value
 pub openjd_model::job::template_diff::Shown::text: alloc::string::String
@@ -744,6 +752,7 @@ pub openjd_model::job::template_diff::StepSummary::new_index: core::option::Opti
 pub openjd_model::job::template_diff::StepSummary::old_index: core::option::Option<usize>
 pub openjd_model::job::template_diff::StepSummary::status: openjd_model::job::diff::DiffStatus
 pub openjd_model::job::template_diff::StepSummary::tasks: openjd_model::job::template_diff::TaskSummary
+pub openjd_model::job::template_diff::StepSummary::tasks_unknown: core::option::Option<alloc::string::String>
 impl openjd_model::job::template_diff::StepSummary
 pub fn openjd_model::job::template_diff::StepSummary::stat_line(&self) -> alloc::string::String
 impl core::clone::Clone for openjd_model::job::template_diff::StepSummary

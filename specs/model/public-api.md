@@ -798,6 +798,7 @@ pub fn job::template_diff::diff_templates(old: &TemplateInput, new: &TemplateInp
 pub fn job::template_diff::diff_parameter_sets(template: &TemplateInput, old: &JobParameterInputValues, new: &JobParameterInputValues, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
 pub fn job::template_diff::diff_built_jobs(old: Job, new: Job, options: &DiffOptions) -> TemplateDiff;   // origin Job, no template layer
 pub fn job::template_diff::job_from_str(text: &str) -> Result<Job, ModelError>;   // JSON or YAML serde form of a Job
+pub struct job::template_diff::JobDocument<'a>(pub &'a Job);   // Serialize: the Job serde form, environment variables sorted; Debug, Clone, Copy
 
 pub enum job::template_diff::TemplateSource { Path(PathBuf), Text(String), Value(serde_json::Value), Decoded(Box<JobTemplate>) }
 impl TemplateSource { pub fn guess(s: &str) -> Self; }   // Path if s names an existing file, else Text
@@ -833,7 +834,8 @@ pub enum job::template_diff::Layer { Template, Job }
 pub enum job::template_diff::Origin { Template, Parameters, Both, Job }
 pub enum job::template_diff::Stage { Template, Parameters, Job, RunTime }
 pub struct job::template_diff::StepSummary { pub name: String, pub status: DiffStatus,
-    pub old_index: Option<usize>, pub new_index: Option<usize>, pub tasks: TaskSummary }
+    pub old_index: Option<usize>, pub new_index: Option<usize>, pub tasks: TaskSummary,
+    pub tasks_unknown: Option<String> }   // why the counts are 0, e.g. "adaptive chunking"
 impl StepSummary { pub fn stat_line(&self) -> String; }
 pub enum job::template_diff::TaskSummary { Unchanged { count: u64 }, Product { kept: BoxSummary, added: Vec<BoxSummary>, removed: Vec<BoxSummary> },
     Replaced { old_count: u64, new_count: u64, reason: String }, Added { count: u64 }, Removed { count: u64 } }
@@ -847,7 +849,10 @@ The result types derive `Debug`, `Clone`, `PartialEq` (`Eq` except `TemplateDiff
 `Change` one line, `StepSummary` the step's task block, `TaskSummary` and `BoxSummary`
 their parts, `DiffStat` the totals line, and `Layer`, `Origin`, `Stage` and `Shown` their
 text. `Layer`, `Origin` and `Stage` are also `Copy`, `Eq` and `Hash`, and `Layer` is `Ord`
-(changes sort by it). Inputs that fail to build return `ModelError` naming the side.
+(changes sort by it). Inputs that fail to build return `ModelError` naming the input
+(`old template`, `new parameters`, `the template`). `TemplateDiff` serializes `oldJob`
+and `newJob` as `JobDocument`s, so its serde form is deterministic; `openjd build` prints
+the same form, and `job_from_str` reads it back. Task counts saturate at `u64::MAX`.
 
 ### Job Apply (experimental)
 

@@ -5,6 +5,7 @@
 //! `openjd diff` command — diff two templates, one template under two
 //! parameter sets, or two built jobs.
 
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::Path;
 
@@ -62,7 +63,7 @@ pub struct DiffArgs {
     pub extensions: Option<String>,
 
     /// OLD and NEW are built jobs (the output of `openjd build`), not templates
-    #[arg(long, conflicts_with_all = ["parameters", "old_params", "new_params", "environments", "extensions"])]
+    #[arg(long, requires = "new", conflicts_with_all = ["parameters", "old_params", "new_params", "environments", "extensions"])]
     pub jobs: bool,
 
     /// Show only this step and the job-level changes
@@ -93,7 +94,8 @@ pub struct DiffArgs {
     #[arg(long = "output", value_parser = ["human-readable", "json", "yaml"], default_value = "human-readable")]
     pub output: String,
 
-    /// With --output json or yaml, also include the two jobs and the job diff tree
+    /// Also print the job diff tree; with --output json or yaml, also include
+    /// the two jobs
     #[arg(long)]
     pub verbose: bool,
 
@@ -109,44 +111,54 @@ pub fn execute(args: DiffArgs) -> Result<i32, Box<dyn std::error::Error>> {
         options = options.with_max_depth(n);
     }
     let mut stdin_used = false;
-    let mut diff = if args.jobs {
+    let (header, mut diff) = if args.jobs {
+        // clap requires NEW with --jobs.
         let new = args
             .new
             .as_deref()
             .ok_or("--jobs needs both OLD and NEW.")?;
-        let old = read_job(&args.old, &mut stdin_used)?;
-        let new = read_job(new, &mut stdin_used)?;
-        diff_built_jobs(old, new, &options)
+        let old_job = read_job(&args.old, &mut stdin_used)?;
+        let new_job = read_job(new, &mut stdin_used)?;
+        (
+            format!("jobs: {} -> {new}", args.old),
+            diff_built_jobs(old_job, new_job, &options),
+        )
     } else {
         let side = |extra: &[String]| {
             let all: Vec<String> = args.parameters.iter().chain(extra).cloned().collect();
             crate::run::parse_cli_parameters(&all)
         };
         let (old_params, new_params) = (side(&args.old_params)?, side(&args.new_params)?);
-        let base = |arg: &str,
-                    stdin_used: &mut bool|
-         -> Result<TemplateInput, Box<dyn std::error::Error>> {
-            let exts = crate::common::parse_extensions(&args.extensions)?;
-            let exts: Vec<&str> = exts.iter().map(String::as_str).collect();
-            let mut input = TemplateInput::new(read_template(arg, stdin_used)?)
+        let exts = crate::common::parse_extensions(&args.extensions)?;
+        let exts: Vec<&str> = exts.iter().map(String::as_str).collect();
+        // Each environment is read once and shared by both sides, so one of
+        // them can come from stdin.
+        let environments = args
+            .environments
+            .iter()
+            .map(|env| read_template(env, &mut stdin_used))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut base = |arg: &str| -> Result<TemplateInput, Box<dyn std::error::Error>> {
+            let mut input = TemplateInput::new(read_template(arg, &mut stdin_used)?)
                 .extensions(&exts)
                 .limits(crate::common::caller_limits());
-            for env in &args.environments {
-                input = input.environment(read_template(env, stdin_used)?);
+            for env in &environments {
+                input = input.environment(env.clone());
             }
             Ok(input)
         };
         match args.new.as_deref() {
-            None => diff_parameter_sets(
-                &base(&args.old, &mut stdin_used)?,
-                &old_params,
-                &new_params,
-                &options,
-            )?,
+            None => (
+                format!("{}: old parameters -> new parameters", args.old),
+                diff_parameter_sets(&base(&args.old)?, &old_params, &new_params, &options)?,
+            ),
             Some(new) => {
-                let old = base(&args.old, &mut stdin_used)?.params(old_params);
-                let new = base(new, &mut stdin_used)?.params(new_params);
-                diff_templates(&old, &new, &options)?
+                let old_input = base(&args.old)?.params(old_params);
+                let new_input = base(new)?.params(new_params);
+                (
+                    format!("{} -> {new}", args.old),
+                    diff_templates(&old_input, &new_input, &options)?,
+                )
             }
         }
     };
@@ -154,9 +166,12 @@ pub fn execute(args: DiffArgs) -> Result<i32, Box<dyn std::error::Error>> {
         keep_step(&mut diff, step)?;
     }
     let plan = if args.plan { Some(diff.plan()?) } else { None };
+    let plan = plan
+        .as_ref()
+        .map(|p| plan_doc(&diff, p, args.step.as_deref()));
     match args.output.as_str() {
-        "json" | "yaml" => print_document(&diff, plan.as_ref(), &args)?,
-        _ => print_human(&diff, plan.as_ref(), &args),
+        "json" | "yaml" => print_document(&diff, plan, &args)?,
+        _ => print_human(&header, &diff, plan.as_ref(), &args),
     }
     Ok(if args.exit_code && diff.is_changed() {
         EXIT_DIFFERENT
@@ -229,8 +244,13 @@ fn shown_steps(diff: &TemplateDiff) -> impl Iterator<Item = &StepSummary> {
     })
 }
 
-fn print_human(diff: &TemplateDiff, plan: Option<&ApplyPlan<'_>>, args: &DiffArgs) {
-    if args.tasks || args.stat {
+fn print_human(header: &str, diff: &TemplateDiff, plan: Option<&PlanDoc>, args: &DiffArgs) {
+    println!("{header}");
+    if !(args.tasks || args.stat) {
+        println!("{diff}");
+    } else if !diff.is_changed() {
+        println!("no changes");
+    } else {
         let lines: Vec<String> = shown_steps(diff)
             .map(|s| {
                 if args.stat {
@@ -241,27 +261,31 @@ fn print_human(diff: &TemplateDiff, plan: Option<&ApplyPlan<'_>>, args: &DiffArg
             })
             .collect();
         if lines.is_empty() {
-            println!("no changes");
+            println!("job-level changes only");
         } else {
             println!("{}", lines.join("\n"));
         }
-        if args.stat && !lines.is_empty() {
+        if args.stat {
             println!("{}", diff.stat());
         }
-    } else {
-        println!("{diff}");
     }
     if let Some(plan) = plan {
         println!("\napply plan:");
-        let ops = plan_ops(diff, plan);
-        if ops.is_empty() {
+        if plan.ops.is_empty() {
             println!("  nothing to apply");
         }
-        for (n, op) in ops.iter().enumerate() {
+        for (n, op) in plan.ops.iter().enumerate() {
             println!("  {}. {}  [{}]", n + 1, op.action, op.kinds.join(", "));
         }
-        let kinds: Vec<String> = plan.kinds().iter().map(|k| format!("{k:?}")).collect();
-        println!("kinds: {}", kinds.join(", "));
+        println!("kinds: {}", plan.kinds.join(", "));
+    }
+    if args.verbose {
+        println!("\njob diff tree:");
+        if diff.job.is_changed() {
+            print!("{}", diff.job);
+        } else {
+            println!("no changes");
+        }
     }
 }
 
@@ -278,7 +302,10 @@ struct PlanDoc {
     kinds: Vec<String>,
 }
 
-fn plan_ops(diff: &TemplateDiff, plan: &ApplyPlan<'_>) -> Vec<PlanOp> {
+/// The plan's ops, for printing. With `--step`, only that step's ops and
+/// the job-level ones (job fields, parameters, job environments); `kinds`
+/// is the union over the ops kept.
+fn plan_doc(diff: &TemplateDiff, plan: &ApplyPlan<'_>, step: Option<&str>) -> PlanDoc {
     let step_name = |i: usize, removed: bool| {
         let job = if removed {
             &diff.old_job
@@ -287,37 +314,45 @@ fn plan_ops(diff: &TemplateDiff, plan: &ApplyPlan<'_>) -> Vec<PlanOp> {
         };
         job.steps.get(i).map_or("?", |s| s.name.as_str())
     };
-    plan.ops
-        .iter()
-        .map(|op| {
-            let action = match &op.action {
-                Action::Job(_) => "job modify".to_string(),
-                Action::Parameter(o) => {
-                    format!("parameter {} {}", verb(o), op_name(o, |p| &p.name))
-                }
-                Action::Environment(_, o) => {
-                    format!("job environment {} {}", verb(o), op_name(o, |e| &e.name))
-                }
-                Action::Step(i, o) => format!(
-                    "step {} {}",
-                    verb(o),
-                    step_name(*i, matches!(o, Op::Remove { .. }))
-                ),
-                Action::Tasks { step, change, .. } => {
-                    format!(
-                        "tasks of {}: {}",
-                        step_name(*step, false),
-                        task_change(change)
-                    )
-                }
-                _ => "other".to_string(),
-            };
-            PlanOp {
-                action,
-                kinds: op.kinds.iter().map(|k| format!("{k:?}")).collect(),
+    let mut kinds = BTreeSet::new();
+    let mut ops = Vec::new();
+    for op in &plan.ops {
+        let (action, of_step) = match &op.action {
+            Action::Job(_) => ("job modify".to_string(), None),
+            Action::Parameter(o) => (
+                format!("parameter {} {}", verb(o), op_name(o, |p| &p.name)),
+                None,
+            ),
+            Action::Environment(_, o) => (
+                format!("job environment {} {}", verb(o), op_name(o, |e| &e.name)),
+                None,
+            ),
+            Action::Step(i, o) => {
+                let name = step_name(*i, matches!(o, Op::Remove { .. }));
+                (format!("step {} {name}", verb(o)), Some(name))
             }
-        })
-        .collect()
+            Action::Tasks { step, change, .. } => {
+                let name = step_name(*step, false);
+                (
+                    format!("tasks of {name}: {}", task_change(change)),
+                    Some(name),
+                )
+            }
+            _ => ("other".to_string(), None),
+        };
+        if step.is_some() && of_step.is_some() && of_step != step {
+            continue;
+        }
+        kinds.extend(op.kinds.iter().copied());
+        ops.push(PlanOp {
+            action,
+            kinds: op.kinds.iter().map(|k| format!("{k:?}")).collect(),
+        });
+    }
+    PlanDoc {
+        ops,
+        kinds: kinds.iter().map(|k| format!("{k:?}")).collect(),
+    }
 }
 
 fn verb<T>(op: &Op<'_, T>) -> &'static str {
@@ -356,11 +391,12 @@ fn task_change(change: &TaskChange) -> String {
     }
 }
 
-/// The `--output json|yaml` document: the diff's serde form without the jobs
-/// and the tree, unless `--verbose`.
+/// The `--output json|yaml` document: whether anything differs, then the
+/// diff's serde form without the jobs and the tree, unless `--verbose`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Brief<'a> {
+    changed: bool,
     changes: &'a [Change],
     steps: &'a [StepSummary],
     notes: &'a [String],
@@ -370,6 +406,7 @@ struct Brief<'a> {
 
 #[derive(Serialize)]
 struct Full<'a> {
+    changed: bool,
     #[serde(flatten)]
     diff: &'a TemplateDiff,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -378,18 +415,19 @@ struct Full<'a> {
 
 fn print_document(
     diff: &TemplateDiff,
-    plan: Option<&ApplyPlan<'_>>,
+    plan: Option<PlanDoc>,
     args: &DiffArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let plan = plan.map(|p| PlanDoc {
-        ops: plan_ops(diff, p),
-        kinds: p.kinds().iter().map(|k| format!("{k:?}")).collect(),
-    });
     // Serialized directly, not through `serde_json::Value`, so the jobs keep
     // their map order (task parameter definition order is task order).
     let json = args.output == "json";
+    let changed = diff.is_changed();
     let text = if args.verbose {
-        let doc = Full { diff, plan };
+        let doc = Full {
+            changed,
+            diff,
+            plan,
+        };
         if json {
             serde_json::to_string_pretty(&doc)?
         } else {
@@ -397,6 +435,7 @@ fn print_document(
         }
     } else {
         let doc = Brief {
+            changed,
             changes: &diff.changes,
             steps: &diff.steps,
             notes: &diff.notes,

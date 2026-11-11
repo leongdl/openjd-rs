@@ -105,8 +105,8 @@ fn case2_template_adds_right_eye() {
 const CASE3: &str = "\
 ~ parameter Frames: 1-100 -> 1-200  [parameters]
 ~ step Render
-    ~ Eye: [left] -> [left, right]  [template]
     ~ Frame: 1-100 -> 1-200  [parameters]
+    ~ Eye: [left] -> [left, right]  [template]
     tasks: 100 -> 400
       keep 100   Frame 1-100 × Eye left
       add  200   Frame 101-200 × Eye left, right
@@ -292,10 +292,8 @@ fn parameter_definition_changes_are_compared_field_by_field() {
         d.to_string(),
         r#"+ parameter definition F.maxValue: 9.5  [template]
 - parameter definition F.minValue: 0.0  [template]
-- parameter definition Gone: {default: g, type: STRING}  [template]
 ~ parameter definition I.maxValue: 10 -> 20  [template]
 ~ parameter definition I.minValue: 1 -> 2  [template]
-+ parameter definition New: {default: n, type: STRING}  [template]
 ~ parameter definition S.allowedValues: [x, y] -> [x, y, z]  [template]
 ~ parameter definition S.description: a -> b  [template]
 ~ parameter definition S.maxLength: 5 -> 9  [template]
@@ -303,8 +301,8 @@ fn parameter_definition_changes_are_compared_field_by_field() {
 ~ parameter definition S.userInterface.label: L -> M  [template]
 ~ parameter definition T.default: "3" -> 3  [template]
 ~ parameter definition T.type: STRING -> INT  [template]
-- parameter Gone: g  [template]
-+ parameter New: n  [template]
+- parameter Gone: g, defined as {default: g, type: STRING}  [template]
++ parameter New: n, defined as {default: n, type: STRING}  [template]
 ~ parameter T.type: STRING -> INT  [template]
 ~ parameter T: {"String":"3"} -> {"Int":3}  [template]
 
@@ -344,7 +342,7 @@ fn step_let_nothing_reads_shows_only_in_the_template_layer() {
     ~ let: [unused = 1] -> [unused = 2]  [template]
     tasks: 1 unchanged
 
-0 steps changed. Tasks: 1 kept, 0 added, 0 removed."
+1 step changed. Tasks: 1 kept, 0 added, 0 removed."
     );
     assert!(!d.job.is_changed());
     assert_eq!(
@@ -533,7 +531,7 @@ fn errors_name_the_side() {
     .unwrap_err();
     assert_eq!(
         err.to_string(),
-        "Validation error: new template: Values missing for required job parameters: Scene"
+        "Validation error: new parameters: Values missing for required job parameters: Scene"
     );
 }
 
@@ -697,12 +695,14 @@ fn max_depth_reports_unexpanded_nodes_whole() {
         &DiffOptions::default().with_max_depth(1),
     )
     .unwrap();
-    // The step's tasks come from the jobs, not the tree, so they still show.
+    // The step itself is not expanded; its tasks come from the jobs, not
+    // the tree, so they still show.
     assert_eq!(
         d.to_string(),
         "\
 ~ parameter Frames: 1-100 -> 1-200  [parameters]
 ~ step Render
+    ~ (not expanded)  [both]
     tasks: 100 -> 400
       keep 100   Frame 1-100 × Eye left
       add  200   Frame 101-200 × Eye left, right
@@ -790,4 +790,854 @@ steps:
         ["- A  tasks 1 -> 0  (+0 -1)", "+ B  tasks 0 -> 3  (+3 -0)"]
     );
     assert_eq!(d.steps[1].to_string(), "+ step B\n    tasks: 3 added");
+}
+
+// ─── audit round 1 regressions ──────────────────────────────────────
+
+const ENV_JOB: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: J
+jobEnvironments:
+  - name: E
+    script:
+      actions:
+        onEnter: {command: hi}
+steps:
+  - name: S
+    script:
+      actions:
+        onRun: {command: a}
+"#;
+
+#[test]
+fn whole_action_added_or_removed_carries_its_side() {
+    let new = ENV_JOB.replace(
+        "onEnter: {command: hi}",
+        "onEnter: {command: hi}\n        onExit: {command: bye}",
+    );
+    let d = diff_templates(&text(ENV_JOB), &text(&new), &opts()).unwrap();
+    assert_eq!(
+        lines(&d.changes),
+        ["+ jobEnvironments[E].script.onExit: {args: null, cancelation: null, command: bye, timeout: null}  [template]"]
+    );
+    let d = diff_templates(&text(&new), &text(ENV_JOB), &opts()).unwrap();
+    assert_eq!(
+        lines(&d.changes),
+        ["- jobEnvironments[E].script.onExit: {args: null, cancelation: null, command: bye, timeout: null}  [template]"]
+    );
+    // `onRun` cut off by the depth limit is reported whole, with both sides.
+    let d = diff_templates(
+        &text(ENV_JOB),
+        &text(&ENV_JOB.replace("command: a", "command: b")),
+        &DiffOptions::default().with_max_depth(3),
+    )
+    .unwrap();
+    assert_eq!(
+        lines(&d.changes),
+        ["~ steps[S].script.onRun: {args: null, cancelation: null, command: a, timeout: null} -> {args: null, cancelation: null, command: b, timeout: null}  [template]"]
+    );
+}
+
+const COUNT_OVERFLOW: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: Big
+steps:
+  - name: A
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: F, type: INT, range: "1-4000000000"}
+        - {name: G, type: INT, range: "1-4000000000"}
+    script: {actions: {onRun: {command: a}}}
+  - name: B
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: F, type: INT, range: "1-4000000000"}
+        - {name: G, type: INT, range: "1-4000000000"}
+    script: {actions: {onRun: {command: a}}}
+"#;
+
+#[test]
+fn task_counts_saturate_instead_of_overflowing() {
+    let d = diff_templates(
+        &text(COUNT_OVERFLOW),
+        &text(&COUNT_OVERFLOW.replace("command: a", "command: b")),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        d.stat(),
+        DiffStat {
+            steps_changed: 2,
+            tasks_kept: u64::MAX,
+            ..DiffStat::default()
+        }
+    );
+    assert_eq!(
+        d.stat().to_string(),
+        "2 steps changed. Tasks: 18446744073709551615 kept, 0 added, 0 removed."
+    );
+}
+
+const ADAPTIVE: &str = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [TASK_CHUNKING]
+name: C
+steps:
+  - name: Chunked
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: F
+          type: CHUNK[INT]
+          range: "1-100"
+          chunks: {defaultTaskCount: 10, targetRuntimeSeconds: 60, rangeConstraint: CONTIGUOUS}
+    script: {actions: {onRun: {command: old, args: ["{{Task.Param.F}}"]}}}
+"#;
+
+#[test]
+fn adaptive_chunking_task_count_is_unknown_with_a_note() {
+    let d = diff_templates(
+        &text(ADAPTIVE),
+        &text(&ADAPTIVE.replace("command: old", "command: new")),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
+~ step Chunked
+    ~ script.onRun.command: old -> new  [template]
+    tasks: unknown (adaptive chunking)
+
+1 step changed. Tasks: 0 kept, 0 added, 0 removed."
+    );
+    assert_eq!(
+        d.notes,
+        ["steps[Chunked]: cannot count tasks: the chunk size is adaptive (targetRuntimeSeconds), so the number of chunks is decided at run time"]
+    );
+    let s = d.step("Chunked").unwrap();
+    assert_eq!(s.tasks, TaskSummary::Unchanged { count: 0 });
+    assert_eq!(
+        s.stat_line(),
+        "~ Chunked  tasks unknown (adaptive chunking)"
+    );
+}
+
+fn env_vars_job(n: usize) -> String {
+    let vars: Vec<String> = (0..n).map(|i| format!("V{i}: v{i}")).collect();
+    format!(
+        r#"
+specificationVersion: jobtemplate-2023-09
+name: J
+jobEnvironments:
+  - name: E
+    variables: {{{}}}
+steps:
+  - name: S
+    script: {{actions: {{onRun: {{command: a}}}}}}
+"#,
+        vars.join(", ")
+    )
+}
+
+#[test]
+fn serialized_diff_is_deterministic_with_many_environment_variables() {
+    let old = env_vars_job(10);
+    let new = old.replace("command: a", "command: b");
+    let runs: Vec<String> = (0..20)
+        .map(|_| {
+            let d = diff_templates(&text(&old), &text(&new), &opts()).unwrap();
+            serde_json::to_string(&d).unwrap()
+        })
+        .collect();
+    assert!(runs.iter().all(|r| r == &runs[0]));
+    // The variables are written sorted by name.
+    let v: serde_json::Value = serde_json::from_str(&runs[0]).unwrap();
+    let names: Vec<&String> = v["oldJob"]["jobEnvironments"][0]["variables"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(
+        names,
+        ["V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9"]
+    );
+}
+
+#[test]
+
+fn job_document_is_deterministic_and_reads_back() {
+    let old = env_vars_job(10);
+    let job = text(&old).build().unwrap();
+    let docs: Vec<String> = (0..20)
+        .map(|_| serde_json::to_string(&JobDocument(&text(&old).build().unwrap())).unwrap())
+        .collect();
+    assert!(docs.iter().all(|r| r == &docs[0]));
+    assert_eq!(job_from_str(&docs[0]).unwrap(), job);
+}
+
+#[test]
+fn long_values_that_truncate_alike_show_where_they_differ() {
+    let base = format!("{}a", "x".repeat(200));
+    let t = |arg: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n  - name: S\n    script: {{actions: {{onRun: {{command: c, args: [\"{arg}\"]}}}}}}\n"
+        )
+    };
+    let d = diff_templates(
+        &text(&t(&base)),
+        &text(&t(&base.replace('a', "b"))),
+        &opts(),
+    )
+    .unwrap();
+    let c = &d.changes[0];
+    let (b, a) = (c.before.as_ref().unwrap(), c.after.as_ref().unwrap());
+    assert_ne!(b.text, a.text);
+    assert_eq!(b.text, format!("…{}a\"]", "x".repeat(40)));
+    assert_eq!(a.text, format!("…{}b\"]", "x".repeat(40)));
+}
+
+#[test]
+fn unexpanded_step_change_is_shown_under_the_step() {
+    let d = diff_templates(
+        &input("render_v1.yaml"),
+        &input("render_v2.yaml"),
+        &DiffOptions::default().with_max_depth(1),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
+~ step Render
+    ~ (not expanded)  [template]
+    tasks: 100 -> 200
+      keep 100   Frame 1-100 × Eye left
+      add  100   Frame 1-100 × Eye right
+
+1 step changed. Tasks: 100 kept, 100 added, 0 removed."
+    );
+}
+
+/// A job whose one step's `onRun` args are `args`, with an EXPR script
+/// `let` and a step environment variable `V`.
+fn stage_job(args: &str, script_let: &str, var: &str) -> String {
+    format!(
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: J
+parameterDefinitions:
+  - {{name: Scene, type: STRING, default: s}}
+  - {{name: P, type: STRING, default: p}}
+steps:
+  - name: S
+    parameterSpace:
+      taskParameterDefinitions:
+        - {{name: Frame, type: INT, range: "1-2"}}
+    stepEnvironments:
+      - name: E
+        variables: {{V: "{var}"}}
+    script:
+      let: ["{script_let}"]
+      actions:
+        onRun: {{command: c, args: ["{args}"]}}
+"#
+    )
+}
+
+/// `(args, script let, variable V)` of one side.
+type Fields<'a> = (&'a str, &'a str, &'a str);
+
+#[test]
+fn stage_is_run_time_only_for_task_or_session_references_in_format_strings() {
+    let (a, l, v) = ("{{Param.Scene}} a", "f = 1", "x");
+    let cases: &[(Fields, Fields, &str, Stage)] = &[
+        // a command change with no run-time reference
+        ((a, l, v), ("{{Param.Scene}} b", l, v), "args", Stage::Job),
+        // `Task.` outside `{{ }}` is literal text
+        (
+            ("{{Param.P}} Task.log a", l, v),
+            ("{{Param.P}} Task.log b", l, v),
+            "args",
+            Stage::Job,
+        ),
+        (
+            ("Session.x a", l, v),
+            ("Session.x b", l, v),
+            "args",
+            Stage::Job,
+        ),
+        // a run-time reference on the new side only, and on the old side only
+        (
+            (a, l, v),
+            ("{{Session.WorkingDirectory}}", l, v),
+            "args",
+            Stage::RunTime,
+        ),
+        (
+            ("{{Session.WorkingDirectory}}", l, v),
+            (a, l, v),
+            "args",
+            Stage::RunTime,
+        ),
+        (
+            ("{{Task.Param.Frame}} a", l, v),
+            ("{{Task.Param.Frame}} b", l, v),
+            "args",
+            Stage::RunTime,
+        ),
+        // a script `let` references symbols without braces
+        (
+            (a, "f = Task.Param.Frame", v),
+            (a, "f = Task.Param.Frame + 1", v),
+            "let",
+            Stage::RunTime,
+        ),
+        ((a, "f = 1", v), (a, "f = 2", v), "let", Stage::Job),
+        // an environment variable
+        (
+            (a, l, "{{Session.WorkingDirectory}}/a"),
+            (a, l, "{{Session.WorkingDirectory}}/b"),
+            "variables.V",
+            Stage::RunTime,
+        ),
+        ((a, l, "x"), (a, l, "y"), "variables.V", Stage::Job),
+    ];
+    for ((oa, ol, ov), (na, nl, nv), field, stage) in cases {
+        let d = diff_templates(
+            &text(&stage_job(oa, ol, ov)),
+            &text(&stage_job(na, nl, nv)),
+            &opts(),
+        )
+        .unwrap();
+        let c = d
+            .changes
+            .iter()
+            .find(|c| c.layer == Layer::Job && c.field == *field)
+            .unwrap_or_else(|| panic!("no {field} change: {d}"));
+        assert_eq!(c.stage, *stage, "{c}");
+    }
+}
+
+#[test]
+fn errors_name_the_parameter_set_in_a_parameter_set_diff() {
+    let old = std::fs::read_to_string(sample_path("render_v1.yaml")).unwrap();
+    let err = diff_parameter_sets(
+        &text(&old),
+        &params(&[]),
+        &params(&[("Scene", "s")]),
+        &opts(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: old parameters: Values missing for required job parameters: Scene"
+    );
+    let err = diff_parameter_sets(
+        &text(&old),
+        &params(&[("Scene", "s")]),
+        &params(&[]),
+        &opts(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: new parameters: Values missing for required job parameters: Scene"
+    );
+    let err =
+        diff_parameter_sets(&text("name: x"), &params(&[]), &params(&[]), &opts()).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: the template: Template is missing Open Job Description schema version key: specificationVersion"
+    );
+}
+
+/// Every field the template layer records, for every parameter type that
+/// has it, changed one at a time.
+#[test]
+fn every_parameter_definition_field_is_compared() {
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("STRING", "description: a", "description: b", "description"),
+        ("STRING", "default: a", "default: b", "default"),
+        ("STRING", "allowedValues: [a]", "allowedValues: [a, b]", "allowedValues"),
+        ("STRING", "minLength: 0", "minLength: 1", "minLength"),
+        ("STRING", "maxLength: 5", "maxLength: 6", "maxLength"),
+        ("STRING", "userInterface: {control: LINE_EDIT}", "userInterface: {control: MULTILINE_EDIT}", "userInterface.control"),
+        ("STRING", "userInterface: {label: a}", "userInterface: {label: b}", "userInterface.label"),
+        ("STRING", "userInterface: {groupLabel: a}", "userInterface: {groupLabel: b}", "userInterface.groupLabel"),
+        ("PATH", "default: a", "default: b", "default"),
+        ("PATH", "allowedValues: ['ABS']", "allowedValues: ['ABS', b]", "allowedValues"),
+        ("PATH", "minLength: 0", "minLength: 1", "minLength"),
+        ("PATH", "maxLength: 100", "maxLength: 101", "maxLength"),
+        ("PATH", "objectType: FILE", "objectType: DIRECTORY", "objectType"),
+        ("PATH", "dataFlow: IN", "dataFlow: OUT", "dataFlow"),
+        ("PATH", "objectType: FILE, userInterface: {control: CHOOSE_INPUT_FILE}", "objectType: FILE, userInterface: {control: CHOOSE_OUTPUT_FILE}", "userInterface.control"),
+        ("PATH", "objectType: FILE, userInterface: {control: CHOOSE_INPUT_FILE, fileFilters: [{label: a, patterns: ['*']}]}", "objectType: FILE, userInterface: {control: CHOOSE_INPUT_FILE, fileFilters: [{label: b, patterns: ['*']}]}", "userInterface.fileFilters"),
+        ("PATH", "objectType: FILE, userInterface: {control: CHOOSE_INPUT_FILE, fileFilterDefault: {label: a, patterns: ['*']}}", "objectType: FILE, userInterface: {control: CHOOSE_INPUT_FILE, fileFilterDefault: {label: b, patterns: ['*']}}", "userInterface.fileFilterDefault"),
+        ("INT", "default: 1", "default: 2", "default"),
+        ("INT", "allowedValues: [1]", "allowedValues: [1, 2]", "allowedValues"),
+        ("INT", "minValue: 1", "minValue: 0", "minValue"),
+        ("INT", "maxValue: 5", "maxValue: 6", "maxValue"),
+        ("INT", "userInterface: {control: SPIN_BOX, singleStepDelta: 1}", "userInterface: {control: SPIN_BOX, singleStepDelta: 2}", "userInterface.singleStepDelta"),
+        ("INT", "userInterface: {control: SPIN_BOX}", "userInterface: {control: HIDDEN}", "userInterface.control"),
+        ("FLOAT", "default: 1.5", "default: 2.5", "default"),
+        ("FLOAT", "allowedValues: [1.5]", "allowedValues: [1.5, 2]", "allowedValues"),
+        ("FLOAT", "minValue: 1", "minValue: 0", "minValue"),
+        ("FLOAT", "maxValue: 5", "maxValue: 6", "maxValue"),
+        ("FLOAT", "userInterface: {control: SPIN_BOX, decimals: 1}", "userInterface: {control: SPIN_BOX, decimals: 2}", "userInterface.decimals"),
+        ("FLOAT", "userInterface: {control: SPIN_BOX, singleStepDelta: 0.5}", "userInterface: {control: SPIN_BOX, singleStepDelta: 1.5}", "userInterface.singleStepDelta"),
+        ("BOOL", "default: true", "default: false", "default"),
+        ("BOOL", "userInterface: {control: CHECK_BOX}", "userInterface: {control: HIDDEN}", "userInterface.control"),
+        ("RANGE_EXPR", "default: 1-2", "default: 1-3", "default"),
+        ("RANGE_EXPR", "minLength: 1", "minLength: 2", "minLength"),
+        ("RANGE_EXPR", "maxLength: 5", "maxLength: 6", "maxLength"),
+        ("RANGE_EXPR", "userInterface: {control: LINE_EDIT}", "userInterface: {control: HIDDEN}", "userInterface.control"),
+        ("LIST[STRING]", "default: [a]", "default: [b]", "default"),
+        ("LIST[STRING]", "minLength: 1", "minLength: 0", "minLength"),
+        ("LIST[STRING]", "maxLength: 5", "maxLength: 6", "maxLength"),
+        ("LIST[STRING]", "item: {allowedValues: [a]}", "item: {allowedValues: [a, b]}", "item.allowedValues"),
+        ("LIST[STRING]", "item: {minLength: 0}", "item: {minLength: 1}", "item.minLength"),
+        ("LIST[STRING]", "item: {maxLength: 5}", "item: {maxLength: 6}", "item.maxLength"),
+        ("LIST[STRING]", "userInterface: {control: LINE_EDIT_LIST}", "userInterface: {control: HIDDEN}", "userInterface.control"),
+        ("LIST[PATH]", "default: [a]", "default: [b]", "default"),
+        ("LIST[PATH]", "minLength: 1", "minLength: 0", "minLength"),
+        ("LIST[PATH]", "maxLength: 5", "maxLength: 6", "maxLength"),
+        ("LIST[PATH]", "objectType: FILE", "objectType: DIRECTORY", "objectType"),
+        ("LIST[PATH]", "dataFlow: IN", "dataFlow: OUT", "dataFlow"),
+        ("LIST[PATH]", "item: {allowedValues: ['ABS']}", "item: {allowedValues: ['ABS', b]}", "item.allowedValues"),
+        ("LIST[PATH]", "item: {minLength: 1}", "item: {minLength: 2}", "item.minLength"),
+        ("LIST[PATH]", "item: {maxLength: 100}", "item: {maxLength: 101}", "item.maxLength"),
+        ("LIST[PATH]", "objectType: FILE, userInterface: {control: CHOOSE_INPUT_FILE_LIST}", "objectType: FILE, userInterface: {control: HIDDEN}", "userInterface.control"),
+        ("LIST[PATH]", "objectType: FILE, userInterface: {control: CHOOSE_INPUT_FILE_LIST, fileFilters: [{label: a, patterns: ['*']}]}", "objectType: FILE, userInterface: {control: CHOOSE_INPUT_FILE_LIST, fileFilters: [{label: b, patterns: ['*']}]}", "userInterface.fileFilters"),
+        ("LIST[PATH]", "objectType: FILE, userInterface: {control: CHOOSE_INPUT_FILE_LIST, fileFilterDefault: {label: a, patterns: ['*']}}", "objectType: FILE, userInterface: {control: CHOOSE_INPUT_FILE_LIST, fileFilterDefault: {label: b, patterns: ['*']}}", "userInterface.fileFilterDefault"),
+        ("LIST[INT]", "default: [1]", "default: [2]", "default"),
+        ("LIST[INT]", "minLength: 1", "minLength: 0", "minLength"),
+        ("LIST[INT]", "maxLength: 5", "maxLength: 6", "maxLength"),
+        ("LIST[INT]", "item: {allowedValues: [1, 2]}", "item: {allowedValues: [1, 2, 3]}", "item.allowedValues"),
+        ("LIST[INT]", "item: {minValue: 0}", "item: {minValue: -1}", "item.minValue"),
+        ("LIST[INT]", "item: {maxValue: 5}", "item: {maxValue: 6}", "item.maxValue"),
+        ("LIST[INT]", "userInterface: {control: SPIN_BOX_LIST, singleStepDelta: 1}", "userInterface: {control: SPIN_BOX_LIST, singleStepDelta: 2}", "userInterface.singleStepDelta"),
+        ("LIST[FLOAT]", "default: [1.5]", "default: [2.5]", "default"),
+        ("LIST[FLOAT]", "minLength: 1", "minLength: 0", "minLength"),
+        ("LIST[FLOAT]", "maxLength: 5", "maxLength: 6", "maxLength"),
+        ("LIST[FLOAT]", "item: {allowedValues: [1.5, 2]}", "item: {allowedValues: [1.5, 2, 3]}", "item.allowedValues"),
+        ("LIST[FLOAT]", "item: {minValue: 0}", "item: {minValue: -1}", "item.minValue"),
+        ("LIST[FLOAT]", "item: {maxValue: 5}", "item: {maxValue: 6}", "item.maxValue"),
+        ("LIST[FLOAT]", "userInterface: {control: SPIN_BOX_LIST, decimals: 1}", "userInterface: {control: SPIN_BOX_LIST, decimals: 2}", "userInterface.decimals"),
+        ("LIST[FLOAT]", "userInterface: {control: SPIN_BOX_LIST, singleStepDelta: 0.5}", "userInterface: {control: SPIN_BOX_LIST, singleStepDelta: 1.5}", "userInterface.singleStepDelta"),
+        ("LIST[BOOL]", "default: [true]", "default: [false]", "default"),
+        ("LIST[BOOL]", "minLength: 1", "minLength: 0", "minLength"),
+        ("LIST[BOOL]", "maxLength: 5", "maxLength: 6", "maxLength"),
+        ("LIST[BOOL]", "userInterface: {control: CHECK_BOX_LIST}", "userInterface: {control: HIDDEN}", "userInterface.control"),
+        ("LIST[LIST[INT]]", "default: [[1]]", "default: [[2]]", "default"),
+        ("LIST[LIST[INT]]", "minLength: 1", "minLength: 0", "minLength"),
+        ("LIST[LIST[INT]]", "maxLength: 5", "maxLength: 6", "maxLength"),
+        ("LIST[LIST[INT]]", "item: {minLength: 1}", "item: {minLength: 0}", "item.minLength"),
+        ("LIST[LIST[INT]]", "item: {maxLength: 5}", "item: {maxLength: 6}", "item.maxLength"),
+        ("LIST[LIST[INT]]", "item: {item: {allowedValues: [1, 2]}}", "item: {item: {allowedValues: [1, 2, 3]}}", "item.item.allowedValues"),
+        ("LIST[LIST[INT]]", "item: {item: {minValue: 0}}", "item: {item: {minValue: -1}}", "item.item.minValue"),
+        ("LIST[LIST[INT]]", "item: {item: {maxValue: 5}}", "item: {item: {maxValue: 6}}", "item.item.maxValue"),
+        ("LIST[LIST[INT]]", "userInterface: {label: a}", "userInterface: {control: HIDDEN, label: a}", "userInterface.control"),
+    ];
+    let t = |ty: &str, extra: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [EXPR]\nname: J\nparameterDefinitions:\n  - {{name: X, type: \"{ty}\", {extra}}}\nsteps:\n  - name: S\n    script: {{actions: {{onRun: {{command: c}}}}}}\n"
+        )
+    };
+    let mut failures = Vec::new();
+    for (ty, old, new, field) in cases {
+        let (a, b) = (
+            t(ty, &old.replace("ABS", ABS)),
+            t(ty, &new.replace("ABS", ABS)),
+        );
+        let side = |s: &str| text(s).param("X", default_for(ty));
+        match diff_templates(&side(&a), &side(&b), &opts()) {
+            Ok(d) => {
+                let fields: Vec<&str> = d
+                    .changes_at("parameterDefinitions[X]")
+                    .map(|c| c.field.as_str())
+                    .collect();
+                if fields != [*field] {
+                    failures.push(format!("{ty} {old} -> {new}: {fields:?}"));
+                }
+            }
+            Err(e) => failures.push(format!("{ty} {old} -> {new}: {e}")),
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// An absolute PATH value on this platform.
+const ABS: &str = if cfg!(windows) { r"C:\a" } else { "/a" };
+
+/// A value of `ty` that satisfies every constraint in the table above.
+fn default_for(ty: &str) -> String {
+    match ty {
+        "STRING" => "a".into(),
+        "PATH" => ABS.into(),
+        "INT" => "1".into(),
+        "FLOAT" => "1.5".into(),
+        "BOOL" => "true".into(),
+        "RANGE_EXPR" => "1-2".into(),
+        "LIST[STRING]" => r#"["a"]"#.into(),
+        "LIST[PATH]" => serde_json::json!([ABS]).to_string(),
+        "LIST[INT]" => "[1]".into(),
+        "LIST[FLOAT]" => "[1.5]".into(),
+        "LIST[BOOL]" => "[true]".into(),
+        _ => "[[1]]".into(),
+    }
+}
+
+const TASKS_6: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: T
+steps:
+  - name: Render
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: N, type: INT, range: "1-6"}
+    script: {actions: {onRun: {command: c}}}
+"#;
+
+#[test]
+fn removed_tasks_are_counted_and_listed() {
+    let d = diff_templates(
+        &text(TASKS_6),
+        &text(&TASKS_6.replace("1-6", "1-3")),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
+~ step Render
+    ~ N: 1-6 -> 1-3  [template]
+    tasks: 6 -> 3
+      keep 3     N 1-3
+      drop 3     N 4-6
+
+1 step changed. Tasks: 3 kept, 0 added, 3 removed."
+    );
+    assert_eq!(d.steps[0].stat_line(), "~ Render  tasks 6 -> 3  (+0 -3)");
+}
+
+#[test]
+fn added_and_removed_boxes_both_show_in_the_stat_line() {
+    let old = TASKS_6.replace("\"1-6\"", "[1, 2, 3]");
+    let new = TASKS_6.replace("\"1-6\"", "[1, 2, 4]");
+    let d = diff_templates(&text(&old), &text(&new), &opts()).unwrap();
+    assert_eq!(d.steps[0].stat_line(), "~ Render  tasks 3 -> 3  (+1 -1)");
+    assert_eq!(
+        d.steps[0].tasks.to_string(),
+        "tasks: 3 -> 3\n  keep 2     N 1-2\n  add  1     N 4\n  drop 1     N 3"
+    );
+}
+
+#[test]
+fn replaced_tasks_stat_line_and_totals() {
+    let new = TASKS_6.replace(
+        "        - {name: N, type: INT, range: \"1-6\"}",
+        "        - {name: N, type: INT, range: \"1-6\"}\n        - {name: M, type: INT, range: \"1-2\"}",
+    );
+    let d = diff_templates(&text(TASKS_6), &text(&new), &opts()).unwrap();
+    assert_eq!(
+        d.steps[0].stat_line(),
+        "~ Render  tasks 6 -> 12  (replaced)"
+    );
+    assert_eq!(
+        d.stat().to_string(),
+        "1 step changed. Tasks: 0 kept, 0 added, 0 removed, 12 replaced."
+    );
+}
+
+#[test]
+fn integer_lists_render_as_runs_only_with_three_values() {
+    let d = |old: &str, new: &str| {
+        diff_templates(
+            &text(&TASKS_6.replace("\"1-6\"", old)),
+            &text(&TASKS_6.replace("\"1-6\"", new)),
+            &opts(),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        d("[1, 3]", "[1, 3, 5]").steps[0].tasks.to_string(),
+        "tasks: 2 -> 3\n  keep 2     N 1,3\n  add  1     N 5"
+    );
+    assert_eq!(
+        d("[1, 3, 5]", "[1, 3, 5, 9]").steps[0].tasks.to_string(),
+        "tasks: 3 -> 4\n  keep 3     N 1-5:2\n  add  1     N 9"
+    );
+    assert_eq!(
+        d("[2]", "[1, 5, 7]").steps[0].tasks.to_string(),
+        "tasks: 1 -> 3\n  add  3     N 1,5,7\n  drop 1     N 2"
+    );
+}
+
+#[test]
+fn job_from_str_round_trips_empty_lists() {
+    let t = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: Empty
+parameterDefinitions:
+  - {name: LS, type: "LIST[STRING]", default: []}
+  - {name: LI, type: "LIST[INT]", default: []}
+  - {name: LF, type: "LIST[FLOAT]", default: []}
+  - {name: LP, type: "LIST[PATH]", default: []}
+  - {name: LB, type: "LIST[BOOL]", default: []}
+  - {name: LL, type: "LIST[LIST[INT]]", default: []}
+  - {name: LLE, type: "LIST[LIST[INT]]", default: [[]]}
+steps:
+  - name: Render
+    script:
+      actions:
+        onRun: {command: echo}
+"#;
+    let job = text(t).build().unwrap();
+    for text in [
+        serde_json::to_string(&job).unwrap(),
+        serde_saphyr::to_string(&job).unwrap(),
+    ] {
+        let back = job_from_str(&text).unwrap();
+        assert_eq!(back, job);
+        for (k, p) in &job.parameters {
+            assert_eq!(
+                back.parameters[k].value.expr_type(),
+                p.value.expr_type(),
+                "{k}"
+            );
+        }
+    }
+}
+
+#[test]
+fn parameter_order_is_deterministic_with_many_parameters() {
+    let defs: Vec<String> = (0..10)
+        .map(|i| format!("  - {{name: P{i}, type: STRING, default: a}}"))
+        .collect();
+    let t = format!(
+        "specificationVersion: jobtemplate-2023-09\nname: J\nparameterDefinitions:\n{}\nsteps:\n  - name: S\n    script: {{actions: {{onRun: {{command: c}}}}}}\n",
+        defs.join("\n")
+    );
+    let all_b: Vec<(String, String)> = (0..10).map(|i| (format!("P{i}"), "b".into())).collect();
+    let run = || {
+        let d = diff_parameter_sets(
+            &text(&t),
+            &params(&[]),
+            &params(
+                &all_b
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect::<Vec<_>>(),
+            ),
+            &opts(),
+        )
+        .unwrap();
+        (
+            d.to_string(),
+            d.job.to_string(),
+            serde_json::to_string(&d).unwrap(),
+        )
+    };
+    let first = run();
+    assert!(first.0.starts_with(
+        "~ parameter P0: a -> b  [parameters]\n~ parameter P1: a -> b  [parameters]\n"
+    ));
+    for _ in 0..20 {
+        assert_eq!(run(), first);
+    }
+}
+
+#[test]
+fn layer_and_stage_display_names() {
+    assert_eq!(Layer::Template.to_string(), "template");
+    assert_eq!(Layer::Job.to_string(), "job");
+    let stages = [
+        Stage::Template,
+        Stage::Parameters,
+        Stage::Job,
+        Stage::RunTime,
+    ];
+    let names: Vec<String> = stages.iter().map(ToString::to_string).collect();
+    assert_eq!(names, ["template", "parameters", "job", "run time"]);
+    let origins = [
+        Origin::Template,
+        Origin::Parameters,
+        Origin::Both,
+        Origin::Job,
+    ];
+    let names: Vec<String> = origins.iter().map(ToString::to_string).collect();
+    assert_eq!(names, ["template", "parameters", "both", "job"]);
+}
+
+#[test]
+fn template_input_parameters_are_the_values_set() {
+    let i = TemplateInput::new(sample("render_v1.yaml"))
+        .param("Scene", "a")
+        .params([("Frames".to_string(), ExprValue::String("1-2".into()))])
+        .param("Scene", "b");
+    assert_eq!(
+        i.parameters(),
+        &params(&[("Scene", "b"), ("Frames", "1-2")])
+    );
+}
+
+const KINDS_OLD: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: K
+parameterDefinitions:
+  - {name: Gone, type: STRING, default: g}
+jobEnvironments:
+  - name: Kept
+    script:
+      actions:
+        onEnter: {command: a}
+  - name: GoneEnv
+    variables: {A: a}
+steps:
+  - name: S
+    stepEnvironments:
+      - name: StepEnv
+        variables: {A: a}
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: N, type: INT, range: "1-2"}
+    hostRequirements:
+      amounts: [{name: amount.worker.vcpu, min: 1}]
+    script:
+      actions:
+        onRun: {command: a}
+      embeddedFiles:
+        - {name: F, type: TEXT, data: x}
+  - name: GoneStep
+    script: {actions: {onRun: {command: a}}}
+"#;
+
+const KINDS_NEW: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: K
+parameterDefinitions:
+  - {name: New, type: STRING, default: n}
+jobEnvironments:
+  - name: Kept
+    script:
+      actions:
+        onEnter: {command: b}
+        onExit: {command: bye}
+  - name: NewEnv
+    script:
+      actions:
+        onEnter: {command: a}
+steps:
+  - name: S
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: N, type: INT, range: "1-2"}
+        - {name: M, type: STRING, range: [x]}
+    script:
+      actions:
+        onRun: {command: b}
+      embeddedFiles:
+        - {name: G, type: TEXT, data: y}
+  - name: NewStep
+    script: {actions: {onRun: {command: a}}}
+"#;
+
+/// For every node kind and every depth, a whole-node change carries the
+/// sides that exist: an added node its new value, a removed node its old
+/// value, an unexpanded node both.
+#[test]
+fn every_whole_node_change_carries_the_sides_that_exist() {
+    let mut seen = std::collections::BTreeSet::new();
+    for depth in [None, Some(1), Some(2), Some(3), Some(4), Some(5)] {
+        let mut o = opts();
+        if let Some(n) = depth {
+            o = o.with_max_depth(n);
+        }
+        let d = diff_templates(&text(KINDS_OLD), &text(KINDS_NEW), &o).unwrap();
+        for c in d
+            .changes
+            .iter()
+            .filter(|c| c.layer == Layer::Job && c.field.is_empty())
+        {
+            let id = d.job.find(&c.path).unwrap();
+            let node = d.job.node(id).unwrap();
+            seen.insert(format!("{:?} {:?}", node.kind, node.status));
+            let (b, a) = (c.before.is_some(), c.after.is_some());
+            let want = match node.status {
+                DiffStatus::Added => (false, true),
+                DiffStatus::Removed => (true, false),
+                _ => (true, true),
+            };
+            assert_eq!((b, a), want, "depth {depth:?}: {c}");
+        }
+    }
+    let seen: Vec<String> = seen.into_iter().collect();
+    assert_eq!(
+        seen,
+        [
+            "Action Added",
+            "Action Modified",
+            "EmbeddedFile Added",
+            "EmbeddedFile Removed",
+            "Environment Added",
+            "Environment Modified",
+            "Environment Removed",
+            "EnvironmentScript Modified",
+            "HostRequirements Removed",
+            "JobParameter Added",
+            "JobParameter Removed",
+            "ParameterSpace Modified",
+            "Step Added",
+            "Step Modified",
+            "Step Removed",
+            "StepScript Modified",
+            "TaskParameter Added",
+        ]
+    );
+}
+
+#[test]
+fn job_document_matches_the_job_serde_form_up_to_variable_order() {
+    let job = input("render_v2.yaml")
+        .environment(TemplateSource::Text(
+            "specificationVersion: environment-2023-09\nenvironment:\n  name: Env\n  variables: {A: a}\n  script: {actions: {onEnter: {command: x}}}\n".into(),
+        ))
+        .build()
+        .unwrap();
+    let mut job = job;
+    // A step environment, so every DocEnvironment path is written.
+    job.steps[0].step_environments = job.job_environments.clone();
+    assert_eq!(
+        serde_json::to_string(&JobDocument(&job)).unwrap(),
+        serde_json::to_string(&job).unwrap()
+    );
+    assert_eq!(
+        serde_saphyr::to_string(&JobDocument(&job)).unwrap(),
+        serde_saphyr::to_string(&job).unwrap()
+    );
+}
+
+#[test]
+fn product_counts_saturate() {
+    let b = |count| BoxSummary {
+        count,
+        dims: vec![],
+    };
+    let s = StepSummary {
+        name: "S".into(),
+        status: DiffStatus::Modified,
+        old_index: Some(0),
+        new_index: Some(0),
+        tasks: TaskSummary::Product {
+            kept: b(u64::MAX),
+            added: vec![b(1), b(u64::MAX)],
+            removed: vec![b(2)],
+        },
+        tasks_unknown: None,
+    };
+    assert_eq!(
+        s.stat_line(),
+        "~ S  tasks 18446744073709551615 -> 18446744073709551615  (+18446744073709551615 -2)"
+    );
 }

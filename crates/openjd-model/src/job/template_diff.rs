@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use indexmap::IndexMap;
+use openjd_expr::format_string::FormatString;
 use openjd_expr::path_mapping::PathFormat;
 use openjd_expr::value::Float64;
 use openjd_expr::{ExprType, ExprValue, RangeExpr};
@@ -329,18 +330,14 @@ fn build(
     create_job(&loaded.template, &values, &ctx)
 }
 
-/// Name the side that failed, keeping the error's variant where it holds a
-/// message.
+/// Prefix an error with the input that failed (`old template`, `new
+/// parameters`), keeping the error's variant where it holds a message.
 fn on_side(side: &str, e: ModelError) -> ModelError {
     match e {
-        ModelError::DecodeValidation(m) => {
-            ModelError::DecodeValidation(format!("{side} template: {m}"))
-        }
-        ModelError::Compatibility(m) => ModelError::Compatibility(format!("{side} template: {m}")),
-        ModelError::UnsupportedSchema(m) => {
-            ModelError::UnsupportedSchema(format!("{side} template: {m}"))
-        }
-        other => ModelError::DecodeValidation(format!("{side} template: {other}")),
+        ModelError::DecodeValidation(m) => ModelError::DecodeValidation(format!("{side}: {m}")),
+        ModelError::Compatibility(m) => ModelError::Compatibility(format!("{side}: {m}")),
+        ModelError::UnsupportedSchema(m) => ModelError::UnsupportedSchema(format!("{side}: {m}")),
+        other => ModelError::DecodeValidation(format!("{side}: {other}")),
     }
 }
 
@@ -507,6 +504,10 @@ pub struct StepSummary {
     pub new_index: Option<usize>,
     /// The task change.
     pub tasks: TaskSummary,
+    /// Why the task count cannot be computed (`adaptive chunking`), with a
+    /// note in [`TemplateDiff::notes`]. The counts in `tasks` are then 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tasks_unknown: Option<String>,
 }
 
 /// Counts over a [`TemplateDiff`].
@@ -540,9 +541,11 @@ pub struct TemplateDiff {
     /// The job layer as [`diff_jobs`] returned it.
     #[serde(serialize_with = "ser_tree")]
     pub job: DiffTree,
-    /// The old built job.
+    /// The old built job. Serialized as a [`JobDocument`].
+    #[serde(serialize_with = "ser_job")]
     pub old_job: Job,
-    /// The new built job.
+    /// The new built job. Serialized as a [`JobDocument`].
+    #[serde(serialize_with = "ser_job")]
     pub new_job: Job,
     /// Anything the diff could not decide, e.g. why origins are `Both`.
     pub notes: Vec<String>,
@@ -573,35 +576,55 @@ impl TemplateDiff {
         plan(&self.old_job, &self.new_job)
     }
 
-    /// Step and task counts.
+    /// Step and task counts. A step on both sides counts as changed when
+    /// its job-layer status is modified or a template-layer change is under
+    /// it (a step-level `let` that nothing reads). Counts saturate at
+    /// `u64::MAX`.
     #[must_use]
     pub fn stat(&self) -> DiffStat {
+        fn add(total: &mut u64, n: u64) {
+            *total = total.saturating_add(n);
+        }
         let mut s = DiffStat::default();
         for step in &self.steps {
             match step.status {
-                DiffStatus::Modified => s.steps_changed += 1,
-                DiffStatus::Added => s.steps_added += 1,
-                DiffStatus::Removed => s.steps_removed += 1,
-                DiffStatus::Unchanged => {}
+                DiffStatus::Added => add(&mut s.steps_added, 1),
+                DiffStatus::Removed => add(&mut s.steps_removed, 1),
+                _ if self.step_changed(step) => add(&mut s.steps_changed, 1),
+                _ => {}
             }
             match &step.tasks {
-                TaskSummary::Unchanged { count } => s.tasks_kept += count,
+                TaskSummary::Unchanged { count } => add(&mut s.tasks_kept, *count),
                 TaskSummary::Product {
                     kept,
                     added,
                     removed,
                 } => {
-                    s.tasks_kept += kept.count;
-                    s.tasks_added += added.iter().map(|b| b.count).sum::<u64>();
-                    s.tasks_removed += removed.iter().map(|b| b.count).sum::<u64>();
+                    add(&mut s.tasks_kept, kept.count);
+                    add(&mut s.tasks_added, total(added));
+                    add(&mut s.tasks_removed, total(removed));
                 }
-                TaskSummary::Replaced { new_count, .. } => s.tasks_replaced += new_count,
-                TaskSummary::Added { count } => s.tasks_added += count,
-                TaskSummary::Removed { count } => s.tasks_removed += count,
+                TaskSummary::Replaced { new_count, .. } => add(&mut s.tasks_replaced, *new_count),
+                TaskSummary::Added { count } => add(&mut s.tasks_added, *count),
+                TaskSummary::Removed { count } => add(&mut s.tasks_removed, *count),
             }
         }
         s
     }
+
+    /// Whether `step` differs, or has any change at or under its path.
+    fn step_changed(&self, step: &StepSummary) -> bool {
+        step.status != DiffStatus::Unchanged
+            || self
+                .changes_at(&format!("steps[{}]", step.name))
+                .next()
+                .is_some()
+    }
+}
+
+/// The task count of a list of boxes, saturating.
+fn total(boxes: &[BoxSummary]) -> u64 {
+    boxes.iter().fold(0, |t, b| t.saturating_add(b.count))
 }
 
 fn under(path: &str, prefix: &str) -> bool {
@@ -622,10 +645,12 @@ pub fn diff_templates(
     new: &TemplateInput,
     options: &DiffOptions,
 ) -> Result<TemplateDiff, ModelError> {
-    let lo = load(old).map_err(|e| on_side("old", e))?;
-    let ln = load(new).map_err(|e| on_side("new", e))?;
-    let old_job = build(&lo, &old.parameters, &old.limits).map_err(|e| on_side("old", e))?;
-    let new_job = build(&ln, &new.parameters, &new.limits).map_err(|e| on_side("new", e))?;
+    let lo = load(old).map_err(|e| on_side("old template", e))?;
+    let ln = load(new).map_err(|e| on_side("new template", e))?;
+    let old_job =
+        build(&lo, &old.parameters, &old.limits).map_err(|e| on_side("old template", e))?;
+    let new_job =
+        build(&ln, &new.parameters, &new.limits).map_err(|e| on_side("new template", e))?;
     let template = template_layer(&lo.template, &ln.template);
     let same_template = matches!((&lo.fingerprint, &ln.fingerprint), (Some(a), Some(b)) if a == b);
     let mut notes = Vec::new();
@@ -655,24 +680,26 @@ pub fn diff_templates(
 /// Diff one template under two parameter sets. `old` and `new` are laid
 /// over the template input's own parameters; a later value wins.
 ///
-/// Errors name the build that failed: `old template: …` or
-/// `new template: …`, or `template: …` when the template itself does not
-/// decode.
+/// Errors name the build that failed: `old parameters: …` or
+/// `new parameters: …`, or `the template: …` when the template itself
+/// does not decode.
 pub fn diff_parameter_sets(
     template: &TemplateInput,
     old: &JobParameterInputValues,
     new: &JobParameterInputValues,
     options: &DiffOptions,
 ) -> Result<TemplateDiff, ModelError> {
-    let loaded = load(template).map_err(|e| on_side("the", e))?;
+    let loaded = load(template).map_err(|e| on_side("the template", e))?;
     let overlay = |side: &JobParameterInputValues| {
         let mut p = template.parameters.clone();
         p.extend(side.iter().map(|(k, v)| (k.clone(), v.clone())));
         p
     };
     let (old_params, new_params) = (overlay(old), overlay(new));
-    let old_job = build(&loaded, &old_params, &template.limits).map_err(|e| on_side("old", e))?;
-    let new_job = build(&loaded, &new_params, &template.limits).map_err(|e| on_side("new", e))?;
+    let old_job =
+        build(&loaded, &old_params, &template.limits).map_err(|e| on_side("old parameters", e))?;
+    let new_job =
+        build(&loaded, &new_params, &template.limits).map_err(|e| on_side("new parameters", e))?;
     let rule = OriginRule::All(Origin::Parameters);
     Ok(assemble(
         old_job,
@@ -816,15 +843,30 @@ fn assemble(
     }
 }
 
-/// When both sides render the same text but differ (`"3"` and `3`), show
-/// both as JSON so the line does not read `3 -> 3`.
+/// When both sides render the same text but differ, show them as JSON
+/// (`"3"` and `3`), from just before the first difference when cutting at
+/// 120 characters would hide it.
 fn disambiguate(c: &mut Change) {
     if let (Some(b), Some(a)) = (&mut c.before, &mut c.after) {
         if b.text == a.text && b.raw != a.raw {
-            b.text = truncate(b.raw.to_string());
-            a.text = truncate(a.raw.to_string());
+            (b.text, a.text) = around_difference(&b.raw.to_string(), &a.raw.to_string());
         }
     }
+}
+
+/// Both texts cut at [`MAX_TEXT_CHARS`]; when the first difference would
+/// be cut off, both start with `…` a few characters before it.
+fn around_difference(x: &str, y: &str) -> (String, String) {
+    const CONTEXT: usize = 40;
+    let first_diff = x.chars().zip(y.chars()).take_while(|(p, q)| p == q).count();
+    if first_diff < MAX_TEXT_CHARS - 1 {
+        return (truncate(x.to_string()), truncate(y.to_string()));
+    }
+    let from = |s: &str| {
+        let tail: String = s.chars().skip(first_diff - CONTEXT).collect();
+        truncate(format!("…{tail}"))
+    };
+    (from(x), from(y))
 }
 
 fn to_json<T: Serialize + ?Sized>(v: &T) -> Value {
@@ -847,11 +889,17 @@ fn segments(tree: &DiffTree, id: usize) -> Vec<String> {
 
 /// Follow diff segments through a serialized job: `name[key]` selects a
 /// map entry, or the element of a list whose `name` is `key`.
+///
+/// Every diff segment is the serialized field name except an action's
+/// (`onRun`, `onEnter`, …), which the diff hangs on the script directly but
+/// the job holds under `script.actions`.
 fn lookup<'v>(doc: &'v Value, segments: &[String]) -> Option<&'v Value> {
     segments
         .iter()
         .try_fold(doc, |v, seg| match seg.split_once('[') {
-            None => v.get(seg),
+            None => v
+                .get(seg)
+                .or_else(|| v.get("actions").and_then(|a| a.get(seg))),
             Some((coll, rest)) => {
                 let key = rest.strip_suffix(']')?;
                 match v.get(coll)? {
@@ -884,17 +932,37 @@ fn job_stage(path: &str, field: &str, before: Option<&Shown>, after: Option<&Sho
     }
 }
 
-/// Whether any string in `v` references a `Task.` or `Session.` symbol: in
-/// a `{{ }}` interpolation, or anywhere in a `let` expression.
+/// Whether any string in `v` references a `Task.` or `Session.` symbol:
+/// inside a `{{ }}` interpolation, or anywhere in a `let` expression.
 fn refs_run_time(v: &Value, is_let: bool) -> bool {
     match v {
-        Value::String(s) => {
-            (is_let || s.contains("{{")) && (s.contains("Task.") || s.contains("Session."))
-        }
+        Value::String(s) if is_let => names_run_time_symbol(s),
+        Value::String(s) => interpolations(s).any(names_run_time_symbol),
         Value::Array(a) => a.iter().any(|e| refs_run_time(e, is_let)),
         Value::Object(m) => m.values().any(|e| refs_run_time(e, is_let)),
         _ => false,
     }
+}
+
+/// The text inside each `{{ … }}` of a format string.
+fn interpolations(s: &str) -> impl Iterator<Item = &str> {
+    s.split("{{")
+        .skip(1)
+        .filter_map(|rest| rest.split_once("}}").map(|(inner, _)| inner))
+}
+
+/// Whether `expr` names a `Task.` or `Session.` symbol: the prefix starts
+/// the text or follows a character that cannot be part of a name or an
+/// attribute access, so `subTask.x` and `a.Task.x` do not count.
+fn names_run_time_symbol(expr: &str) -> bool {
+    ["Task.", "Session."].iter().any(|root| {
+        expr.match_indices(root).any(|(i, _)| {
+            expr[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        })
+    })
 }
 
 // ─── rendering ──────────────────────────────────────────────────────
@@ -1468,15 +1536,50 @@ fn step_summaries(
             ),
             (None, None) => continue,
         };
+        let adaptive = a
+            .map(|i| &old.steps[i])
+            .into_iter()
+            .chain(b.map(|j| &new.steps[j]))
+            .any(is_adaptive);
+        let (tasks, tasks_unknown) = if adaptive {
+            notes.push(format!("steps[{name}]: {ADAPTIVE_NOTE}"));
+            let zeroed = match tasks {
+                TaskSummary::Unchanged { .. } => TaskSummary::Unchanged { count: 0 },
+                TaskSummary::Added { .. } => TaskSummary::Added { count: 0 },
+                TaskSummary::Removed { .. } => TaskSummary::Removed { count: 0 },
+                TaskSummary::Product { .. } | TaskSummary::Replaced { .. } => {
+                    TaskSummary::Replaced {
+                        old_count: 0,
+                        new_count: 0,
+                        reason: "adaptive chunking".into(),
+                    }
+                }
+            };
+            (zeroed, Some("adaptive chunking".to_string()))
+        } else {
+            (tasks, None)
+        };
         out.push(StepSummary {
             name: name.to_string(),
             status,
             old_index: a,
             new_index: b,
             tasks,
+            tasks_unknown,
         });
     }
     out
+}
+
+const ADAPTIVE_NOTE: &str = "cannot count tasks: the chunk size is adaptive \
+    (targetRuntimeSeconds), so the number of chunks is decided at run time";
+
+/// Whether the step's chunk size adapts at run time, so its task count is
+/// not known ahead of it.
+fn is_adaptive(step: &Step) -> bool {
+    space_of(step)
+        .and_then(|s| StepParameterSpaceIterator::new(s).ok())
+        .is_some_and(|it| it.chunks_adaptive())
 }
 
 // ─── built-job reader ───────────────────────────────────────────────
@@ -1676,6 +1779,131 @@ fn expr_value(v: &Value, hint: &ExprType) -> Result<ExprValue, String> {
 
 // ─── serde helpers ──────────────────────────────────────────────────
 
+/// A [`Job`] serialized as `openjd build` prints it: the job's serde form,
+/// except that environment `variables` are written sorted by name.
+///
+/// `Environment::variables` is a `HashMap`, so the plain serde form of a job
+/// with more than one variable changes from run to run. This form is
+/// deterministic, and [`job_from_str`] reads it back.
+#[derive(Debug, Clone, Copy)]
+pub struct JobDocument<'a>(pub &'a Job);
+
+impl Serialize for JobDocument<'_> {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        // Exhaustive destructures: a new field fails to compile here until
+        // the document writes it.
+        let Job {
+            name,
+            description,
+            extensions,
+            parameters,
+            steps,
+            job_environments,
+        } = self.0;
+        DocJob {
+            name,
+            description,
+            extensions,
+            parameters,
+            steps: steps.iter().map(DocStep::new).collect(),
+            job_environments: job_environments
+                .as_ref()
+                .map(|v| v.iter().map(DocEnvironment::new).collect()),
+        }
+        .serialize(ser)
+    }
+}
+
+/// Field names and attributes mirror [`Job`].
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocJob<'a> {
+    name: &'a String,
+    description: &'a Option<String>,
+    extensions: &'a Option<Vec<ModelExtension>>,
+    parameters: &'a IndexMap<String, JobParameter>,
+    steps: Vec<DocStep<'a>>,
+    job_environments: Option<Vec<DocEnvironment<'a>>>,
+}
+
+/// Field names and attributes mirror [`Step`].
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocStep<'a> {
+    name: &'a String,
+    description: &'a Option<String>,
+    script: &'a crate::job::StepScript,
+    step_environments: Option<Vec<DocEnvironment<'a>>>,
+    parameter_space: &'a Option<StepParameterSpace>,
+    host_requirements: &'a Option<crate::job::HostRequirements>,
+    dependencies: &'a Option<Vec<crate::job::StepDependency>>,
+    #[serde(rename = "resolvedSymTab", skip_serializing_if = "Option::is_none")]
+    resolved_symtab: &'a Option<openjd_expr::symbol_table::SerializedSymbolTable>,
+}
+
+impl<'a> DocStep<'a> {
+    fn new(step: &'a Step) -> Self {
+        let Step {
+            name,
+            description,
+            script,
+            step_environments,
+            parameter_space,
+            host_requirements,
+            dependencies,
+            resolved_symtab,
+        } = step;
+        Self {
+            name,
+            description,
+            script,
+            step_environments: step_environments
+                .as_ref()
+                .map(|v| v.iter().map(DocEnvironment::new).collect()),
+            parameter_space,
+            host_requirements,
+            dependencies,
+            resolved_symtab,
+        }
+    }
+}
+
+/// Field names and attributes mirror [`Environment`], with `variables`
+/// sorted.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocEnvironment<'a> {
+    name: &'a String,
+    description: &'a Option<String>,
+    script: &'a Option<crate::job::EnvironmentScript>,
+    variables: Option<std::collections::BTreeMap<&'a String, &'a FormatString>>,
+    #[serde(rename = "resolvedSymTab", skip_serializing_if = "Option::is_none")]
+    resolved_symtab: &'a Option<openjd_expr::symbol_table::SerializedSymbolTable>,
+}
+
+impl<'a> DocEnvironment<'a> {
+    fn new(env: &'a Environment) -> Self {
+        let Environment {
+            name,
+            description,
+            script,
+            variables,
+            resolved_symtab,
+        } = env;
+        Self {
+            name,
+            description,
+            script,
+            variables: variables.as_ref().map(|m| m.iter().collect()),
+            resolved_symtab,
+        }
+    }
+}
+
+fn ser_job<S: Serializer>(job: &Job, ser: S) -> Result<S::Ok, S::Error> {
+    JobDocument(job).serialize(ser)
+}
+
 fn status_str(s: DiffStatus) -> &'static str {
     match s {
         DiffStatus::Unchanged => "unchanged",
@@ -1846,8 +2074,8 @@ impl TaskSummary {
                 added,
                 removed,
             } => (
-                kept.count + removed.iter().map(|b| b.count).sum::<u64>(),
-                kept.count + added.iter().map(|b| b.count).sum::<u64>(),
+                kept.count.saturating_add(total(removed)),
+                kept.count.saturating_add(total(added)),
             ),
             Self::Replaced {
                 old_count,
@@ -1900,17 +2128,19 @@ impl StepSummary {
     }
 
     /// One line for `openjd diff --stat`:
-    /// `~ Render  tasks 100 -> 400  (+300 -0)`.
+    /// `~ Render  tasks 100 -> 400  (+300 -0)`, or
+    /// `~ Render  tasks unknown (adaptive chunking)`.
     #[must_use]
     pub fn stat_line(&self) -> String {
+        if let Some(why) = &self.tasks_unknown {
+            return format!("{} {}  tasks unknown ({why})", self.mark(), self.name);
+        }
         let (old, new) = self.tasks.counts();
         let delta = match &self.tasks {
             TaskSummary::Replaced { .. } => "replaced".to_string(),
-            TaskSummary::Product { added, removed, .. } => format!(
-                "+{} -{}",
-                added.iter().map(|b| b.count).sum::<u64>(),
-                removed.iter().map(|b| b.count).sum::<u64>()
-            ),
+            TaskSummary::Product { added, removed, .. } => {
+                format!("+{} -{}", total(added), total(removed))
+            }
             _ => format!("+{} -{}", new.saturating_sub(old), old.saturating_sub(new)),
         };
         format!(
@@ -1919,13 +2149,21 @@ impl StepSummary {
             self.name
         )
     }
+
+    /// The task summary, or `tasks: unknown (…)` when the count is unknown.
+    fn tasks_text(&self) -> String {
+        match &self.tasks_unknown {
+            Some(why) => format!("tasks: unknown ({why})"),
+            None => self.tasks.to_string(),
+        }
+    }
 }
 
 /// `~ step Render`, then the task summary indented by four spaces.
 impl fmt::Display for StepSummary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} step {}", self.mark(), self.name)?;
-        for line in self.tasks.to_string().lines() {
+        for line in self.tasks_text().lines() {
             write!(f, "\n    {line}")?;
         }
         Ok(())
@@ -1969,35 +2207,166 @@ impl fmt::Display for TemplateDiff {
                 lines.push(line);
             }
         };
-        for c in self
+        let job_level: Vec<&Change> = self
             .changes
             .iter()
             .filter(|c| !c.path.starts_with("steps["))
-        {
-            push(&mut lines, c.line(&c.job_label()));
+            .collect();
+        for c in &job_level {
+            if let Some(line) = folded_parameter_line(c, &job_level) {
+                push(&mut lines, line);
+            } else if !is_folded_definition(c, &job_level) {
+                push(&mut lines, c.line(&c.job_label()));
+            }
         }
         for s in &self.steps {
-            let step_path = format!("steps[{}]", s.name);
-            let changes: Vec<&Change> = self
-                .changes_at(&step_path)
-                .filter(|c| !(c.path == step_path && c.field.is_empty()))
-                .collect();
-            if s.status == DiffStatus::Unchanged && changes.is_empty() {
+            if !self.step_changed(s) {
                 continue;
             }
+            let step_path = format!("steps[{}]", s.name);
             lines.push(format!("{} step {}", s.mark(), s.name));
-            for c in changes {
-                push(
-                    &mut lines,
-                    format!("    {}", c.line(&c.step_label(&step_path))),
-                );
+            for c in self.step_changes(s, &step_path) {
+                let line = if c.path == step_path && c.field.is_empty() {
+                    // The step itself, left unexpanded by the depth limit.
+                    format!("    ~ (not expanded)  [{}]", c.origin)
+                } else {
+                    format!("    {}", c.line(&c.step_label(&step_path)))
+                };
+                push(&mut lines, line);
             }
-            for line in s.tasks.to_string().lines() {
+            for line in s.tasks_text().lines() {
                 lines.push(format!("    {line}"));
             }
         }
         lines.push(String::new());
         lines.push(self.stat().to_string());
         f.write_str(&lines.join("\n"))
+    }
+}
+
+impl TemplateDiff {
+    /// The changes under one step, task parameters in definition order. An
+    /// added or removed step's own change is left out: its header says it.
+    fn step_changes<'a>(&'a self, s: &StepSummary, step_path: &'a str) -> Vec<&'a Change> {
+        let mut changes: Vec<&Change> = self
+            .changes_at(step_path)
+            .filter(|c| !(c.path == step_path && c.field.is_empty() && c.mark() != '~'))
+            .collect();
+        let defs = format!("{step_path}.parameterSpace.taskParameterDefinitions[");
+        let order: Vec<&String> = [self.new_step(s), self.old_step(s)]
+            .into_iter()
+            .flatten()
+            .filter_map(|step| step.parameter_space.as_ref())
+            .flat_map(|space| space.task_parameter_definitions.keys())
+            .collect();
+        let rank = |c: &Change| {
+            c.path
+                .strip_prefix(&defs)
+                .and_then(|r| r.split(']').next())
+                .and_then(|name| order.iter().position(|n| n.as_str() == name))
+        };
+        // The definitions are one block in path order; order it by rank.
+        if let Some(start) = changes.iter().position(|c| rank(c).is_some()) {
+            let end = start
+                + changes[start..]
+                    .iter()
+                    .take_while(|c| rank(c).is_some())
+                    .count();
+            changes[start..end].sort_by_key(|c| rank(c));
+        }
+        changes
+    }
+
+    fn new_step(&self, s: &StepSummary) -> Option<&Step> {
+        s.new_index.and_then(|i| self.new_job.steps.get(i))
+    }
+
+    fn old_step(&self, s: &StepSummary) -> Option<&Step> {
+        s.old_index.and_then(|i| self.old_job.steps.get(i))
+    }
+}
+
+/// The template-layer definition change that a whole-parameter change folds
+/// in: the same parameter, added or removed on the same side.
+fn definition_for<'a>(c: &Change, job_level: &[&'a Change]) -> Option<&'a Change> {
+    let name = c
+        .path
+        .strip_prefix("parameters[")
+        .and_then(|r| r.strip_suffix(']'))?;
+    if !c.field.is_empty() || c.mark() == '~' {
+        return None;
+    }
+    let path = format!("parameterDefinitions[{name}]");
+    job_level
+        .iter()
+        .copied()
+        .find(|d| d.path == path && d.field.is_empty() && d.mark() == c.mark())
+}
+
+/// `- parameter Gone: g, defined as {default: g, type: STRING}  [template]`
+/// for an added or removed parameter whose definition was added or removed.
+fn folded_parameter_line(c: &Change, job_level: &[&Change]) -> Option<String> {
+    let def = definition_for(c, job_level)?;
+    let def_text = def.after.as_ref().or(def.before.as_ref())?;
+    let label = c.job_label();
+    Some(format!(
+        "{} {label}: {}, defined as {def_text}  [{}]",
+        c.mark(),
+        c.value_text(),
+        c.origin
+    ))
+}
+
+/// Whether `d` is a definition change printed as part of its parameter's
+/// line.
+fn is_folded_definition(d: &Change, job_level: &[&Change]) -> bool {
+    d.layer == Layer::Template
+        && d.path.starts_with("parameterDefinitions[")
+        && job_level
+            .iter()
+            .any(|c| definition_for(c, job_level).is_some_and(|x| std::ptr::eq(x, d)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_time_symbols_need_a_name_boundary() {
+        let cases = [
+            ("Task.Param.F", true),
+            ("x + Task.Param.F", true),
+            ("(Session.WorkingDirectory)", true),
+            ("subTask.x", false),
+            ("a.Task.x", false),
+            ("my_Session.x", false),
+            ("Tasks.x", false),
+            ("Param.P", false),
+        ];
+        for (expr, want) in cases {
+            assert_eq!(names_run_time_symbol(expr), want, "{expr}");
+        }
+        let s = |t: &str| Value::String(t.into());
+        assert!(refs_run_time(&s("a {{ Task.Param.F }} b"), false));
+        assert!(!refs_run_time(&s("Task.log {{Param.P}}"), false));
+        assert!(!refs_run_time(&s("{{Param.P}} }} Task.x {{"), false));
+        assert!(refs_run_time(&s("Task.Param.F + 1"), true));
+        assert!(!refs_run_time(&s("{{subTask.x}}"), false));
+    }
+
+    #[test]
+    fn around_difference_keeps_short_differences_and_shows_late_ones() {
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(around_difference("ab", "ac"), pair("ab", "ac"));
+        // A difference at index 118 is the last one a plain cut keeps.
+        let (x, y) = (
+            "y".repeat(118) + "a" + &"z".repeat(10),
+            "y".repeat(118) + "b",
+        );
+        assert_eq!(around_difference(&x, &y), (truncate(x.clone()), y.clone()));
+        // At index 119 the cut would hide it, so both start near it.
+        let (x, y) = ("y".repeat(119) + "a", "y".repeat(119) + "b");
+        let want = |c: char| format!("…{}{c}", "y".repeat(40));
+        assert_eq!(around_difference(&x, &y), (want('a'), want('b')));
     }
 }

@@ -51,11 +51,12 @@ Each side is built exactly as `openjd summary` and `openjd run` build a job:
    URI path values allowed;
 3. `create_job` with `default_validation_context().with_caller_limits(limits)`.
 
-`TemplateInput::build` runs these for one side. A failure in `diff_templates` or
-`diff_parameter_sets` names the side: `old template: …` or `new template: …`, and
-`the template: …` when the shared template of `diff_parameter_sets` does not decode. The
-error keeps its variant when it carries a message (`DecodeValidation`, `Compatibility`,
-`UnsupportedSchema`); any other error becomes `DecodeValidation` with its display text.
+`TemplateInput::build` runs these for one side. A failure names the input that failed. In
+`diff_templates` it is `old template: …` or `new template: …`. In `diff_parameter_sets`
+the template is shared, so a build failure is `old parameters: …` or `new parameters: …`,
+and `the template: …` when the template does not decode. The error keeps its variant when
+it carries a message (`DecodeValidation`, `Compatibility`, `UnsupportedSchema`); any other
+error becomes `DecodeValidation` with its display text.
 
 ## The job layer
 
@@ -64,9 +65,13 @@ Every changed node becomes `Change`s:
 
 | node | changes |
 |---|---|
-| `Added` / `Removed` | one change with an empty `field`; the other side is `None` |
-| `Modified`, not expanded (depth limit) | one change with an empty `field` and both sides |
+| `Added` / `Removed` | one change with an empty `field`; the side that exists is the node's serialized value, the other is `None` |
+| `Modified`, not expanded (depth limit) | one change with an empty `field` and both serialized values |
 | `Modified`, expanded | one change per `FieldChange`; a `null` side is `None` (field added or removed) |
+
+A whole node's value is found by following its `DiffTree` segments through the serialized
+job. Every segment is the serialized field name except an action's (`onRun`, `onEnter`,
+…), which the tree hangs on the script but the job holds under `script.actions`.
 
 Before diffing, both jobs' `parameters` are sorted by name. `create_job` fills them from a
 `HashMap`, so their order varies between runs, and parameter order is not a change.
@@ -126,6 +131,10 @@ Comparing parameter values alone would get a template default change wrong: if `
 is not supplied and its `default` changes, the value changes but the cause is the template
 (rule 1 gives `Template`).
 
+The split compares `(path, field)` keys, not values. A whole node the template adds (an
+environment, a step, a task parameter) is therefore `Template` even when its contents also
+depend on the parameter values.
+
 ## Stage
 
 The earliest generic OpenJD stage a change shows at. openjd-rs has no knowledge of any
@@ -135,8 +144,15 @@ store; a service maps the stage and path to its own records.
 |---|---|
 | `Template` | the change is in the template layer |
 | `Parameters` | the path starts with `parameters[` |
-| `RunTime` | the field is a format string (`command`, `args`, `timeout`, `cancelation`, `data`, `filename`, `let`, `variables.*`) and its before or after text references `Task.` or `Session.`, inside `{{ }}` or, for `let`, anywhere |
+| `RunTime` | the field is a format string (`command`, `args`, `timeout`, `cancelation`, `data`, `filename`, `let`, `variables.*`) and its before or after value names a `Task.` or `Session.` symbol |
 | `Job` | everything else |
+
+A format string names a run-time symbol when the text inside one of its `{{ }}`
+interpolations contains `Task.` or `Session.` at a name boundary: at the start, or after a
+character that is not a letter, digit, `_` or `.`. So `{{Task.Param.Frame}}` and
+`{{ x + Session.WorkingDirectory }}` count, and `Task.log` outside braces, `subTask.x` and
+`a.Task.x` do not. A `let` binding is an expression with no braces, so the same boundary
+rule applies to the whole binding.
 
 A PATH parameter change shows in `resolvedSymTab` as `RawParam.P` and is stage `Job`; PATH
 mapping itself happens on the worker.
@@ -156,14 +172,24 @@ new-only steps. `status` is the step's status under the caller's options (one
 | step added or removed | `Added { count }` / `Removed { count }` |
 
 Counts are `u64` and count what `StepParameterSpaceIterator` yields (chunks, for a chunked
-step). A count that cannot be computed is 0, with a note. A `BoxSummary` has each
-dimension's name and its values: integer runs as range expressions (`1-100`, `1-9:2`),
-other values comma-separated.
+step). Sums saturate at `u64::MAX` rather than overflow. A count that cannot be computed is
+0, with a note. A `BoxSummary` has each dimension's name and its values: integer runs as
+range expressions (`1-100`, `1-9:2`; a step other than 1 needs three values, so `1,3` stays
+a list), other values comma-separated.
+
+A step with adaptive chunking (`CHUNK[INT]` with `targetRuntimeSeconds` above 0) on either
+side decides its chunk count at run time. Its `tasks_unknown` is `Some("adaptive
+chunking")`, its counts are 0 (`Replaced` with reason `adaptive chunking` when the space
+changed), `notes` has `steps[S]: cannot count tasks: the chunk size is adaptive
+(targetRuntimeSeconds), so the number of chunks is decided at run time`, and `Display`
+prints `tasks: unknown (adaptive chunking)`.
 
 `DiffStat` (`TemplateDiff::stat`) counts steps changed, added and removed, and tasks kept,
-added, removed and replaced over all steps. Kept tasks include unchanged steps' tasks.
-`tasks_replaced` counts the new tasks of `Replaced` steps; their old tasks are not
-counted as removed.
+added, removed and replaced over all steps. A step on both sides is changed when its status
+is `Modified` or a template-layer change is under it (a step-level `let` that nothing
+reads), so the totals line agrees with the steps `Display` lists. Kept tasks include
+unchanged steps' tasks. `tasks_replaced` counts the new tasks of `Replaced` steps; their
+old tasks are not counted as removed.
 
 ## Result types
 
@@ -173,6 +199,7 @@ pub struct TemplateDiff { pub changes: Vec<Change>, pub steps: Vec<StepSummary>,
 pub struct Change { pub layer: Layer, pub path: String, pub field: String,
                     pub before: Option<Shown>, pub after: Option<Shown>, pub origin: Origin, pub stage: Stage }
 pub struct Shown { pub raw: serde_json::Value, pub text: String }
+pub struct JobDocument<'a>(pub &'a Job);
 ```
 
 `changes` is sorted by path, field and layer. `path` uses `DiffTree` segments
@@ -185,12 +212,20 @@ Every type derives `Debug`, `Clone`, `PartialEq` (and `Eq` where its fields allo
 `TemplateDiff`, whose jobs hold floats) and `Serialize` with camelCase field names. Enums
 serialize as lowercase camelCase strings (`template`, `parameters`, `both`, `job`,
 `runTime`); `TaskSummary` is tagged with `kind`; `StepSummary::status` is `unchanged`,
-`added`, `removed` or `modified`; `TemplateDiff::job` serializes as its changed nodes,
-`{path, status, expanded, fieldChanges}`.
+`added`, `removed` or `modified`, and `tasksUnknown` is written only when set;
+`TemplateDiff::job` serializes as its changed nodes, `{path, status, expanded,
+fieldChanges}`.
+
+`JobDocument` serializes a `Job` as its serde form with each environment's `variables`
+sorted by name. `Environment::variables` is a `HashMap`, so the plain serde form of a job
+with more than one variable differs from run to run. `TemplateDiff` writes `oldJob` and
+`newJob` as `JobDocument`s, so its serde form is deterministic. `openjd build` prints the
+same form, and `job_from_str` reads it back.
 
 ### Rendering
 
-`Shown::raw` is the value in full. `Shown::text` is for people:
+`Shown::raw` is the value exactly as the job serializes it (for a job parameter,
+`{"String":"1-200"}`), in full; it is meant for programs. `Shown::text` is for people:
 
 - a task parameter range is its range expression (`1-100`, `1-9:2`) or a list
   (`[left, right]`); a chunked one adds `chunks of N`;
@@ -198,16 +233,18 @@ serialize as lowercase camelCase strings (`template`, `parameters`, `both`, `job
   spec name (`INT`);
 - a symbol table is `name=value` pairs;
 - other strings are bare, lists are `[a, b]`, objects are `{key: value}`;
-- when both sides render the same text but differ (`"3"` and `3`), both show as JSON;
-- text longer than 120 characters is cut to 119 and ends with `…`.
+- text longer than 120 characters is cut to 119 and ends with `…`;
+- when both sides render the same text but differ (`"3"` and `3`), both show as JSON; when
+  the JSON first differs past the cut, both start with `…` 40 characters before the first
+  difference, so the two sides stay distinguishable.
 
 `Display` is deterministic, so tests assert whole outputs:
 
 ```text
 ~ parameter Frames: 1-100 -> 1-200  [parameters]
 ~ step Render
-    ~ Eye: [left] -> [left, right]  [template]
     ~ Frame: 1-100 -> 1-200  [parameters]
+    ~ Eye: [left] -> [left, right]  [template]
     tasks: 100 -> 400
       keep 100   Frame 1-100 × Eye left
       add  200   Frame 101-200 × Eye left, right
@@ -219,12 +256,22 @@ serialize as lowercase camelCase strings (`template`, `parameters`, `both`, `job
 - Job-level changes come first, then each step that changed or has a change under it,
   with its changes relative to the step and its task summary, then the `DiffStat` line.
   Nothing changed prints `no changes`.
-- `~` is changed, `+` added, `-` removed. Every line ends with the origin tag.
+- Under a step, task parameter changes follow the step's definition order (new side, then
+  definitions only on the old side), not path order.
+- `~` is changed, `+` added, `-` removed. Every line ends with the origin tag. The tags are
+  not aligned into a column, because the value text varies too much in width.
 - Labels: `parameter P` (`parameters[P]`), `parameter definition P.field`, a task
   parameter definition by its name, other paths relative to the step.
+- A parameter added or removed together with its definition prints once:
+  `- parameter Gone: g, defined as {default: g, type: STRING}  [template]`, with the
+  parameter change's origin. A definition added or removed without the parameter (an
+  environment template still defines it) prints on its own line.
+- A step left unexpanded by the depth limit prints `~ (not expanded)  [origin]` under its
+  header. An added or removed step's own change is not repeated under its `+`/`-` header.
 - `Change` alone prints `~ path.field: before -> after  [origin]`.
 - `StepSummary` prints the step header and its task summary; `stat_line` prints
-  `~ Render  tasks 100 -> 400  (+300 -0)`.
+  `~ Render  tasks 100 -> 400  (+300 -0)`, or `~ Render  tasks unknown (adaptive
+  chunking)`.
 - `DiffStat` prints `N step(s) changed[, A added][, R removed]. Tasks: K kept, A added,
   R removed[, P replaced].`
 

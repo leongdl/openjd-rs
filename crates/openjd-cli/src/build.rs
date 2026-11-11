@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::Args;
-use openjd_model::job::template_diff::{TemplateInput, TemplateSource};
+use openjd_model::job::template_diff::{JobDocument, TemplateInput, TemplateSource};
 
 const EXAMPLES: &str = "\
 Examples:
@@ -53,9 +53,9 @@ pub fn execute(args: BuildArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Serialized directly, not through `serde_json::Value`, which would sort
     // task parameter definitions by name and so change task order.
     if args.output == "yaml" {
-        print!("{}", serde_saphyr::to_string(&job)?);
+        print!("{}", serde_saphyr::to_string(&JobDocument(&job))?);
     } else {
-        println!("{}", serde_json::to_string_pretty(&job)?);
+        println!("{}", serde_json::to_string_pretty(&JobDocument(&job))?);
     }
     Ok(())
 }
