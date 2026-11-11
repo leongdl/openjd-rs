@@ -819,23 +819,26 @@ impl TemplateInput {
 }
 
 pub struct job::template_diff::TemplateDiff { pub changes: Vec<Change>, pub steps: Vec<StepSummary>, pub job: DiffTree,
-    pub old_job: Job, pub new_job: Job, pub notes: Vec<String> }
+    pub old_job: Job, pub new_job: Job, pub notes: Vec<Note> }
 impl TemplateDiff {
     pub fn is_changed(&self) -> bool;
-    pub fn changes_at<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a Change> + 'a;
+    pub fn changes_at<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a Change> + 'a;   // path prefix; ambiguous for names with ] or .
+    pub fn changes_in_step<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Change> + 'a;   // Change::step == name, exact
     pub fn step(&self, name: &str) -> Option<&StepSummary>;
     pub fn plan(&self) -> Result<ApplyPlan<'_>, ModelError>;   // job::apply::plan(old_job, new_job)
     pub fn stat(&self) -> DiffStat;
 }
-pub struct job::template_diff::Change { pub layer: Layer, pub path: String, pub field: String,
-    pub before: Option<Shown>, pub after: Option<Shown>, pub origin: Origin, pub stage: Stage }
+pub struct job::template_diff::Change { pub layer: Layer, pub path: String,
+    pub step: Option<String>,   // the owning step's name, from the diff tree; None at job level
+    pub field: String, pub before: Option<Shown>, pub after: Option<Shown>, pub origin: Origin, pub stage: Stage }
+pub struct job::template_diff::Note { pub step: Option<String>, pub text: String }   // Display and Serialize: "steps[S]: text" or "text"
 pub struct job::template_diff::Shown { pub raw: serde_json::Value, pub text: String }
 pub enum job::template_diff::Layer { Template, Job }
 pub enum job::template_diff::Origin { Template, Parameters, Both, Job }
 pub enum job::template_diff::Stage { Template, Parameters, Job, RunTime }
 pub struct job::template_diff::StepSummary { pub name: String, pub status: DiffStatus,
     pub old_index: Option<usize>, pub new_index: Option<usize>, pub tasks: TaskSummary,
-    pub tasks_unknown: Option<String> }   // why the counts are 0, e.g. "adaptive chunking"
+    pub tasks_unknown: Option<String> }   // why the counts are 0: "adaptive chunking" or "cannot count tasks"
 impl StepSummary { pub fn stat_line(&self) -> String; }
 pub enum job::template_diff::TaskSummary { Unchanged { count: u64 }, Product { kept: BoxSummary, added: Vec<BoxSummary>, removed: Vec<BoxSummary> },
     Replaced { old_count: u64, new_count: u64, reason: String }, Added { count: u64 }, Removed { count: u64 } }

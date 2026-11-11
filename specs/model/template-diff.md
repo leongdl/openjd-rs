@@ -38,7 +38,11 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError>;
   (`steps[0].parameterSpace.taskParameterDefinitions.F.bogus: unknown field`). Each
   `resolvedSymTab` entry must have exactly the keys `name`, `type` and `value`, a string
   `name` and `type`, a `type` that parses, and a `value` of that type, as `SymbolTable`
-  serializes it (`steps[0].resolvedSymTab[0].zzBogus: unknown field`).
+  serializes it (`steps[0].resolvedSymTab[0].zzBogus: unknown field`), and no two entries
+  of one table may have the same `name` (`steps[0].resolvedSymTab[1].name: 'Param.Z' is
+  repeated`). The name's syntax is not checked. `parameters` may be absent (an empty
+  map), but a `null` is rejected like any other unexpected `null`, with serde's message
+  (`invalid type: null, expected a map at line 1 column N`).
   A parameter must have exactly the keys `name`, `paramType` and `value`, and its `name`
   must be its key. A parameter whose value does not have its `paramType`'s type is
   rejected, with `parameters[P]: paramType 'ListInt' cannot hold a 'ListList' value`, and
@@ -205,8 +209,12 @@ new-only steps. `status` is the step's status under the caller's options (one
 | step added or removed | `Added { count }` / `Removed { count }` |
 
 Counts are `u64` and count what `StepParameterSpaceIterator` yields (chunks, for a chunked
-step). Sums saturate at `u64::MAX` rather than overflow. A count that cannot be computed is
-0, with a note. A `BoxSummary` has each dimension's name and its values: integers as the
+step). Sums saturate at `u64::MAX` rather than overflow. When either side's parameter space
+does not iterate (reachable only through an edited built job, for example a `combination`
+naming an unknown parameter), the step's `tasks_unknown` is `Some("cannot count tasks")`,
+its counts are 0 (`Replaced` with reason `cannot count tasks` when the space changed),
+`notes` has `steps[S]: cannot count tasks: <the iterator's error>`, and `Display` prints
+`tasks: unknown (cannot count tasks)`; adaptive chunking, below, takes precedence. A `BoxSummary` has each dimension's name and its values: integers as the
 same text a change shows (see [Rendering](#rendering)), other values comma-separated.
 
 A step with adaptive chunking (`CHUNK[INT]` with `targetRuntimeSeconds` above 0) on either
@@ -218,7 +226,7 @@ prints `tasks: unknown (adaptive chunking)`.
 
 `DiffStat` (`TemplateDiff::stat`) counts steps changed, added and removed, and tasks kept,
 added, removed and replaced over all steps. A step on both sides is changed when its status
-is `Modified` or a template-layer change is under it (a step-level `let` that nothing
+is `Modified` or a template-layer change is in it (a step-level `let` that nothing
 reads), so the totals line agrees with the steps `Display` lists. Kept tasks include
 unchanged steps' tasks. `tasks_replaced` counts the new tasks of `Replaced` steps; their
 old tasks are not counted as removed.
@@ -227,24 +235,43 @@ old tasks are not counted as removed.
 
 ```rust
 pub struct TemplateDiff { pub changes: Vec<Change>, pub steps: Vec<StepSummary>, pub job: DiffTree,
-                          pub old_job: Job, pub new_job: Job, pub notes: Vec<String> }
-pub struct Change { pub layer: Layer, pub path: String, pub field: String,
+                          pub old_job: Job, pub new_job: Job, pub notes: Vec<Note> }
+pub struct Change { pub layer: Layer, pub path: String, pub step: Option<String>, pub field: String,
                     pub before: Option<Shown>, pub after: Option<Shown>, pub origin: Origin, pub stage: Stage }
 pub struct Shown { pub raw: serde_json::Value, pub text: String }
+pub struct Note { pub step: Option<String>, pub text: String }
 pub struct JobDocument<'a>(pub &'a Job);
 ```
 
 `changes` is sorted by path, field and layer. `path` uses `DiffTree` segments
 (`steps[Render].parameterSpace.taskParameterDefinitions[Eye]`); `field` is empty for a
-whole node. Helpers: `is_changed`, `changes_at(prefix)` (the prefix and everything below
-it, not `steps[Render2]` for `steps[Render]`; `steps` and `parameters` match every entry), `step(name)`, `plan()` (`job::apply::plan`
-on the kept jobs), and `stat()`.
+whole node.
+
+`step` is the name of the step a change is in, and `None` for a job-level change. A
+job-layer change takes it from the key of the `DiffTree` step node at or above its node; a
+template-layer step `let` change from the template step it was computed for. Every
+grouping by step uses it, never the path: `Display`, `stat`, `changes_in_step`, and
+`openjd diff --step`. A path cannot be split by step reliably, because a step name may
+contain `]` and `.`: the step `A].x` has paths starting `steps[A].x]`, which also start
+with `steps[A]` followed by a `.`.
+
+Helpers: `is_changed`; `changes_in_step(name)`, the changes whose `step` is `name`,
+exactly; `changes_at(prefix)`, the changes whose path is the prefix or below it at a
+segment boundary (not `steps[Render2]` for `steps[Render]`; `steps` and `parameters` match
+every entry), which a name containing `]` or `.` can make ambiguous (`steps[A]` matches
+the step `A].x`), so it is not for selecting a step; `step(name)`; `plan()`
+(`job::apply::plan` on the kept jobs); and `stat()`.
+
+A `Note` is something the diff could not decide. `step` names the step it is about (a task
+count that is unknown), and is `None` for a job-level note (the origin split). It displays
+and serializes as one string, `steps[S]: text` or `text`.
 
 Every type derives `Debug`, `Clone`, `PartialEq` (and `Eq` where its fields allow; not
 `TemplateDiff`, whose jobs hold floats) and `Serialize` with camelCase field names. Enums
 serialize as lowercase camelCase strings (`template`, `parameters`, `both`, `job`,
 `runTime`); `TaskSummary` is tagged with `kind`; `StepSummary::status` is `unchanged`,
 `added`, `removed` or `modified`, and `tasksUnknown` is written only when set;
+`Change::step` is written only when set, so a job-level change has no `step` key;
 `TemplateDiff::job` serializes as its changed nodes, `{path, status, expanded,
 fieldChanges}`.
 
@@ -296,7 +323,8 @@ layer](#the-job-layer)). `Shown::text` is for people:
 1 step changed. Tasks: 100 kept, 300 added, 0 removed.
 ```
 
-- Job-level changes come first, then each step that changed or has a change under it,
+- Job-level changes (`step` is `None`) come first, then each step that changed or has a
+  change in it (`step` is its name),
   with its changes relative to the step and its task summary, then the `DiffStat` line,
   then one `note: …` line per entry of `notes` (why origins are `both`, why a task count
   is unknown). Nothing changed prints `no changes`, followed by the notes.

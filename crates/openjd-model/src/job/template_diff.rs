@@ -424,6 +424,11 @@ pub struct Change {
     /// for the root. Template-layer paths are `parameterDefinitions[P]`,
     /// `steps[S]` and the root.
     pub path: String,
+    /// The name of the step the change is in, taken from the diff tree's
+    /// step node (or the template step it was computed for); `None` for a
+    /// job-level change. Serialized only when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
     /// The field, as in [`FieldChange::field`](crate::job::diff::FieldChange::field).
     /// Empty when the whole node was added, removed or left unexpanded.
     pub field: String,
@@ -504,8 +509,9 @@ pub struct StepSummary {
     pub new_index: Option<usize>,
     /// The task change.
     pub tasks: TaskSummary,
-    /// Why the task count cannot be computed (`adaptive chunking`), with a
-    /// note in [`TemplateDiff::notes`]. The counts in `tasks` are then 0.
+    /// Why the task count cannot be computed (`adaptive chunking`, or
+    /// `cannot count tasks` when a parameter space does not iterate), with
+    /// a note in [`TemplateDiff::notes`]. The counts in `tasks` are then 0.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tasks_unknown: Option<String>,
 }
@@ -548,7 +554,47 @@ pub struct TemplateDiff {
     #[serde(serialize_with = "ser_job")]
     pub new_job: Job,
     /// Anything the diff could not decide, e.g. why origins are `Both`.
-    pub notes: Vec<String>,
+    pub notes: Vec<Note>,
+}
+
+/// Something a [`TemplateDiff`] could not decide.
+///
+/// Displayed and serialized as one string: `steps[S]: text` for a step's
+/// note, `text` for a job-level one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Note {
+    /// The name of the step it is about; `None` for a job-level note.
+    pub step: Option<String>,
+    /// What could not be decided, and why.
+    pub text: String,
+}
+
+impl Note {
+    fn job(text: String) -> Self {
+        Self { step: None, text }
+    }
+
+    fn step(name: &str, text: String) -> Self {
+        Self {
+            step: Some(name.to_string()),
+            text,
+        }
+    }
+}
+
+impl fmt::Display for Note {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.step {
+            Some(name) => write!(f, "steps[{name}]: {}", self.text),
+            None => f.write_str(&self.text),
+        }
+    }
+}
+
+impl Serialize for Note {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.collect_str(self)
+    }
 }
 
 impl TemplateDiff {
@@ -558,11 +604,25 @@ impl TemplateDiff {
         !self.changes.is_empty() || self.steps.iter().any(|s| s.status != DiffStatus::Unchanged)
     }
 
-    /// Changes at `prefix` or below it. `steps[Render]` matches
-    /// `steps[Render]` and `steps[Render].script`, not `steps[Render2]`;
-    /// `steps` matches every step. The empty prefix matches everything.
+    /// Changes whose [`Change::path`] is `prefix` or below it, matched at
+    /// segment boundaries: `steps[Render]` matches `steps[Render]` and
+    /// `steps[Render].script`, not `steps[Render2]`; `steps` matches every
+    /// step. The empty prefix matches everything.
+    ///
+    /// A step or entry name containing `]` or `.` can make a path prefix
+    /// ambiguous: `steps[A]` also matches `steps[A].x].script`, a change in
+    /// the step named `A].x`. Use [`changes_in_step`](Self::changes_in_step)
+    /// to select a step's changes exactly.
     pub fn changes_at<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a Change> + 'a {
         self.changes.iter().filter(move |c| under(&c.path, prefix))
+    }
+
+    /// The changes in the step named `name` ([`Change::step`]), matched
+    /// exactly.
+    pub fn changes_in_step<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Change> + 'a {
+        self.changes
+            .iter()
+            .filter(move |c| c.step.as_deref() == Some(name))
     }
 
     /// The summary of the step named `name`.
@@ -612,13 +672,9 @@ impl TemplateDiff {
         s
     }
 
-    /// Whether `step` differs, or has any change at or under its path.
+    /// Whether `step` differs, or has any change in it.
     fn step_changed(&self, step: &StepSummary) -> bool {
-        step.status != DiffStatus::Unchanged
-            || self
-                .changes_at(&format!("steps[{}]", step.name))
-                .next()
-                .is_some()
+        step.status != DiffStatus::Unchanged || self.changes_in_step(&step.name).next().is_some()
     }
 }
 
@@ -669,10 +725,10 @@ pub fn diff_templates(
                 parameters: change_keys(&diff_jobs(&mid, &new_job, options)),
             },
             Err(e) => {
-                notes.push(format!(
+                notes.push(Note::job(format!(
                     "origin: the new template does not build with the old parameters, so \
                      job-layer changes are marked both: {e}"
-                ));
+                )));
                 OriginRule::All(Origin::Both)
             }
         }
@@ -783,7 +839,7 @@ fn assemble(
     mut new_job: Job,
     template: Vec<Change>,
     rule: &OriginRule,
-    mut notes: Vec<String>,
+    mut notes: Vec<Note>,
     options: &DiffOptions,
 ) -> TemplateDiff {
     // `create_job` fills `parameters` from a `HashMap`, so their order
@@ -797,6 +853,7 @@ fn assemble(
     for (id, node) in tree.changed() {
         let path = tree.path(id);
         let segments = segments(&tree, id);
+        let step = owning_step(&tree, id);
         let mut push = |field: String, before: Option<Shown>, after: Option<Shown>| {
             let whole = field.is_empty().then_some(node.status);
             let origin = rule.classify(&(path.clone(), field.clone(), whole));
@@ -804,6 +861,7 @@ fn assemble(
             changes.push(Change {
                 layer: Layer::Job,
                 path: path.clone(),
+                step: step.clone(),
                 field,
                 before,
                 after,
@@ -907,6 +965,20 @@ fn job_value(job: &Job) -> Value {
         }
     }
     doc
+}
+
+/// The key of the step node at or above `id`: the name of the step the
+/// node is in, or `None` above step level.
+fn owning_step(tree: &DiffTree, id: usize) -> Option<String> {
+    use crate::job::diff::DiffNodeKind;
+    let mut cur = tree.node(id);
+    while let Some(n) = cur {
+        if n.kind == DiffNodeKind::Step {
+            return n.key.clone();
+        }
+        cur = n.parent.and_then(|p| tree.node(p));
+    }
+    None
 }
 
 /// Path segments of a node, root first.
@@ -1131,6 +1203,7 @@ fn is_symbol(v: &Value) -> bool {
 
 fn template_change(
     path: String,
+    step: Option<&str>,
     field: &str,
     before: Option<Value>,
     after: Option<Value>,
@@ -1138,6 +1211,7 @@ fn template_change(
     Change {
         layer: Layer::Template,
         path,
+        step: step.map(str::to_string),
         field: field.to_string(),
         before: before.map(Shown::generic),
         after: after.map(Shown::generic),
@@ -1151,6 +1225,7 @@ fn template_layer(a: &JobTemplate, b: &JobTemplate) -> Vec<Change> {
     if a.specification_version != b.specification_version {
         out.push(template_change(
             String::new(),
+            None,
             "specificationVersion",
             Some(json!(a.specification_version)),
             Some(json!(b.specification_version)),
@@ -1164,6 +1239,7 @@ fn template_layer(a: &JobTemplate, b: &JobTemplate) -> Vec<Change> {
     if exts(a) != exts(b) {
         out.push(template_change(
             String::new(),
+            None,
             "extensions",
             exts(a),
             exts(b),
@@ -1180,7 +1256,7 @@ fn template_layer(a: &JobTemplate, b: &JobTemplate) -> Vec<Change> {
     for (name, ra) in &da {
         let path = format!("parameterDefinitions[{name}]");
         let Some(rb) = db.get(name) else {
-            out.push(template_change(path, "", Some(record_json(ra)), None));
+            out.push(template_change(path, None, "", Some(record_json(ra)), None));
             continue;
         };
         let fields = ra.iter().map(|(k, _)| k).chain(
@@ -1193,13 +1269,14 @@ fn template_layer(a: &JobTemplate, b: &JobTemplate) -> Vec<Change> {
                 |r: &[(String, Value)]| r.iter().find(|(k, _)| k == field).map(|(_, v)| v.clone());
             let (va, vb) = (get(ra), get(rb));
             if va != vb {
-                out.push(template_change(path.clone(), field, va, vb));
+                out.push(template_change(path.clone(), None, field, va, vb));
             }
         }
     }
     for (name, rb) in db.iter().filter(|(n, _)| !da.contains_key(*n)) {
         out.push(template_change(
             format!("parameterDefinitions[{name}]"),
+            None,
             "",
             None,
             Some(record_json(rb)),
@@ -1213,6 +1290,7 @@ fn template_layer(a: &JobTemplate, b: &JobTemplate) -> Vec<Change> {
         if sa.let_bindings != sb.let_bindings {
             out.push(template_change(
                 format!("steps[{}]", sa.name),
+                Some(&sa.name),
                 "let",
                 sa.let_bindings.as_ref().map(|v| json!(v)),
                 sb.let_bindings.as_ref().map(|v| json!(v)),
@@ -1470,17 +1548,14 @@ fn definition_record(d: &JobParameterDefinition) -> Vec<(String, Value)> {
 
 // ─── steps and tasks ────────────────────────────────────────────────
 
-fn task_count(step: &Step, notes: &mut Vec<String>) -> u64 {
+/// A step's task count, or why it cannot be counted.
+fn task_count(step: &Step) -> Result<u64, String> {
     let Some(space) = &step.parameter_space else {
-        return 1;
+        return Ok(1);
     };
-    match StepParameterSpaceIterator::new(space) {
-        Ok(it) => it.len() as u64,
-        Err(e) => {
-            notes.push(format!("steps[{}]: cannot count tasks: {e}", step.name));
-            0
-        }
-    }
+    StepParameterSpaceIterator::new(space)
+        .map(|it| it.len() as u64)
+        .map_err(|e| format!("cannot count tasks: {e}"))
 }
 
 fn box_summary(b: &TaskBox) -> BoxSummary {
@@ -1547,8 +1622,15 @@ fn step_summaries(
     old: &Job,
     new: &Job,
     options: &DiffOptions,
-    notes: &mut Vec<String>,
+    notes: &mut Vec<Note>,
 ) -> Vec<StepSummary> {
+    /// The count, or 0 with the reason kept in `errors`.
+    fn counted(step: &Step, errors: &mut Vec<String>) -> u64 {
+        task_count(step).unwrap_or_else(|e| {
+            errors.push(e);
+            0
+        })
+    }
     let status_only = options.clone().with_max_depth(0);
     let mut names: Vec<&str> = old.steps.iter().map(|s| s.name.as_str()).collect();
     names.extend(
@@ -1561,6 +1643,7 @@ fn step_summaries(
     for name in names {
         let a = old.steps.iter().position(|s| s.name == name);
         let b = new.steps.iter().position(|s| s.name == name);
+        let mut errors = Vec::new();
         let (status, tasks) = match (a.map(|i| &old.steps[i]), b.map(|j| &new.steps[j])) {
             (Some(x), Some(y)) => {
                 let status = if diff_steps(x, y, &status_only).is_changed() {
@@ -1570,7 +1653,7 @@ fn step_summaries(
                 };
                 let tasks = match task_delta(space_of(x), space_of(y)) {
                     TaskDelta::Unchanged => TaskSummary::Unchanged {
-                        count: task_count(y, notes),
+                        count: counted(y, &mut errors),
                     },
                     TaskDelta::Product(d) => TaskSummary::Product {
                         kept: box_summary(&d.kept),
@@ -1578,8 +1661,8 @@ fn step_summaries(
                         removed: d.removed.iter().map(box_summary).collect(),
                     },
                     TaskDelta::Fallback { reason } => TaskSummary::Replaced {
-                        old_count: task_count(x, notes),
-                        new_count: task_count(y, notes),
+                        old_count: counted(x, &mut errors),
+                        new_count: counted(y, &mut errors),
                         reason,
                     },
                 };
@@ -1588,13 +1671,13 @@ fn step_summaries(
             (Some(x), None) => (
                 DiffStatus::Removed,
                 TaskSummary::Removed {
-                    count: task_count(x, notes),
+                    count: counted(x, &mut errors),
                 },
             ),
             (None, Some(y)) => (
                 DiffStatus::Added,
                 TaskSummary::Added {
-                    count: task_count(y, notes),
+                    count: counted(y, &mut errors),
                 },
             ),
             (None, None) => continue,
@@ -1604,23 +1687,32 @@ fn step_summaries(
             .into_iter()
             .chain(b.map(|j| &new.steps[j]))
             .any(is_adaptive);
-        let (tasks, tasks_unknown) = if adaptive {
-            notes.push(format!("steps[{name}]: {ADAPTIVE_NOTE}"));
-            let zeroed = match tasks {
-                TaskSummary::Unchanged { .. } => TaskSummary::Unchanged { count: 0 },
-                TaskSummary::Added { .. } => TaskSummary::Added { count: 0 },
-                TaskSummary::Removed { .. } => TaskSummary::Removed { count: 0 },
-                TaskSummary::Product { .. } | TaskSummary::Replaced { .. } => {
-                    TaskSummary::Replaced {
-                        old_count: 0,
-                        new_count: 0,
-                        reason: "adaptive chunking".into(),
-                    }
-                }
-            };
-            (zeroed, Some("adaptive chunking".to_string()))
+        notes.extend(errors.iter().map(|e| Note::step(name, e.clone())));
+        let unknown = if adaptive {
+            notes.push(Note::step(name, ADAPTIVE_NOTE.to_string()));
+            Some("adaptive chunking")
+        } else if !errors.is_empty() {
+            Some("cannot count tasks")
         } else {
-            (tasks, None)
+            None
+        };
+        let (tasks, tasks_unknown) = match unknown {
+            Some(why) => {
+                let zeroed = match tasks {
+                    TaskSummary::Unchanged { .. } => TaskSummary::Unchanged { count: 0 },
+                    TaskSummary::Added { .. } => TaskSummary::Added { count: 0 },
+                    TaskSummary::Removed { .. } => TaskSummary::Removed { count: 0 },
+                    TaskSummary::Product { .. } | TaskSummary::Replaced { .. } => {
+                        TaskSummary::Replaced {
+                            old_count: 0,
+                            new_count: 0,
+                            reason: why.into(),
+                        }
+                    }
+                };
+                (zeroed, Some(why.to_string()))
+            }
+            None => (tasks, None),
         };
         out.push(StepSummary {
             name: name.to_string(),
@@ -1654,7 +1746,10 @@ struct BuiltJob {
     name: String,
     description: Option<String>,
     extensions: Option<Vec<String>>,
-    parameters: Option<IndexMap<String, Value>>,
+    // Not an `Option`: `openjd build` always writes the map, so a `null` is
+    // an error like any other unexpected `null`.
+    #[serde(default)]
+    parameters: IndexMap<String, Value>,
     steps: Vec<Step>,
     job_environments: Option<Vec<Environment>>,
 }
@@ -1762,6 +1857,7 @@ fn check_symbol_table(
     let Some(entries) = table.as_value().as_array() else {
         return Err(format!("{path}: expected an array of symbol-table entries"));
     };
+    let mut names = HashSet::new();
     for (i, entry) in entries.iter().enumerate() {
         let at = format!("{path}[{i}]");
         let Some(m) = entry.as_object() else {
@@ -1779,7 +1875,11 @@ fn check_symbol_table(
             m[k].as_str()
                 .ok_or_else(|| format!("{at}.{k}: expected a string"))
         };
-        string("name")?;
+        // The name's syntax is not checked, only that it is not repeated.
+        let name = string("name")?;
+        if !names.insert(name) {
+            return Err(format!("{at}.name: '{name}' is repeated"));
+        }
         let ty = ExprType::parse(string("type")?).map_err(|e| format!("{at}.type: {e}"))?;
         ExprValue::from_transport_value(&m["value"], &ty, PathFormat::Posix)
             .map_err(|e| format!("{at}.value: {e}"))?;
@@ -1894,7 +1994,7 @@ fn job_from_built(raw: BuiltJob) -> Result<Job, String> {
         .transpose()
         .map_err(|e| format!("extensions: {e}"))?;
     let mut parameters = IndexMap::new();
-    for (k, v) in raw.parameters.unwrap_or_default() {
+    for (k, v) in raw.parameters {
         let p = parameter_from_value(&k, &v).map_err(|e| format!("parameters[{k}]: {e}"))?;
         parameters.insert(k, p);
     }
@@ -2329,7 +2429,8 @@ impl Change {
         join_label(&self.path, &self.field)
     }
 
-    /// The label under a step, relative to `steps[S]`.
+    /// The label under a step, relative to `step_path` (`steps[S]`), the
+    /// path of the step the change is in.
     fn step_label(&self, step_path: &str) -> String {
         let rel = self
             .path
@@ -2517,7 +2618,7 @@ impl fmt::Display for TemplateDiff {
         let job_level: Vec<&Change> = self
             .changes
             .iter()
-            .filter(|c| !c.path.starts_with("steps[") && !is_repeated_extensions(c, &self.changes))
+            .filter(|c| c.step.is_none() && !is_repeated_extensions(c, &self.changes))
             .collect();
         for c in &job_level {
             if let Some(line) = folded_parameter_line(c, &job_level) {
@@ -2561,11 +2662,13 @@ impl TemplateDiff {
         Ok(())
     }
 
-    /// The changes under one step, task parameters in definition order. An
+    /// The changes in one step, task parameters in definition order. An
     /// added or removed step's own change is left out: its header says it.
-    fn step_changes<'a>(&'a self, s: &StepSummary, step_path: &'a str) -> Vec<&'a Change> {
+    /// `step_path` is the step's own path, `steps[S]`, which every path in
+    /// the step starts with.
+    fn step_changes<'a>(&'a self, s: &'a StepSummary, step_path: &'a str) -> Vec<&'a Change> {
         let mut changes: Vec<&Change> = self
-            .changes_at(step_path)
+            .changes_in_step(&s.name)
             .filter(|c| !(c.path == step_path && c.field.is_empty() && c.mark() != '~'))
             .collect();
         let defs = format!("{step_path}.parameterSpace.taskParameterDefinitions[");

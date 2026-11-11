@@ -20,13 +20,13 @@ openjd diff <OLD> [NEW] [-p <PARAM>]... [--old-param <PARAM>]... [--new-param <P
 | Argument | Description |
 |----------|-------------|
 | `OLD`, `NEW` | Template files, or `-` for stdin (at most one input of the command, counting `--environment`). With only `OLD`, both sides use that template and differ in `--old-param` / `--new-param` |
-| `-p`, `--job-param` | Job parameter for both sides. Same parser as `run` ([parameter-parsing.md](parameter-parsing.md)): `Key=Value`, `file://path`, inline JSON; repeatable, later wins |
+| `-p`, `--job-param`, `--parameter` | Job parameter for both sides. Same parser as `run` ([parameter-parsing.md](parameter-parsing.md)): `Key=Value`, `file://path`, inline JSON; repeatable, later wins |
 | `--old-param`, `--new-param` | Job parameter for one side, same parser; applied after `-p`, so it wins |
 | `--environment`, `--env` | Environment template file for both sides, or `-` for stdin; repeatable. Each is read once and used by both sides |
 | `--extensions` | Extension allowlist, parsed as for `check` and `summary`; default every supported extension |
-| `--jobs` | `OLD` and `NEW` are built jobs (JSON or YAML from `openjd build`). Requires `NEW` (a usage error without it). Conflicts with the parameter, environment and extension flags |
-| `--step` | Keep only this step (the name matched exactly, so `--step A` does not keep the step `A][B`) and the job-level changes, and with `--plan` only this step's ops and the job-level ops (job fields, parameters, job environments). Notes about other steps (`steps[Y]: …`) are dropped; job-level notes are kept. A step in neither job is an error. `--step` with `--depth 0` is a usage error (exit 2): at depth 0 the only change is the unexpanded job root, which cannot be split by step. `--exit-code` and `changed` see only what is kept, so a change in another step alone gives exit 0 and `"changed": false`. `--verbose` is not filtered: the job diff tree, and `oldJob` and `newJob`, are the whole jobs |
-| `--tasks` | Print only each shown step's task summary |
+| `--jobs` | `OLD` and `NEW` are built jobs (JSON or YAML from `openjd build`). Requires `NEW` (a usage error without it). Conflicts with `-p`, `--old-param`, `--new-param`, `--environment` and `--extensions` (exit 2) |
+| `--step` | Keep only this step and the job-level changes, and with `--plan` only this step's ops and the job-level ops (job fields, parameters, job environments). A change and a note belong to the step their `step` field names (`Change::step`, `Note::step`), so the name is matched exactly and never as a path prefix: `--step A` keeps neither the step `A][B` nor the step `A].x`. The step's own unexpanded change (`~ (not expanded)`, at `--depth 1`) is kept. Notes about other steps are dropped; job-level notes are kept. A step in neither job is an error. `--step` with `--depth 0` is a usage error (exit 2): at depth 0 the only change is the unexpanded job root, which cannot be split by step. `--exit-code` and `changed` see only what is kept, so a change in another step alone gives exit 0 and `"changed": false`. `--verbose` is not filtered: the job diff tree, and `oldJob` and `newJob`, are the whole jobs |
+| `--tasks` | Print only each shown step's task summary. Conflicts with `--stat` (exit 2) |
 | `--stat` | Print one line per shown step, then the totals |
 | `--plan` | Also print `job::apply::plan` on the two jobs: one op per line with its mutation kinds. The plan always compares the whole jobs, so with `--ignore-symbols` it can list a `StepSymbols` op for a step the diff shows as unchanged (`0 steps changed`) |
 | `--depth` | `DiffOptions::with_max_depth` |
@@ -92,9 +92,10 @@ kinds: ParameterValue, TaskAppend
 ```
 
 With `--step`, the plan keeps that step's `step` and `tasks of` ops and every job-level op,
-and `kinds` is the union over the ops kept.
+and `kinds` is the union over the ops kept. A plan with no ops prints `nothing to apply`
+and `kinds: none`.
 
-A step is shown when its status is not `unchanged` or when a change is under it (a
+A step is shown when its status is not `unchanged` or when a change is in it (a
 step-level `let` that nothing reads, for example). `--tasks` and `--stat` print
 `no changes` only when nothing differs. When only job-level changes differ (a job rename,
 an added job environment, a parameter that no step reads), they print
@@ -113,7 +114,8 @@ listing, or `no changes`.
 Every human-readable form ends its diff with one `note: …` line per entry of
 `TemplateDiff::notes`: after the totals line, after the `--tasks` lines, or after
 `no changes`. A note says why job-layer origins are `[both]` (the new template does not
-build with the old parameters) or why a step's tasks are unknown (adaptive chunking):
+build with the old parameters) or why a step's tasks are unknown (adaptive chunking, or a parameter space that does not
+iterate):
 
 ```
 $ openjd diff render_v1.yaml quality.yaml -p Scene=/s --new-param Quality=3

@@ -434,6 +434,7 @@ fn serde_shape_is_pinned() {
             "changes": [{
                 "layer": "job",
                 "path": "steps[Render].parameterSpace.taskParameterDefinitions[Eye]",
+                "step": "Render",
                 "field": "definition",
                 "before": {"raw": {"string": {"range": ["left"]}}, "text": "[left]"},
                 "after": {"raw": {"string": {"range": ["left", "right"]}}, "text": "[left, right]"},
@@ -497,7 +498,13 @@ fn mid_build_failure_marks_job_changes_both_with_a_note() {
         &opts(),
     )
     .unwrap();
-    assert_eq!(d.notes, [MID_NOTE]);
+    assert_eq!(
+        d.notes,
+        [Note {
+            step: None,
+            text: MID_NOTE.to_string()
+        }]
+    );
     assert_eq!(
         lines(&d.changes),
         [
@@ -913,7 +920,10 @@ note: steps[Chunked]: cannot count tasks: the chunk size is adaptive (targetRunt
     );
     assert_eq!(
         d.notes,
-        ["steps[Chunked]: cannot count tasks: the chunk size is adaptive (targetRuntimeSeconds), so the number of chunks is decided at run time"]
+        [Note {
+            step: Some("Chunked".to_string()),
+            text: "cannot count tasks: the chunk size is adaptive (targetRuntimeSeconds), so the number of chunks is decided at run time".to_string()
+        }]
     );
     let s = d.step("Chunked").unwrap();
     assert_eq!(s.tasks, TaskSummary::Unchanged { count: 0 });
@@ -2643,4 +2653,245 @@ fn job_from_str_names_an_unknown_field_in_a_task_parameter_definition() {
             "{pointer} (YAML)"
         );
     }
+}
+
+// ─── audit round 6 ──────────────────────────────────────────────────
+
+/// Steps `A` and `other`, with `let` text and `other`'s command as given.
+fn two_steps(other: &str, let_text: &str, command: &str) -> TemplateInput {
+    text(&format!(
+        "specificationVersion: jobtemplate-2023-09\nextensions: [EXPR]\nname: J\nsteps:\n  - name: A\n    script: {{actions: {{onRun: {{command: a}}}}}}\n  - name: \"{other}\"\n    let: [\"{let_text}\"]\n    script: {{actions: {{onRun: {{command: {command}}}}}}}\n"
+    ))
+}
+
+#[test]
+fn a_change_belongs_to_its_step_by_identity_not_by_path_prefix() {
+    for other in ["A].x", "A][B"] {
+        let d = diff_templates(
+            &two_steps(other, "u = 1", "x"),
+            &two_steps(other, "u = 2", "y"),
+            &opts(),
+        )
+        .unwrap();
+        assert_eq!(
+            d.to_string(),
+            format!(
+                "\
+~ step {other}
+    ~ let: [u = 1] -> [u = 2]  [template]
+    ~ script.onRun.command: x -> y  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 2 kept, 0 added, 0 removed."
+            ),
+            "{other}"
+        );
+        // Both layers carry the owning step.
+        let owners: Vec<(Layer, Option<&str>)> = d
+            .changes
+            .iter()
+            .map(|c| (c.layer, c.step.as_deref()))
+            .collect();
+        assert_eq!(
+            owners,
+            [(Layer::Template, Some(other)), (Layer::Job, Some(other))],
+            "{other}"
+        );
+        assert_eq!(d.changes_in_step("A").count(), 0, "{other}");
+        assert_eq!(d.changes_in_step(other).count(), 2, "{other}");
+        assert_eq!(d.stat().steps_changed, 1, "{other}");
+        // A path prefix cannot tell `A` from `A].x`, which is why
+        // `changes_in_step` exists.
+        let at_a = if other == "A].x" { 2 } else { 0 };
+        assert_eq!(d.changes_at("steps[A]").count(), at_a, "{other}");
+    }
+}
+
+#[test]
+fn job_level_changes_have_no_step() {
+    let d = diff_parameter_sets(
+        &input("render_v1.yaml"),
+        &params(&[("Frames", "1-100")]),
+        &params(&[("Frames", "1-200")]),
+        &opts(),
+    )
+    .unwrap();
+    let owners: Vec<(String, Option<&str>)> = d
+        .changes
+        .iter()
+        .map(|c| (c.to_string(), c.step.as_deref()))
+        .collect();
+    assert_eq!(
+        owners,
+        [
+            (
+                "~ parameters[Frames].value: 1-100 -> 1-200  [parameters]".to_string(),
+                None
+            ),
+            (
+                "~ steps[Render].parameterSpace.taskParameterDefinitions[Frame].definition: 1-100 -> 1-200  [parameters]".to_string(),
+                Some("Render")
+            ),
+        ]
+    );
+    let json = serde_json::to_value(&d.changes).unwrap();
+    assert_eq!(json[0].get("step"), None);
+    assert_eq!(json[1]["step"], "Render");
+}
+
+#[test]
+fn mid_is_built_with_the_new_sides_limits() {
+    // `mid` (the new template with the old Frames=1-100) has 200 tasks; the
+    // new side allows 150. With the old side's limits `mid` would build and
+    // the origins would split.
+    let limits = openjd_model::CallerLimits {
+        max_task_count: Some(150),
+        ..Default::default()
+    };
+    let d = diff_templates(
+        &input("render_v1.yaml").param("Frames", "1-100"),
+        &input("render_v2.yaml")
+            .param("Frames", "1-50")
+            .limits(limits),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
+~ parameter Frames: 1-100 -> 1-50  [both]
+~ step Render
+    ~ Frame: 1-100 -> 1-50  [both]
+    ~ Eye: [left] -> [left, right]  [both]
+    tasks: 100 -> 100
+      keep 50    Frame 1-50 × Eye left
+      add  50    Frame 1-50 × Eye right
+      drop 50    Frame 51-100 × Eye left
+
+1 step changed. Tasks: 50 kept, 50 added, 50 removed.
+note: origin: the new template does not build with the old parameters, so job-layer changes are marked both: Model validation error: 1 validation error for Template
+Template: Total task count (200) exceeds caller limit of 150."
+    );
+}
+
+/// A one-step template whose single task parameter is `def`.
+fn one_parameter(extensions: &str, def: &str) -> String {
+    format!(
+        "specificationVersion: jobtemplate-2023-09\n{extensions}name: J\nsteps:\n  - name: S\n    parameterSpace:\n      taskParameterDefinitions:\n        - {def}\n    script: {{actions: {{onRun: {{command: c}}}}}}\n"
+    )
+}
+
+#[test]
+fn job_from_str_reads_back_every_task_parameter_and_range_kind() {
+    let cases = [
+        ("", "{name: F, type: FLOAT, range: [1.5, 2.5]}"),
+        ("", "{name: P, type: PATH, range: [/a, /b]}"),
+        ("", "{name: N, type: INT, range: [3, 1, 2]}"),
+        (
+            "extensions: [TASK_CHUNKING]\n",
+            "{name: C, type: \"CHUNK[INT]\", range: \"1-10\", chunks: {defaultTaskCount: 5, rangeConstraint: CONTIGUOUS}}",
+        ),
+    ];
+    for (extensions, def) in cases {
+        let job = text(&one_parameter(extensions, def)).build().unwrap();
+        for doc in [
+            serde_json::to_string(&JobDocument(&job)).unwrap(),
+            serde_saphyr::to_string(&JobDocument(&job)).unwrap(),
+        ] {
+            let back = job_from_str(&doc).unwrap_or_else(|e| panic!("{def}: {e}"));
+            assert_eq!(back, job, "{def}");
+        }
+    }
+}
+
+#[test]
+fn job_from_str_accepts_a_null_notify_period_in_a_step_environment() {
+    let mut v = rich_built_job_value();
+    v["steps"][0]["stepEnvironments"][0]["script"]["actions"]["onEnter"]["cancelation"] =
+        serde_json::json!({"mode": "NOTIFY_THEN_TERMINATE", "notifyPeriodInSeconds": null});
+    let job = job_from_str(&serde_json::to_string(&v).unwrap()).unwrap();
+    let back = serde_json::to_value(JobDocument(&job)).unwrap();
+    assert_eq!(
+        back.pointer("/steps/0/stepEnvironments/0/script/actions/onEnter/cancelation"),
+        Some(&serde_json::json!({"mode": "NOTIFY_THEN_TERMINATE"}))
+    );
+}
+
+#[test]
+fn a_decreasing_integer_list_is_not_a_run() {
+    let d = diff_templates(
+        &text(&one_parameter("", "{name: N, type: INT, range: [3, 2, 1]}")),
+        &text(&one_parameter(
+            "",
+            "{name: N, type: INT, range: [3, 2, 1, 0]}",
+        )),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
+~ step S
+    ~ N: 3,2,1 -> 3,2,1,0  [template]
+    tasks: 3 -> 4
+      keep 3     N 3,2,1
+      add  1     N 0
+
+1 step changed. Tasks: 3 kept, 1 added, 0 removed."
+    );
+}
+
+#[test]
+fn job_from_str_rejects_null_parameters() {
+    let mut v = built_job_value();
+    v["parameters"] = serde_json::Value::Null;
+    let doc = serde_json::to_string(&v).unwrap();
+    assert_eq!(
+        job_from_str(&doc).unwrap_err().to_string(),
+        "Validation error: not a built job: invalid type: null, expected a map at line 1 column 301"
+    );
+}
+
+#[test]
+fn job_from_str_rejects_a_repeated_symbol_name() {
+    let mut v = rich_built_job_value();
+    v["steps"][0]["resolvedSymTab"] = serde_json::json!([
+        {"name": "Param.Z", "type": "string", "value": "a"},
+        {"name": "Param.Z", "type": "string", "value": "b"},
+    ]);
+    assert_eq!(
+        job_from_str(&serde_json::to_string(&v).unwrap())
+            .unwrap_err()
+            .to_string(),
+        "Validation error: not a built job: steps[0].resolvedSymTab[1].name: 'Param.Z' is repeated"
+    );
+}
+
+#[test]
+fn a_step_whose_space_does_not_iterate_has_an_unknown_task_count() {
+    let t = one_parameter("", "{name: F, type: INT, range: \"1-2\"}");
+    let old = text(&t).build().unwrap();
+    let doc = serde_json::to_string(&JobDocument(&old)).unwrap();
+    assert!(doc.contains("\"combination\":null"), "{doc}");
+    let new = job_from_str(&doc.replace("\"combination\":null", "\"combination\":\"F * Bogus\""))
+        .unwrap();
+    let d = diff_built_jobs(old, new, &opts());
+    let s = d.step("S").unwrap();
+    assert_eq!(s.tasks_unknown.as_deref(), Some("cannot count tasks"));
+    assert_eq!(
+        s.tasks,
+        TaskSummary::Replaced {
+            old_count: 0,
+            new_count: 0,
+            reason: "cannot count tasks".into()
+        }
+    );
+    assert_eq!(s.stat_line(), "~ S  tasks unknown (cannot count tasks)");
+    assert_eq!(
+        d.notes,
+        [Note {
+            step: Some("S".into()),
+            text: "cannot count tasks: Validation error: Unknown parameter 'Bogus' in combination expression".into()
+        }]
+    );
 }

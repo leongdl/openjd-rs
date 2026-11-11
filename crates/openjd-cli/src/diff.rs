@@ -13,7 +13,7 @@ use clap::Args;
 use openjd_model::job::apply::{Action, ApplyPlan, Op, TaskChange};
 use openjd_model::job::diff::DiffOptions;
 use openjd_model::job::template_diff::{
-    diff_built_jobs, diff_parameter_sets, diff_templates, job_from_str, Change, StepSummary,
+    diff_built_jobs, diff_parameter_sets, diff_templates, job_from_str, Change, Note, StepSummary,
     TemplateDiff, TemplateInput, TemplateSource,
 };
 use openjd_model::job::Job;
@@ -232,36 +232,23 @@ fn read_job(arg: &str, stdin_used: &mut bool) -> Result<Job, Box<dyn std::error:
 }
 
 /// Keep the changes, summary and notes of one step, and the job-level ones.
+/// Each is matched by the step it belongs to ([`Change::step`],
+/// [`Note::step`]), not by its path, so `A` does not keep `A].x`.
 fn keep_step(diff: &mut TemplateDiff, step: &str) -> Result<(), String> {
     if diff.step(step).is_none() {
         return Err(format!("Step '{step}' does not exist in either job."));
     }
-    let prefix = format!("steps[{step}]");
-    let keep: Vec<Change> = diff
-        .changes
-        .iter()
-        .filter(|c| {
-            !c.path.starts_with("steps[")
-                || c.path == prefix
-                || c.path.starts_with(&format!("{prefix}."))
-        })
-        .cloned()
-        .collect();
-    diff.changes = keep;
+    let kept = |owner: &Option<String>| owner.as_deref().is_none_or(|s| s == step);
+    diff.changes.retain(|c| kept(&c.step));
     diff.steps.retain(|s| s.name == step);
-    let own = format!("{prefix}:");
-    diff.notes
-        .retain(|n| !n.starts_with("steps[") || n.starts_with(&own));
+    diff.notes.retain(|n| kept(&n.step));
     Ok(())
 }
 
 fn shown_steps(diff: &TemplateDiff) -> impl Iterator<Item = &StepSummary> {
     diff.steps.iter().filter(|s| {
         s.status != openjd_model::job::diff::DiffStatus::Unchanged
-            || diff
-                .changes_at(&format!("steps[{}]", s.name))
-                .next()
-                .is_some()
+            || diff.changes_in_step(&s.name).next().is_some()
     })
 }
 
@@ -304,7 +291,11 @@ fn print_human(header: &str, diff: &TemplateDiff, plan: Option<&PlanDoc>, args: 
         for (n, op) in plan.ops.iter().enumerate() {
             println!("  {}. {}  [{}]", n + 1, op.action, op.kinds.join(", "));
         }
-        println!("kinds: {}", plan.kinds.join(", "));
+        if plan.kinds.is_empty() {
+            println!("kinds: none");
+        } else {
+            println!("kinds: {}", plan.kinds.join(", "));
+        }
     }
     if args.verbose {
         println!("\njob diff tree:");
@@ -426,7 +417,7 @@ struct Brief<'a> {
     changed: bool,
     changes: &'a [Change],
     steps: &'a [StepSummary],
-    notes: &'a [String],
+    notes: &'a [Note],
     #[serde(skip_serializing_if = "Option::is_none")]
     plan: Option<PlanDoc>,
 }

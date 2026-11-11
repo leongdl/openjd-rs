@@ -688,6 +688,7 @@ pub openjd_model::job::template_diff::Change::layer: openjd_model::job::template
 pub openjd_model::job::template_diff::Change::origin: openjd_model::job::template_diff::Origin
 pub openjd_model::job::template_diff::Change::path: alloc::string::String
 pub openjd_model::job::template_diff::Change::stage: openjd_model::job::template_diff::Stage
+pub openjd_model::job::template_diff::Change::step: core::option::Option<alloc::string::String>
 impl core::clone::Clone for openjd_model::job::template_diff::Change
 pub fn openjd_model::job::template_diff::Change::clone(&self) -> openjd_model::job::template_diff::Change
 impl core::cmp::Eq for openjd_model::job::template_diff::Change
@@ -731,6 +732,21 @@ pub fn openjd_model::job::template_diff::JobDocument<'a>::clone(&self) -> openjd
 impl<'a> core::fmt::Debug for openjd_model::job::template_diff::JobDocument<'a>
 pub fn openjd_model::job::template_diff::JobDocument<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::Copy for openjd_model::job::template_diff::JobDocument<'a>
+pub struct openjd_model::job::template_diff::Note
+pub openjd_model::job::template_diff::Note::step: core::option::Option<alloc::string::String>
+pub openjd_model::job::template_diff::Note::text: alloc::string::String
+impl core::clone::Clone for openjd_model::job::template_diff::Note
+pub fn openjd_model::job::template_diff::Note::clone(&self) -> openjd_model::job::template_diff::Note
+impl core::cmp::Eq for openjd_model::job::template_diff::Note
+impl core::cmp::PartialEq for openjd_model::job::template_diff::Note
+pub fn openjd_model::job::template_diff::Note::eq(&self, &openjd_model::job::template_diff::Note) -> bool
+impl core::fmt::Debug for openjd_model::job::template_diff::Note
+pub fn openjd_model::job::template_diff::Note::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::Note
+pub fn openjd_model::job::template_diff::Note::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::Note
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::Note
+pub fn openjd_model::job::template_diff::Note::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 pub struct openjd_model::job::template_diff::Shown
 pub openjd_model::job::template_diff::Shown::raw: serde_json::value::Value
 pub openjd_model::job::template_diff::Shown::text: alloc::string::String
@@ -771,11 +787,12 @@ pub struct openjd_model::job::template_diff::TemplateDiff
 pub openjd_model::job::template_diff::TemplateDiff::changes: alloc::vec::Vec<openjd_model::job::template_diff::Change>
 pub openjd_model::job::template_diff::TemplateDiff::job: openjd_model::job::diff::DiffTree
 pub openjd_model::job::template_diff::TemplateDiff::new_job: openjd_model::job::Job
-pub openjd_model::job::template_diff::TemplateDiff::notes: alloc::vec::Vec<alloc::string::String>
+pub openjd_model::job::template_diff::TemplateDiff::notes: alloc::vec::Vec<openjd_model::job::template_diff::Note>
 pub openjd_model::job::template_diff::TemplateDiff::old_job: openjd_model::job::Job
 pub openjd_model::job::template_diff::TemplateDiff::steps: alloc::vec::Vec<openjd_model::job::template_diff::StepSummary>
 impl openjd_model::job::template_diff::TemplateDiff
 pub fn openjd_model::job::template_diff::TemplateDiff::changes_at<'a>(&'a self, &'a str) -> impl core::iter::traits::iterator::Iterator<Item = &'a openjd_model::job::template_diff::Change> + 'a
+pub fn openjd_model::job::template_diff::TemplateDiff::changes_in_step<'a>(&'a self, &'a str) -> impl core::iter::traits::iterator::Iterator<Item = &'a openjd_model::job::template_diff::Change> + 'a
 pub fn openjd_model::job::template_diff::TemplateDiff::is_changed(&self) -> bool
 pub fn openjd_model::job::template_diff::TemplateDiff::plan(&self) -> core::result::Result<openjd_model::job::apply::ApplyPlan<'_>, openjd_model::error::ModelError>
 pub fn openjd_model::job::template_diff::TemplateDiff::stat(&self) -> openjd_model::job::template_diff::DiffStat

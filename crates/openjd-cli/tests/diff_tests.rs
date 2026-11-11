@@ -997,7 +997,7 @@ fn a_step_whose_tasks_cannot_be_counted_gets_a_note() {
 jobs: old.json -> new.json
 ~ step S
     + parameterSpace.combination: Frame * Bogus  [job]
-    tasks: 2 -> 0, all replaced (not an exact plain product: association, chunking, a repeated range value or name, or a task count overflow)
+    tasks: unknown (cannot count tasks)
 
 1 step changed. Tasks: 0 kept, 0 added, 0 removed.
 note: steps[S]: cannot count tasks: Validation error: Unknown parameter 'Bogus' in combination expression
@@ -1042,5 +1042,180 @@ old.yaml -> new.yaml
 
 1 step changed. Tasks: 1 kept, 0 added, 0 removed.
 "
+    );
+}
+
+// ─── audit round 6 ──────────────────────────────────────────────────
+
+#[test]
+fn step_filter_matches_by_identity_not_by_path_prefix() {
+    for other in ["A].x", "A][B"] {
+        let dir = tempfile::tempdir().unwrap();
+        let t = |cmd: &str| {
+            format!(
+                "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n  - name: A\n    script: {{actions: {{onRun: {{command: a}}}}}}\n  - name: \"{other}\"\n    script: {{actions: {{onRun: {{command: {cmd}}}}}}}\n"
+            )
+        };
+        std::fs::write(dir.path().join("old.yaml"), t("x")).unwrap();
+        std::fs::write(dir.path().join("new.yaml"), t("y")).unwrap();
+        let run = |extra: &[&str]| {
+            let mut args = vec!["diff", "old.yaml", "new.yaml"];
+            args.extend_from_slice(extra);
+            openjd_in(dir.path(), &args, None)
+        };
+        assert_ok(
+            &run(&["--step", "A", "--exit-code"]),
+            "old.yaml -> new.yaml\nno changes\n",
+        );
+        assert_ok(
+            &run(&["--step", "A", "--stat"]),
+            "old.yaml -> new.yaml\nno changes\n",
+        );
+        let o = run(&["--step", other, "--exit-code"]);
+        assert_eq!(o.status.code(), Some(4), "{other}: {}", stderr(&o));
+        assert_eq!(
+            stdout(&o),
+            format!(
+                "\
+old.yaml -> new.yaml
+~ step {other}
+    ~ script.onRun.command: x -> y  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+"
+            )
+        );
+        // Unfiltered, only the changed step is listed.
+        assert_ok(
+            &run(&["--stat"]),
+            &format!(
+                "old.yaml -> new.yaml\n~ {other}  tasks 1 -> 1  (+0 -0)\n1 step changed. Tasks: 2 kept, 0 added, 0 removed.\n"
+            ),
+        );
+    }
+}
+
+#[test]
+fn step_filter_keeps_the_steps_own_unexpanded_change() {
+    let o = openjd(
+        &[
+            "diff",
+            "render_v1.yaml",
+            "render_v2.yaml",
+            "-p",
+            "Scene=/s",
+            "--step",
+            "Render",
+            "--depth",
+            "1",
+        ],
+        None,
+    );
+    assert_ok(
+        &o,
+        &format!(
+            "{V1_V2}\
+~ step Render
+    ~ (not expanded)  [template]
+    tasks: 100 -> 200
+      keep 100   Frame 1-100 × Eye left
+      add  100   Frame 1-100 × Eye right
+
+1 step changed. Tasks: 100 kept, 100 added, 0 removed.
+"
+        ),
+    );
+}
+
+#[test]
+fn jobs_conflicts_with_every_template_input_flag() {
+    let cases = [
+        (["-p", "X=1"], "--job-param <PARAMETERS>"),
+        (["--old-param", "X=1"], "--old-param <OLD_PARAMS>"),
+        (["--new-param", "X=1"], "--new-param <NEW_PARAMS>"),
+        (["--environment", "e.yaml"], "--environment <ENVIRONMENTS>"),
+        (["--extensions", "EXPR"], "--extensions <EXTENSIONS>"),
+    ];
+    for (flag, shown) in cases {
+        let mut args = vec!["diff", "--jobs", "old.json", "new.json"];
+        args.extend_from_slice(&flag);
+        let o = openjd(&args, None);
+        assert_eq!(o.status.code(), Some(2), "{flag:?}");
+        assert_eq!(
+            stderr(&o),
+            format!("error: the argument '--jobs' cannot be used with '{shown}'\n\nUsage: openjd diff --jobs <OLD> <NEW>\n\nFor more information, try '--help'.\n"),
+            "{flag:?}"
+        );
+        assert_eq!(stdout(&o), "");
+    }
+}
+
+#[test]
+fn tasks_conflicts_with_stat() {
+    let o = openjd(
+        &[
+            "diff",
+            "render_v1.yaml",
+            "render_v2.yaml",
+            "--tasks",
+            "--stat",
+        ],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(
+        stderr(&o),
+        "error: the argument '--tasks' cannot be used with '--stat'\n\nUsage: openjd diff --tasks <OLD> <NEW>\n\nFor more information, try '--help'.\n"
+    );
+}
+
+#[test]
+fn env_and_parameter_are_aliases() {
+    let env = "\
+specificationVersion: environment-2023-09
+parameterDefinitions:
+  - {name: Tool, type: STRING, default: t1}
+environment:
+  name: Env
+  variables: {TOOL: \"{{Param.Tool}}\"}
+";
+    let o = openjd(
+        &[
+            "diff",
+            "render_v1.yaml",
+            "render_v2.yaml",
+            "--parameter",
+            "Scene=/s",
+            "--env",
+            "-",
+            "--new-param",
+            "Tool=t2",
+            "--stat",
+        ],
+        Some(env),
+    );
+    assert_ok(
+        &o,
+        &format!("{V1_V2}~ Render  tasks 100 -> 200  (+100 -0)\n1 step changed. Tasks: 100 kept, 100 added, 0 removed.\n"),
+    );
+}
+
+#[test]
+fn an_empty_plan_says_nothing_to_apply() {
+    let o = openjd(
+        &[
+            "diff",
+            "render_v1.yaml",
+            "render_v1.yaml",
+            "-p",
+            "Scene=/s",
+            "--plan",
+        ],
+        None,
+    );
+    assert_ok(
+        &o,
+        "render_v1.yaml -> render_v1.yaml\nno changes\n\napply plan:\n  nothing to apply\nkinds: none\n",
     );
 }
