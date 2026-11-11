@@ -30,8 +30,15 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError>;
   level: after parsing, every key of the input must appear in the parsed job's
   `JobDocument` form, so a key a job type ignored is an error naming its path,
   `steps[0].bogus: unknown field`. Only keys are compared, so `2` for `2.0` passes, and so
-  does a `null` for a field the document omits when unset (`resolvedSymTab`, the
-  `onWrap*` actions, `notifyPeriodInSeconds`) and the `letBindings` and `type` aliases.
+  do the `letBindings` and `type` aliases. A `null` passes for a field the document omits
+  when unset, but only in the objects that have that field: `resolvedSymTab` in a step or
+  an environment, the `onWrap*` actions in an environment's `actions`, and
+  `notifyPeriodInSeconds` in a `cancelation`. An extra key beside the tag of a task
+  parameter definition or of its `range` is reported the same way
+  (`steps[0].parameterSpace.taskParameterDefinitions.F.bogus: unknown field`). Each
+  `resolvedSymTab` entry must have exactly the keys `name`, `type` and `value`, a string
+  `name` and `type`, a `type` that parses, and a `value` of that type, as `SymbolTable`
+  serializes it (`steps[0].resolvedSymTab[0].zzBogus: unknown field`).
   A parameter must have exactly the keys `name`, `paramType` and `value`, and its `name`
   must be its key. A parameter whose value does not have its `paramType`'s type is
   rejected, with `parameters[P]: paramType 'ListInt' cannot hold a 'ListList' value`, and
@@ -135,14 +142,17 @@ Template-layer changes are always `Template`. For job-layer changes in `diff_tem
    documents of the template and its environment templates, the allowlist, and the two
    PATH directories. A `Decoded` source has no document, so it never takes this shortcut;
    step 3 gives the same answer at the cost of one more build.
-3. Otherwise build `mid`, the new template with the old parameters. A change whose key
+3. Otherwise build `mid`, the new template with the old parameters and the new side's
+   limits. A change whose key
    appears in `diff_jobs(old, mid)` only is `Template`, in `diff_jobs(mid, new)` only is
    `Parameters`, and in both or neither is `Both`. The key of a field change is
    `(path, field)`; the key of a whole-node change is `(path, status)`, the status being
    added, removed, or modified and not expanded. So a node one half adds is not confused
    with the same node the other half leaves unexpanded at the depth limit. A change keeps
-   its origin at every depth at which it appears; an unexpanded node's origin combines the
-   origins of everything below it, so it can be `Both`. The two extra diffs use the
+   its origin at every depth at which it appears. A whole (unexpanded) node is classified
+   by whether its value differs in each half (old to `mid`, `mid` to new), so it can be
+   `Both` even when the full-depth changes below it have one origin: for example, when the
+   template changes a value and a parameter changes it back. The two extra diffs use the
    caller's options, so the keys line up with the main diff.
 4. If `mid` does not build (the new template needs a parameter the old set lacks, for
    example), every job-layer change is `Both` and `TemplateDiff::notes` says why.
@@ -164,7 +174,7 @@ store; a service maps the stage and path to its own records.
 |---|---|
 | `Template` | the change is in the template layer |
 | `Parameters` | the path starts with `parameters[` |
-| `RunTime` | the field is a format string (`command`, `args`, `timeout`, `cancelation`, `data`, `filename`, `let`, `variables.*`) and its before or after value names a `Task.` or `Session.` symbol |
+| `RunTime` | the field is a format string (`command`, `args`, `timeout`, `cancelation`, `data`, `let`, `variables.*`) and its before or after value names a `Task.` or `Session.` symbol |
 | `Job` | everything else |
 
 A format string names a run-time symbol when the text inside one of its `{{ }}`
@@ -173,6 +183,9 @@ character that is not a letter, digit, `_` or `.`. So `{{Task.Param.Frame}}` and
 `{{ x + Session.WorkingDirectory }}` count, and `Task.log` outside braces, `subTask.x` and
 `a.Task.x` do not. A `let` binding is an expression with no braces, so the same boundary
 rule applies to the whole binding.
+
+An embedded file's `filename` is a plain string, not a format string: the worker uses it
+as written, so a change to it is stage `Job` even when it contains `{{Task.Param.F}}`.
 
 A PATH parameter change shows in `resolvedSymTab` as `RawParam.P` and is stage `Job`; PATH
 mapping itself happens on the worker.

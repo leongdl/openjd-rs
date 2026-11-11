@@ -2261,6 +2261,15 @@ fn job_from_str_rejects_unknown_fields_at_every_level() {
             "{path} (YAML)"
         );
     }
+    // A null value does not hide an unknown key.
+    let mut v = built_job_value();
+    v["steps"][0]["bogus"] = serde_json::Value::Null;
+    assert_eq!(
+        job_from_str(&serde_json::to_string(&v).unwrap())
+            .unwrap_err()
+            .to_string(),
+        "Validation error: not a built job: steps[0].bogus: unknown field"
+    );
 }
 
 #[test]
@@ -2310,4 +2319,328 @@ fn changes_at_a_collection_matches_every_entry_in_it() {
     let d = diff_templates(&text(&t("x")), &text(&t("y")), &opts()).unwrap();
     assert_eq!(d.changes_at("steps[A]").count(), 0);
     assert_eq!(d.changes_at("steps[A][B]").count(), 1);
+}
+
+// ─── audit round 5 ──────────────────────────────────────────────────
+
+/// A step with task parameter `F`, an `onRun` command, and an embedded
+/// file `E` with a `filename` and `data`.
+fn file_step(command: &str, filename: &str, data: &str) -> String {
+    format!(
+        "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n  - name: S\n    parameterSpace:\n      taskParameterDefinitions:\n        - {{name: F, type: INT, range: \"1-2\"}}\n    script:\n      embeddedFiles:\n        - {{name: E, type: TEXT, filename: \"{filename}\", data: \"{data}\"}}\n      actions: {{onRun: {{command: \"{command}\"}}}}\n"
+    )
+}
+
+#[test]
+fn stage_of_command_data_and_filename_changes() {
+    let f = "{{Task.Param.F}}";
+    // (old (command, filename, data), new, change, stage)
+    let cases = [
+        (
+            (format!("{f} a"), "f.txt".to_string(), "d".to_string()),
+            (format!("{f} b"), "f.txt".to_string(), "d".to_string()),
+            "~ steps[S].script.onRun.command: {{Task.Param.F}} a -> {{Task.Param.F}} b  [template]",
+            Stage::RunTime,
+        ),
+        (
+            ("c".to_string(), "f.txt".to_string(), format!("{f} a")),
+            ("c".to_string(), "f.txt".to_string(), format!("{f} b")),
+            "~ steps[S].script.embeddedFiles[E].data: {{Task.Param.F}} a -> {{Task.Param.F}} b  [template]",
+            Stage::RunTime,
+        ),
+        // `filename` is a plain string: the worker writes `{{` literally.
+        (
+            ("c".to_string(), format!("f{f}.txt"), "d".to_string()),
+            ("c".to_string(), format!("g{f}.txt"), "d".to_string()),
+            "~ steps[S].script.embeddedFiles[E].filename: f{{Task.Param.F}}.txt -> g{{Task.Param.F}}.txt  [template]",
+            Stage::Job,
+        ),
+    ];
+    for ((oc, of, od), (nc, nf, nd), change, stage) in cases {
+        let d = diff_templates(
+            &text(&file_step(&oc, &of, &od)),
+            &text(&file_step(&nc, &nf, &nd)),
+            &opts(),
+        )
+        .unwrap();
+        let got: Vec<(String, Stage)> =
+            d.changes.iter().map(|c| (c.to_string(), c.stage)).collect();
+        assert_eq!(got, [(change.to_string(), stage)], "{change}");
+    }
+}
+
+#[test]
+fn a_timeout_naming_a_session_symbol_is_run_time() {
+    // Templates reject `Task.` and `Session.` in `timeout`, so edit a built job.
+    let t = "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n  - name: S\n    script:\n      actions:\n        onRun: {command: c, timeout: 60}\n";
+    let old = text(t).build().unwrap();
+    let doc = serde_json::to_string(&JobDocument(&old)).unwrap();
+    assert!(doc.contains("\"timeout\":\"60\""), "{doc}");
+    let new =
+        job_from_str(&doc.replace("\"timeout\":\"60\"", "\"timeout\":\"{{Session.T}}\"")).unwrap();
+    let d = diff_built_jobs(old, new, &opts());
+    let got: Vec<(String, Stage)> = d.changes.iter().map(|c| (c.to_string(), c.stage)).collect();
+    assert_eq!(
+        got,
+        [(
+            "~ steps[S].script.onRun.timeout: 60 -> {{Session.T}}  [job]".to_string(),
+            Stage::RunTime
+        )]
+    );
+}
+
+/// Old template: `P` defaults to `a`. New template: `P` defaults to `b`,
+/// and the new parameters set `P` back to `a` and change `Q`.
+fn undone_by_a_parameter(depth: Option<usize>) -> String {
+    let t = |p: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nname: J\nparameterDefinitions:\n  - {{name: P, type: STRING, default: {p}}}\n  - {{name: Q, type: STRING}}\nsteps:\n  - name: S\n    parameterSpace:\n      taskParameterDefinitions:\n        - {{name: A, type: STRING, range: [\"{{{{Param.P}}}}\"]}}\n        - {{name: B, type: STRING, range: [\"{{{{Param.Q}}}}\"]}}\n    script: {{actions: {{onRun: {{command: c}}}}}}\n"
+        )
+    };
+    let mut o = opts();
+    if let Some(n) = depth {
+        o = o.with_max_depth(n);
+    }
+    diff_templates(
+        &text(&t("a")).param("Q", "q1"),
+        &text(&t("b")).param("P", "a").param("Q", "q2"),
+        &o,
+    )
+    .unwrap()
+    .to_string()
+}
+
+#[test]
+fn an_unexpanded_node_differing_in_both_halves_is_both() {
+    // Full depth: the only job-layer change below the step is `B`, from the
+    // parameters. Depth 1: the step is whole, and it differs in both halves
+    // (old -> mid changes `A`, mid -> new changes it back and changes `B`),
+    // so it is `both`.
+    assert_eq!(
+        undone_by_a_parameter(None),
+        "\
+~ parameter definition P.default: a -> b  [template]
+~ parameter Q: q1 -> q2  [parameters]
+~ step S
+    ~ B: [q1] -> [q2]  [parameters]
+    tasks: 1 -> 1
+      add  1     A a × B q2
+      drop 1     A a × B q1
+
+1 step changed. Tasks: 0 kept, 1 added, 1 removed."
+    );
+    assert_eq!(
+        undone_by_a_parameter(Some(1)),
+        "\
+~ parameter definition P.default: a -> b  [template]
+~ parameter Q: q1 -> q2  [parameters]
+~ step S
+    ~ (not expanded)  [both]
+    tasks: 1 -> 1
+      add  1     A a × B q2
+      drop 1     A a × B q1
+
+1 step changed. Tasks: 0 kept, 1 added, 1 removed."
+    );
+}
+
+/// A built job with a job environment, a step environment, an embedded
+/// file and `NOTIFY_THEN_TERMINATE` cancelations, as JSON.
+fn rich_built_job_value() -> serde_json::Value {
+    let job = text(
+        "specificationVersion: jobtemplate-2023-09\nname: J\njobEnvironments:\n  - name: E\n    script: {actions: {onEnter: {command: e, cancelation: {mode: NOTIFY_THEN_TERMINATE}}}}\nsteps:\n  - name: S\n    stepEnvironments:\n      - name: SE\n        script: {actions: {onEnter: {command: se}}}\n    script:\n      embeddedFiles: [{name: EF, type: TEXT, data: d}]\n      actions: {onRun: {command: c, cancelation: {mode: NOTIFY_THEN_TERMINATE}}}\n",
+    )
+    .build()
+    .unwrap();
+    serde_json::to_value(JobDocument(&job)).unwrap()
+}
+
+#[test]
+fn job_from_str_accepts_a_null_skipped_field_only_where_the_field_exists() {
+    // (parent pointer, key, the error path when the placement is rejected)
+    let mut cases: Vec<(&str, &str, Option<String>)> = vec![
+        ("/steps/0", "resolvedSymTab", None),
+        ("/jobEnvironments/0", "resolvedSymTab", None),
+        ("/steps/0/stepEnvironments/0", "resolvedSymTab", None),
+        (
+            "/steps/0/script/actions/onRun",
+            "resolvedSymTab",
+            Some("steps[0].script.actions.onRun.resolvedSymTab".into()),
+        ),
+        (
+            "/steps/0/script/actions/onRun/cancelation",
+            "notifyPeriodInSeconds",
+            None,
+        ),
+        (
+            "/jobEnvironments/0/script/actions/onEnter/cancelation",
+            "notifyPeriodInSeconds",
+            None,
+        ),
+        (
+            "/steps/0/script/actions/onRun",
+            "notifyPeriodInSeconds",
+            Some("steps[0].script.actions.onRun.notifyPeriodInSeconds".into()),
+        ),
+    ];
+    for key in ["onWrapEnvEnter", "onWrapTaskRun", "onWrapEnvExit"] {
+        cases.push(("/jobEnvironments/0/script/actions", key, None));
+        cases.push(("/steps/0/stepEnvironments/0/script/actions", key, None));
+        cases.push((
+            "/jobEnvironments/0/script/actions/onEnter",
+            key,
+            Some(format!("jobEnvironments[0].script.actions.onEnter.{key}")),
+        ));
+    }
+    for (pointer, key, rejected) in cases {
+        let mut v = rich_built_job_value();
+        v.pointer_mut(pointer)
+            .unwrap_or_else(|| panic!("{pointer}"))
+            .as_object_mut()
+            .unwrap()
+            .insert(key.into(), serde_json::Value::Null);
+        let got = job_from_str(&serde_json::to_string(&v).unwrap()).map(drop);
+        let want = rejected
+            .map(|path| format!("Validation error: not a built job: {path}: unknown field"));
+        assert_eq!(
+            got.map_err(|e| e.to_string()),
+            want.map_or(Ok(()), Err),
+            "{pointer} {key}"
+        );
+    }
+}
+
+#[test]
+fn job_from_str_accepts_an_alias_only_where_its_field_exists() {
+    // (parent pointer, written key, alias, the error path when rejected)
+    let cases = [
+        ("/steps/0/script", "let", "letBindings", None),
+        ("/jobEnvironments/0/script", "let", "letBindings", None),
+        ("/steps/0/script/embeddedFiles/0", "fileType", "type", None),
+        (
+            "/steps/0/script/actions/onRun",
+            "",
+            "letBindings",
+            Some("steps[0].script.actions.onRun.letBindings"),
+        ),
+        (
+            "/steps/0/script/actions/onRun",
+            "",
+            "type",
+            Some("steps[0].script.actions.onRun.type"),
+        ),
+    ];
+    for (pointer, written, alias, rejected) in cases {
+        let mut v = rich_built_job_value();
+        let obj = v.pointer_mut(pointer).unwrap().as_object_mut().unwrap();
+        let value = match obj.remove(written) {
+            Some(serde_json::Value::Null) | None if alias == "letBindings" => {
+                serde_json::json!(["x = 1"])
+            }
+            Some(w) => w,
+            None => serde_json::json!("TEXT"),
+        };
+        obj.insert(alias.into(), value.clone());
+        let got = job_from_str(&serde_json::to_string(&v).unwrap());
+        match rejected {
+            Some(path) => assert_eq!(
+                got.unwrap_err().to_string(),
+                format!("Validation error: not a built job: {path}: unknown field"),
+                "{pointer} {alias}"
+            ),
+            None => {
+                let back = serde_json::to_value(JobDocument(&got.unwrap())).unwrap();
+                assert_eq!(
+                    back.pointer(&format!("{pointer}/{written}")),
+                    Some(&value),
+                    "{pointer} {alias}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn job_from_str_checks_symbol_table_entries() {
+    let entry = |e: serde_json::Value| {
+        let mut v = rich_built_job_value();
+        v["steps"][0]["stepEnvironments"][0]["resolvedSymTab"] = serde_json::json!([e]);
+        job_from_str(&serde_json::to_string(&v).unwrap())
+            .map(drop)
+            .map_err(|e| e.to_string())
+    };
+    let at = "Validation error: not a built job: steps[0].stepEnvironments[0].resolvedSymTab";
+    assert_eq!(
+        entry(serde_json::json!({"name": "Param.Z", "type": "string", "value": "z"})),
+        Ok(())
+    );
+    let cases = [
+        (
+            serde_json::json!({"name": "Param.Z", "type": "string", "value": "z", "zzBogus": 1}),
+            format!("{at}[0].zzBogus: unknown field"),
+        ),
+        (
+            serde_json::json!({"name": "Param.Z", "type": "string"}),
+            format!("{at}[0]: missing field 'value'"),
+        ),
+        (
+            serde_json::json!({"name": 1, "type": "string", "value": "z"}),
+            format!("{at}[0].name: expected a string"),
+        ),
+        (
+            serde_json::json!({"name": "Param.Z", "type": "int", "value": "z"}),
+            format!("{at}[0].value: Cannot convert 'z' to int: invalid digit found in string"),
+        ),
+        (
+            serde_json::json!("Param.Z"),
+            format!("{at}[0]: expected an object with 'name', 'type' and 'value'"),
+        ),
+    ];
+    for (e, message) in cases {
+        assert_eq!(entry(e.clone()), Err(message), "{e}");
+    }
+    let mut v = rich_built_job_value();
+    v["jobEnvironments"][0]["resolvedSymTab"] = serde_json::json!({"name": "Param.Z"});
+    assert_eq!(
+        job_from_str(&serde_json::to_string(&v).unwrap()).unwrap_err().to_string(),
+        "Validation error: not a built job: jobEnvironments[0].resolvedSymTab: expected an array of symbol-table entries"
+    );
+}
+
+#[test]
+fn job_from_str_names_an_unknown_field_in_a_task_parameter_definition() {
+    let def = "/steps/0/parameterSpace/taskParameterDefinitions/F";
+    let at = "steps[0].parameterSpace.taskParameterDefinitions.F";
+    // (below the definition: JSON pointer, error path)
+    let cases = [
+        ("", ""),
+        ("/int", ".int"),
+        ("/int/range", ".int.range"),
+        ("/int/range/rangeExpr", ".int.range.rangeExpr"),
+        (
+            "/int/range/rangeExpr/ranges/0",
+            ".int.range.rangeExpr.ranges[0]",
+        ),
+    ];
+    for (pointer, path) in cases {
+        let mut v = built_job_value();
+        v.pointer_mut(&format!("{def}{pointer}"))
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("bogus".into(), serde_json::json!(1));
+        let want = format!("Validation error: not a built job: {at}{path}.bogus: unknown field");
+        let doc = serde_json::to_string(&v).unwrap();
+        assert_eq!(
+            job_from_str(&doc).unwrap_err().to_string(),
+            want,
+            "{pointer}"
+        );
+        let yaml = serde_saphyr::to_string(&v).unwrap();
+        assert_eq!(
+            job_from_str(&yaml).unwrap_err().to_string(),
+            want,
+            "{pointer} (YAML)"
+        );
+    }
 }

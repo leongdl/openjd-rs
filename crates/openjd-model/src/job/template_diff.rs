@@ -734,7 +734,8 @@ pub fn diff_built_jobs(old: Job, new: Job, options: &DiffOptions) -> TemplateDif
 /// `whole` is the status of a whole-node change (added, removed, or
 /// modified and not expanded) and `None` for a field change. The status
 /// keeps an added node apart from a node at the same path that the other
-/// half leaves unexpanded, so the origin does not depend on the depth.
+/// half leaves unexpanded, so a change keeps its origin at every depth at
+/// which it appears.
 type ChangeKey = (String, String, Option<DiffStatus>);
 
 enum OriginRule {
@@ -965,7 +966,7 @@ fn job_stage(path: &str, field: &str, before: Option<&Shown>, after: Option<&Sho
         || field.starts_with("variables.")
         || matches!(
             field,
-            "command" | "args" | "timeout" | "cancelation" | "data" | "filename"
+            "command" | "args" | "timeout" | "cancelation" | "data"
         );
     let run_time = |s: Option<&Shown>| s.is_some_and(|s| refs_run_time(&s.raw, is_let));
     if format_field && (run_time(before) || run_time(after)) {
@@ -1660,8 +1661,10 @@ struct BuiltJob {
 
 /// Read a [`Job`] back from the JSON or YAML that `openjd build` prints
 /// (the job's serde form). JSON when the text starts with `{`, YAML
-/// otherwise. Unknown fields are rejected at every level, and so is a
-/// parameter whose value's type is not its `paramType`'s.
+/// otherwise. Unknown fields are rejected at every level, and so are a
+/// parameter whose value's type is not its `paramType`'s and a
+/// `resolvedSymTab` entry that is not the `{name, type, value}` a
+/// `SymbolTable` serializes to.
 ///
 /// It takes text, not a `serde_json::Value`, because a `Value` object
 /// sorts its keys, which would reorder task parameter definitions and so
@@ -1669,6 +1672,15 @@ struct BuiltJob {
 pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
     let err = |m: String| ModelError::DecodeValidation(format!("not a built job: {m}"));
     let json = text.trim_start().starts_with('{');
+    let input: Value = if json {
+        serde_json::from_str(text).map_err(|e| err(e.to_string()))?
+    } else {
+        serde_saphyr::from_str(text).map_err(|e| err(e.to_string()))?
+    };
+    // Serde reports an extra key beside an enum tag without its path.
+    if let Some(path) = extra_tag_key(&input) {
+        return Err(err(format!("{path}: unknown field")));
+    }
     let raw: BuiltJob = if json {
         serde_json::from_str(text).map_err(|e| err(e.to_string()))?
     } else {
@@ -1677,30 +1689,161 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
     let job = job_from_built(raw).map_err(err)?;
     // Most job types ignore unknown fields when they deserialize, so a key
     // the parsed job does not write back is one that was dropped.
-    let input: Value = if json {
-        serde_json::from_str(text).map_err(|e| err(e.to_string()))?
-    } else {
-        serde_saphyr::from_str(text).map_err(|e| err(e.to_string()))?
-    };
     let output = serde_json::to_value(JobDocument(&job)).map_err(|e| err(e.to_string()))?;
     if let Some(path) = dropped_key(&input, &output, String::new()) {
         return Err(err(format!("{path}: unknown field")));
     }
+    check_symbol_tables(&job).map_err(err)?;
     Ok(job)
 }
 
-/// Fields the job types skip when they are `None`; `null` reads back as
-/// absent.
-const SKIPPED_WHEN_NONE: [&str; 5] = [
-    "resolvedSymTab",
-    "onWrapEnvEnter",
-    "onWrapTaskRun",
-    "onWrapEnvExit",
-    "notifyPeriodInSeconds",
+/// The variant tags of [`TaskParameter`] and of [`TaskParamRange`], as
+/// serde writes them.
+const TASK_PARAMETER_TAGS: [&str; 5] = ["int", "float", "string", "path", "chunkInt"];
+const RANGE_TAGS: [&str; 2] = ["list", "rangeExpr"];
+
+/// The path of the first key beside the tag of a task parameter
+/// definition or of its `range`, or `None`.
+fn extra_tag_key(input: &Value) -> Option<String> {
+    let extra = |v: &Value, tags: &[&str]| {
+        v.as_object()
+            .and_then(|m| m.keys().find(|k| !tags.contains(&k.as_str())).cloned())
+    };
+    let steps = input.get("steps")?.as_array()?;
+    steps.iter().enumerate().find_map(|(i, step)| {
+        let defs = step
+            .get("parameterSpace")?
+            .get("taskParameterDefinitions")?
+            .as_object()?;
+        defs.iter().find_map(|(name, def)| {
+            let path = format!("steps[{i}].parameterSpace.taskParameterDefinitions.{name}");
+            if let Some(k) = extra(def, &TASK_PARAMETER_TAGS) {
+                return Some(format!("{path}.{k}"));
+            }
+            let (tag, body) = def.as_object()?.iter().next()?;
+            let k = extra(body.get("range")?, &RANGE_TAGS)?;
+            Some(format!("{path}.{tag}.range.{k}"))
+        })
+    })
+}
+
+/// Check every `resolvedSymTab` has the shape a [`SymbolTable`] serializes
+/// to: a list of `{name, type, value}` whose `type` parses and whose
+/// `value` has that type.
+///
+/// [`SymbolTable`]: openjd_expr::SymbolTable
+fn check_symbol_tables(job: &Job) -> Result<(), String> {
+    fn envs(envs: &Option<Vec<Environment>>, prefix: &str) -> Result<(), String> {
+        for (j, e) in envs.iter().flatten().enumerate() {
+            if let Some(t) = &e.resolved_symtab {
+                check_symbol_table(t, &format!("{prefix}[{j}].resolvedSymTab"))?;
+            }
+        }
+        Ok(())
+    }
+    envs(&job.job_environments, "jobEnvironments")?;
+    for (i, step) in job.steps.iter().enumerate() {
+        if let Some(t) = &step.resolved_symtab {
+            check_symbol_table(t, &format!("steps[{i}].resolvedSymTab"))?;
+        }
+        envs(
+            &step.step_environments,
+            &format!("steps[{i}].stepEnvironments"),
+        )?;
+    }
+    Ok(())
+}
+
+fn check_symbol_table(
+    table: &openjd_expr::symbol_table::SerializedSymbolTable,
+    path: &str,
+) -> Result<(), String> {
+    const KEYS: [&str; 3] = ["name", "type", "value"];
+    let Some(entries) = table.as_value().as_array() else {
+        return Err(format!("{path}: expected an array of symbol-table entries"));
+    };
+    for (i, entry) in entries.iter().enumerate() {
+        let at = format!("{path}[{i}]");
+        let Some(m) = entry.as_object() else {
+            return Err(format!(
+                "{at}: expected an object with 'name', 'type' and 'value'"
+            ));
+        };
+        if let Some(k) = m.keys().find(|k| !KEYS.contains(&k.as_str())) {
+            return Err(format!("{at}.{k}: unknown field"));
+        }
+        if let Some(k) = KEYS.iter().find(|k| !m.contains_key(**k)) {
+            return Err(format!("{at}: missing field '{k}'"));
+        }
+        let string = |k: &str| {
+            m[k].as_str()
+                .ok_or_else(|| format!("{at}.{k}: expected a string"))
+        };
+        string("name")?;
+        let ty = ExprType::parse(string("type")?).map_err(|e| format!("{at}.type: {e}"))?;
+        ExprValue::from_transport_value(&m["value"], &ty, PathFormat::Posix)
+            .map_err(|e| format!("{at}.value: {e}"))?;
+    }
+    table
+        .to_symtab(PathFormat::Posix)
+        .map(drop)
+        .map_err(|e| format!("{path}: {e}"))
+}
+
+// Objects in a job document, as paths with each list index written `[]`
+// and `*` for any one key.
+const HAS_SYMTAB: &[&str] = &["steps[]", "jobEnvironments[]", "steps[].stepEnvironments[]"];
+const ENV_ACTIONS: &[&str] = &[
+    "jobEnvironments[].script.actions",
+    "steps[].stepEnvironments[].script.actions",
+];
+const CANCELATIONS: &[&str] = &[
+    "steps[].script.actions.onRun.cancelation",
+    "jobEnvironments[].script.actions.*.cancelation",
+    "steps[].stepEnvironments[].script.actions.*.cancelation",
+];
+
+/// Fields the job types skip when they are `None`, and the objects that
+/// have them; there, `null` reads back as absent.
+const SKIPPED_WHEN_NONE: [(&str, &[&str]); 5] = [
+    ("resolvedSymTab", HAS_SYMTAB),
+    ("onWrapEnvEnter", ENV_ACTIONS),
+    ("onWrapTaskRun", ENV_ACTIONS),
+    ("onWrapEnvExit", ENV_ACTIONS),
+    ("notifyPeriodInSeconds", CANCELATIONS),
 ];
 
 /// Serde aliases in the job types, and the key each one is written as.
+/// They need no scope: only scripts write `let` and only embedded files
+/// write `fileType`, so an alias elsewhere finds nothing and is rejected.
 const ALIASES: [(&str, &str); 2] = [("letBindings", "let"), ("type", "fileType")];
+
+/// Whether the object at `path` matches one of `patterns`.
+fn at_object(path: &str, patterns: &[&str]) -> bool {
+    let mut shape = String::with_capacity(path.len());
+    let mut in_index = false;
+    for c in path.chars() {
+        match c {
+            '[' => {
+                in_index = true;
+                shape.push_str("[]");
+            }
+            ']' => in_index = false,
+            _ if in_index => {}
+            _ => shape.push(c),
+        }
+    }
+    patterns.iter().any(|p| {
+        let (mut a, mut b) = (shape.split('.'), p.split('.'));
+        loop {
+            match (a.next(), b.next()) {
+                (None, None) => return true,
+                (Some(x), Some(y)) if y == "*" || x == y => {}
+                _ => return false,
+            }
+        }
+    })
+}
 
 /// The path of the first key in `input` that `output` does not have, or
 /// `None`. Only object keys are compared, so values that are equal but
@@ -1719,9 +1862,14 @@ fn dropped_key(input: &Value, output: &Value, path: String) -> Option<String> {
                     .find(|(alias, _)| alias == k)
                     .and_then(|(_, name)| o.get(*name))
             });
+            let skipped = || {
+                SKIPPED_WHEN_NONE
+                    .iter()
+                    .any(|(name, objects)| name == k && at_object(&path, objects))
+            };
             match written {
                 Some(w) => dropped_key(v, w, key_path),
-                None if v.is_null() && SKIPPED_WHEN_NONE.contains(&k.as_str()) => None,
+                None if v.is_null() && skipped() => None,
                 None => Some(key_path),
             }
         }),

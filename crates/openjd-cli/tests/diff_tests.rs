@@ -966,3 +966,81 @@ note: steps[Chunked]: cannot count tasks: the chunk size is adaptive (targetRunt
 ",
     );
 }
+
+// ─── audit round 5 ──────────────────────────────────────────────────
+
+#[test]
+fn a_step_whose_tasks_cannot_be_counted_gets_a_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n  - name: S\n    parameterSpace:\n      taskParameterDefinitions:\n        - {name: Frame, type: INT, range: \"1-2\"}\n    script: {actions: {onRun: {command: c}}}\n";
+    std::fs::write(dir.path().join("t.yaml"), t).unwrap();
+    let built = openjd_in(dir.path(), &["build", "t.yaml"], None);
+    assert_eq!(built.status.code(), Some(0), "{}", stderr(&built));
+    let old = stdout(&built);
+    // `create_job` rejects an unknown name in `combination`; a built job
+    // given to --jobs is not checked.
+    let new = old.replace(
+        "\"combination\": null",
+        "\"combination\": \"Frame * Bogus\"",
+    );
+    assert_ne!(old, new);
+    std::fs::write(dir.path().join("old.json"), &old).unwrap();
+    std::fs::write(dir.path().join("new.json"), &new).unwrap();
+    let o = openjd_in(
+        dir.path(),
+        &["diff", "--jobs", "old.json", "new.json"],
+        None,
+    );
+    assert_ok(
+        &o,
+        "\
+jobs: old.json -> new.json
+~ step S
+    + parameterSpace.combination: Frame * Bogus  [job]
+    tasks: 2 -> 0, all replaced (not an exact plain product: association, chunking, a repeated range value or name, or a task count overflow)
+
+1 step changed. Tasks: 0 kept, 0 added, 0 removed.
+note: steps[S]: cannot count tasks: Validation error: Unknown parameter 'Bogus' in combination expression
+",
+    );
+}
+
+#[test]
+fn step_filter_matches_a_bracketed_step_name_exactly() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = |cmd: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n  - name: \"A][B\"\n    script: {{actions: {{onRun: {{command: {cmd}}}}}}}\n  - name: A\n    script: {{actions: {{onRun: {{command: a}}}}}}\n"
+        )
+    };
+    std::fs::write(dir.path().join("old.yaml"), t("x")).unwrap();
+    std::fs::write(dir.path().join("new.yaml"), t("y")).unwrap();
+    let run = |step: &str| {
+        openjd_in(
+            dir.path(),
+            &[
+                "diff",
+                "old.yaml",
+                "new.yaml",
+                "--step",
+                step,
+                "--exit-code",
+            ],
+            None,
+        )
+    };
+    assert_ok(&run("A"), "old.yaml -> new.yaml\nno changes\n");
+    let o = run("A][B");
+    assert_eq!(o.status.code(), Some(4), "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o),
+        "\
+old.yaml -> new.yaml
+~ step A][B
+    ~ script.onRun.command: x -> y  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+"
+    );
+}
