@@ -886,3 +886,83 @@ fn step_filter_decides_exit_code_and_changed() {
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["changed"], serde_json::json!(true));
 }
+
+// ─── audit round 4 ──────────────────────────────────────────────────
+
+/// Write `old.yaml` and `new.yaml` with steps `Same` and `Modify`; only
+/// `Modify`'s command changes.
+fn same_modify_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let t = |cmd: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n  - name: Same\n    script: {{actions: {{onRun: {{command: s}}}}}}\n  - name: Modify\n    script: {{actions: {{onRun: {{command: {cmd}}}}}}}\n"
+        )
+    };
+    std::fs::write(dir.path().join("old.yaml"), t("m1")).unwrap();
+    std::fs::write(dir.path().join("new.yaml"), t("m2")).unwrap();
+    dir
+}
+
+#[test]
+fn step_with_depth_0_is_a_usage_error() {
+    let dir = same_modify_dir();
+    let base = ["diff", "old.yaml", "new.yaml", "--step", "Same"];
+    let run = |extra: &[&str]| {
+        let mut args = base.to_vec();
+        args.extend(extra);
+        openjd_in(dir.path(), &args, None)
+    };
+    let o = run(&["--depth", "0", "--exit-code"]);
+    assert_eq!(
+        stderr(&o),
+        "error: --step cannot be used with --depth 0: the job root is not expanded, so it cannot be split by step\n"
+    );
+    assert_eq!(stdout(&o), "");
+    assert_eq!(o.status.code(), Some(2));
+    assert_ok(
+        &run(&["--depth", "1", "--exit-code"]),
+        "old.yaml -> new.yaml\nno changes\n",
+    );
+}
+
+#[test]
+fn step_filter_drops_notes_about_other_steps() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = |cmd: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [TASK_CHUNKING]\nname: J\nsteps:\n  - name: Chunked\n    parameterSpace:\n      taskParameterDefinitions:\n        - name: F\n          type: CHUNK[INT]\n          range: \"1-100\"\n          chunks: {{defaultTaskCount: 10, targetRuntimeSeconds: 60, rangeConstraint: CONTIGUOUS}}\n    script: {{actions: {{onRun: {{command: {cmd}, args: [\"{{{{Task.Param.F}}}}\"]}}}}}}\n  - name: Plain\n    script: {{actions: {{onRun: {{command: {cmd}}}}}}}\n"
+        )
+    };
+    std::fs::write(dir.path().join("old.yaml"), t("old")).unwrap();
+    std::fs::write(dir.path().join("new.yaml"), t("new")).unwrap();
+    let run = |step: &str| {
+        openjd_in(
+            dir.path(),
+            &["diff", "old.yaml", "new.yaml", "--step", step],
+            None,
+        )
+    };
+    assert_ok(
+        &run("Plain"),
+        "\
+old.yaml -> new.yaml
+~ step Plain
+    ~ script.onRun.command: old -> new  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+",
+    );
+    assert_ok(
+        &run("Chunked"),
+        "\
+old.yaml -> new.yaml
+~ step Chunked
+    ~ script.onRun.command: old -> new  [template]
+    tasks: unknown (adaptive chunking)
+
+1 step changed. Tasks: 0 kept, 0 added, 0 removed.
+note: steps[Chunked]: cannot count tasks: the chunk size is adaptive (targetRuntimeSeconds), so the number of chunks is decided at run time
+",
+    );
+}

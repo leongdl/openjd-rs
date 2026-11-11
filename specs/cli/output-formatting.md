@@ -166,10 +166,13 @@ match args.output.as_str() {
 This ensures JSON and YAML outputs contain identical structured data — the only difference
 is the serialization format.
 
-`build` and `diff` are exceptions: they serialize their structs (`JobDocument`, and the
-`TemplateDiff` document) directly with `serde_json::to_string_pretty` or
-`serde_saphyr::to_string`, never through a `serde_json::Value`. A `Value` object sorts its
+`build` and `diff` are exceptions: they serialize their top-level structs (`JobDocument`,
+and the `TemplateDiff` document) directly with `serde_json::to_string_pretty` or
+`serde_saphyr::to_string`, not through one `serde_json::Value`. A `Value` object sorts its
 keys, which would reorder task parameter definitions, and definition order is task order.
+Inside the `diff` document, each `job` tree node and each change's `raw` is a `Value`, so
+their keys are sorted; a whole node's `raw` writes `taskParameterDefinitions` as a list of
+`{name, definition}` to keep definition order.
 
 ### JSON/YAML Construction
 

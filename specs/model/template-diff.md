@@ -26,9 +26,16 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError>;
 - `job_from_str` reads a job back from its serde form (JSON when the text starts with `{`,
   YAML otherwise), as `openjd build` prints it. It takes text rather than a
   `serde_json::Value` because a `Value` object sorts its keys, which would reorder task
-  parameter definitions and so change task order. Unknown fields are rejected, and so is a
-  parameter whose value does not have its `paramType`'s type, with
-  `parameters[P]: paramType 'ListInt' cannot hold a 'ListList' value`. A `Path` parameter
+  parameter definitions and so change task order. Unknown fields are rejected at every
+  level: after parsing, every key of the input must appear in the parsed job's
+  `JobDocument` form, so a key a job type ignored is an error naming its path,
+  `steps[0].bogus: unknown field`. Only keys are compared, so `2` for `2.0` passes, and so
+  does a `null` for a field the document omits when unset (`resolvedSymTab`, the
+  `onWrap*` actions, `notifyPeriodInSeconds`) and the `letBindings` and `type` aliases.
+  A parameter must have exactly the keys `name`, `paramType` and `value`, and its `name`
+  must be its key. A parameter whose value does not have its `paramType`'s type is
+  rejected, with `parameters[P]: paramType 'ListInt' cannot hold a 'ListList' value`, and
+  so is a `ListList` element that is not a `ListInt`. A `Path` parameter
   holds a `String` value and a `ListPath` one a `ListString`, as `create_job` stores them;
   a `Path` or `ListPath` value is accepted too.
 
@@ -133,9 +140,10 @@ Template-layer changes are always `Template`. For job-layer changes in `diff_tem
    `Parameters`, and in both or neither is `Both`. The key of a field change is
    `(path, field)`; the key of a whole-node change is `(path, status)`, the status being
    added, removed, or modified and not expanded. So a node one half adds is not confused
-   with the same node the other half leaves unexpanded at the depth limit, and the origin
-   does not depend on `max_depth`. The two extra diffs use the caller's options, so the
-   keys line up with the main diff.
+   with the same node the other half leaves unexpanded at the depth limit. A change keeps
+   its origin at every depth at which it appears; an unexpanded node's origin combines the
+   origins of everything below it, so it can be `Both`. The two extra diffs use the
+   caller's options, so the keys line up with the main diff.
 4. If `mid` does not build (the new template needs a parameter the old set lacks, for
    example), every job-layer change is `Both` and `TemplateDiff::notes` says why.
 
@@ -216,7 +224,7 @@ pub struct JobDocument<'a>(pub &'a Job);
 `changes` is sorted by path, field and layer. `path` uses `DiffTree` segments
 (`steps[Render].parameterSpace.taskParameterDefinitions[Eye]`); `field` is empty for a
 whole node. Helpers: `is_changed`, `changes_at(prefix)` (the prefix and everything below
-it, not `steps[Render2]` for `steps[Render]`), `step(name)`, `plan()` (`job::apply::plan`
+it, not `steps[Render2]` for `steps[Render]`; `steps` and `parameters` match every entry), `step(name)`, `plan()` (`job::apply::plan`
 on the kept jobs), and `stat()`.
 
 Every type derives `Debug`, `Clone`, `PartialEq` (and `Eq` where its fields allow; not

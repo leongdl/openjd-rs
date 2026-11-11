@@ -105,8 +105,25 @@ pub struct DiffArgs {
     pub exit_code: bool,
 }
 
+impl DiffArgs {
+    /// A combination clap cannot reject on its own. At `--depth 0` the only
+    /// change is the unexpanded job root, which `--step` cannot split.
+    fn usage_error(&self) -> Option<&'static str> {
+        (self.step.is_some() && self.depth == Some(0)).then_some(
+            "--step cannot be used with --depth 0: the job root is not expanded, so it cannot be split by step",
+        )
+    }
+}
+
 /// Run `openjd diff`; returns the process exit code.
 pub fn execute(args: DiffArgs) -> Result<i32, Box<dyn std::error::Error>> {
+    if let Some(message) = args.usage_error() {
+        clap::Error::raw(
+            clap::error::ErrorKind::ArgumentConflict,
+            format!("{message}\n"),
+        )
+        .exit();
+    }
     let mut options = DiffOptions::default().with_resolved_symtab(!args.ignore_symbols);
     if let Some(n) = args.depth {
         options = options.with_max_depth(n);
@@ -214,7 +231,7 @@ fn read_job(arg: &str, stdin_used: &mut bool) -> Result<Job, Box<dyn std::error:
     job_from_str(&text).map_err(|e| format!("'{arg}': {e}").into())
 }
 
-/// Keep the changes and summary of one step, and the job-level changes.
+/// Keep the changes, summary and notes of one step, and the job-level ones.
 fn keep_step(diff: &mut TemplateDiff, step: &str) -> Result<(), String> {
     if diff.step(step).is_none() {
         return Err(format!("Step '{step}' does not exist in either job."));
@@ -232,6 +249,9 @@ fn keep_step(diff: &mut TemplateDiff, step: &str) -> Result<(), String> {
         .collect();
     diff.changes = keep;
     diff.steps.retain(|s| s.name == step);
+    let own = format!("{prefix}:");
+    diff.notes
+        .retain(|n| !n.starts_with("steps[") || n.starts_with(&own));
     Ok(())
 }
 

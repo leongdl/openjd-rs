@@ -2180,3 +2180,134 @@ note: {MID_NOTE}"
         )
     );
 }
+
+// ─── audit round 4 ──────────────────────────────────────────────────
+
+#[test]
+fn job_from_str_rejects_a_list_list_element_that_is_not_a_list_int() {
+    let doc = r#"{"name": "x", "steps": [], "parameters": {"P": {"name": "P", "paramType": "ListListInt", "value": {"ListList": [[{"ListString": [["a"]]}]]}}}}"#;
+    assert_eq!(
+        job_from_str(doc).unwrap_err().to_string(),
+        "Validation error: not a built job: parameters[P]: a ListList element must be a 'ListInt' value, not a 'ListString' value"
+    );
+}
+
+#[test]
+fn job_from_str_rejects_extra_parameter_keys_and_a_name_that_is_not_the_key() {
+    let job =
+        |param: &str| format!(r#"{{"name": "x", "steps": [], "parameters": {{"P": {param}}}}}"#);
+    let cases = [
+        (
+            r#"{"name": "P", "paramType": "Int", "value": {"Int": 3}, "bogus": 1}"#,
+            "unknown field 'bogus'",
+        ),
+        (
+            r#"{"name": "Q", "paramType": "Int", "value": {"Int": 3}}"#,
+            "'name' is 'Q', but the parameter's key is 'P'",
+        ),
+    ];
+    for (param, message) in cases {
+        assert_eq!(
+            job_from_str(&job(param)).unwrap_err().to_string(),
+            format!("Validation error: not a built job: parameters[P]: {message}"),
+            "{param}"
+        );
+    }
+}
+
+/// A built job with a job environment and a step parameter space, as JSON.
+fn built_job_value() -> serde_json::Value {
+    let job = text(
+        "specificationVersion: jobtemplate-2023-09\nname: J\njobEnvironments:\n  - name: E\n    variables: {A: a}\n    script: {actions: {onEnter: {command: e}}}\nsteps:\n  - name: S\n    parameterSpace:\n      taskParameterDefinitions:\n        - {name: F, type: INT, range: \"1-3\"}\n    script: {actions: {onRun: {command: c, args: [\"{{Task.Param.F}}\"]}}}\n",
+    )
+    .build()
+    .unwrap();
+    serde_json::to_value(JobDocument(&job)).unwrap()
+}
+
+#[test]
+fn job_from_str_rejects_unknown_fields_at_every_level() {
+    // (error path, JSON pointer)
+    let cases = [
+        ("steps[0]", "/steps/0"),
+        ("jobEnvironments[0]", "/jobEnvironments/0"),
+        (
+            "steps[0].script.actions.onRun",
+            "/steps/0/script/actions/onRun",
+        ),
+        ("steps[0].parameterSpace", "/steps/0/parameterSpace"),
+        (
+            "jobEnvironments[0].script.actions.onEnter",
+            "/jobEnvironments/0/script/actions/onEnter",
+        ),
+    ];
+    for (path, pointer) in cases {
+        let mut v = built_job_value();
+        v.pointer_mut(pointer)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("bogus".into(), serde_json::json!(1));
+        let doc = serde_json::to_string(&v).unwrap();
+        assert_eq!(
+            job_from_str(&doc).unwrap_err().to_string(),
+            format!("Validation error: not a built job: {path}.bogus: unknown field"),
+            "{path}"
+        );
+        let yaml = serde_saphyr::to_string(&v).unwrap();
+        assert_eq!(
+            job_from_str(&yaml).unwrap_err().to_string(),
+            format!("Validation error: not a built job: {path}.bogus: unknown field"),
+            "{path} (YAML)"
+        );
+    }
+}
+
+#[test]
+fn job_from_str_accepts_known_fields_written_differently() {
+    let mut v = built_job_value();
+    // A float written as an integer, a skipped field written as null, and
+    // the `letBindings` alias of `let`.
+    let step = &mut v["steps"][0];
+    step["resolvedSymTab"] = serde_json::Value::Null;
+    let script = step["script"].as_object_mut().unwrap();
+    script.remove("let");
+    script.insert("letBindings".into(), serde_json::json!(["x = 1"]));
+    step["hostRequirements"] =
+        serde_json::json!({"amounts": [{"name": "amount.worker.vcpu", "min": 2}]});
+    v["jobEnvironments"][0]["script"]["actions"]["onWrapTaskRun"] = serde_json::Value::Null;
+    let job = job_from_str(&serde_json::to_string(&v).unwrap()).unwrap();
+    assert_eq!(
+        job.steps[0].script.let_bindings,
+        Some(vec!["x = 1".to_string()])
+    );
+}
+
+#[test]
+fn changes_at_a_collection_matches_every_entry_in_it() {
+    let t = |cmd: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nname: J\nparameterDefinitions:\n  - {{name: P, type: STRING, default: {cmd}}}\nsteps:\n  - name: Render\n    script: {{actions: {{onRun: {{command: \"{{{{Param.P}}}}\"}}}}}}\n  - name: Render2\n    script: {{actions: {{onRun: {{command: {cmd}}}}}}}\n"
+        )
+    };
+    let d = diff_templates(&text(&t("a")), &text(&t("b")), &opts()).unwrap();
+    let paths =
+        |prefix: &str| -> Vec<String> { d.changes_at(prefix).map(|c| c.path.clone()).collect() };
+    assert_eq!(paths("steps[Render]"), ["steps[Render]"]);
+    assert_eq!(
+        paths("steps"),
+        ["steps[Render2].script.onRun", "steps[Render]"]
+    );
+    assert_eq!(paths("parameters"), ["parameters[P]"]);
+    assert_eq!(paths("step"), Vec::<String>::new());
+    // `[` does not continue a prefix that ends in `]`: the step `A][B` is
+    // not under `steps[A]`.
+    let t = |cmd: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n  - name: \"A][B\"\n    script: {{actions: {{onRun: {{command: {cmd}}}}}}}\n  - name: A\n    script: {{actions: {{onRun: {{command: a}}}}}}\n"
+        )
+    };
+    let d = diff_templates(&text(&t("x")), &text(&t("y")), &opts()).unwrap();
+    assert_eq!(d.changes_at("steps[A]").count(), 0);
+    assert_eq!(d.changes_at("steps[A][B]").count(), 1);
+}

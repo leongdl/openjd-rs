@@ -559,8 +559,8 @@ impl TemplateDiff {
     }
 
     /// Changes at `prefix` or below it. `steps[Render]` matches
-    /// `steps[Render]` and `steps[Render].script`, not `steps[Render2]`.
-    /// The empty prefix matches everything.
+    /// `steps[Render]` and `steps[Render].script`, not `steps[Render2]`;
+    /// `steps` matches every step. The empty prefix matches everything.
     pub fn changes_at<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a Change> + 'a {
         self.changes.iter().filter(move |c| under(&c.path, prefix))
     }
@@ -627,12 +627,15 @@ fn total(boxes: &[BoxSummary]) -> u64 {
     boxes.iter().fold(0, |t, b| t.saturating_add(b.count))
 }
 
+/// Whether `path` is `prefix` or below it. A `[` continues only a prefix
+/// that does not end in `]`, so `steps` matches `steps[A]` but `steps[A]`
+/// does not match the step named `A][B`.
 fn under(path: &str, prefix: &str) -> bool {
     prefix.is_empty()
         || path == prefix
-        || path
-            .strip_prefix(prefix)
-            .is_some_and(|rest| rest.starts_with('.'))
+        || path.strip_prefix(prefix).is_some_and(|rest| {
+            rest.starts_with('.') || (rest.starts_with('[') && !prefix.ends_with(']'))
+        })
 }
 
 // ─── entry points ───────────────────────────────────────────────────
@@ -1657,19 +1660,82 @@ struct BuiltJob {
 
 /// Read a [`Job`] back from the JSON or YAML that `openjd build` prints
 /// (the job's serde form). JSON when the text starts with `{`, YAML
-/// otherwise. Unknown fields are rejected, and so is a parameter whose
-/// value's type is not its `paramType`'s.
+/// otherwise. Unknown fields are rejected at every level, and so is a
+/// parameter whose value's type is not its `paramType`'s.
 ///
 /// It takes text, not a `serde_json::Value`, because a `Value` object
 /// sorts its keys, which would reorder task parameter definitions and so
 /// change task order.
 pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
     let err = |m: String| ModelError::DecodeValidation(format!("not a built job: {m}"));
-    let raw: BuiltJob = if text.trim_start().starts_with('{') {
+    let json = text.trim_start().starts_with('{');
+    let raw: BuiltJob = if json {
         serde_json::from_str(text).map_err(|e| err(e.to_string()))?
     } else {
         serde_saphyr::from_str(text).map_err(|e| err(e.to_string()))?
     };
+    let job = job_from_built(raw).map_err(err)?;
+    // Most job types ignore unknown fields when they deserialize, so a key
+    // the parsed job does not write back is one that was dropped.
+    let input: Value = if json {
+        serde_json::from_str(text).map_err(|e| err(e.to_string()))?
+    } else {
+        serde_saphyr::from_str(text).map_err(|e| err(e.to_string()))?
+    };
+    let output = serde_json::to_value(JobDocument(&job)).map_err(|e| err(e.to_string()))?;
+    if let Some(path) = dropped_key(&input, &output, String::new()) {
+        return Err(err(format!("{path}: unknown field")));
+    }
+    Ok(job)
+}
+
+/// Fields the job types skip when they are `None`; `null` reads back as
+/// absent.
+const SKIPPED_WHEN_NONE: [&str; 5] = [
+    "resolvedSymTab",
+    "onWrapEnvEnter",
+    "onWrapTaskRun",
+    "onWrapEnvExit",
+    "notifyPeriodInSeconds",
+];
+
+/// Serde aliases in the job types, and the key each one is written as.
+const ALIASES: [(&str, &str); 2] = [("letBindings", "let"), ("type", "fileType")];
+
+/// The path of the first key in `input` that `output` does not have, or
+/// `None`. Only object keys are compared, so values that are equal but
+/// written differently (`2` and `2.0`) are not flagged.
+fn dropped_key(input: &Value, output: &Value, path: String) -> Option<String> {
+    match (input, output) {
+        (Value::Object(i), Value::Object(o)) => i.iter().find_map(|(k, v)| {
+            let key_path = if path.is_empty() {
+                k.clone()
+            } else {
+                format!("{path}.{k}")
+            };
+            let written = o.get(k).or_else(|| {
+                ALIASES
+                    .iter()
+                    .find(|(alias, _)| alias == k)
+                    .and_then(|(_, name)| o.get(*name))
+            });
+            match written {
+                Some(w) => dropped_key(v, w, key_path),
+                None if v.is_null() && SKIPPED_WHEN_NONE.contains(&k.as_str()) => None,
+                None => Some(key_path),
+            }
+        }),
+        (Value::Array(i), Value::Array(o)) => i
+            .iter()
+            .zip(o)
+            .enumerate()
+            .find_map(|(n, (iv, ov))| dropped_key(iv, ov, format!("{path}[{n}]"))),
+        _ => None,
+    }
+}
+
+/// The [`Job`] a [`BuiltJob`] describes; errors are bare messages.
+fn job_from_built(raw: BuiltJob) -> Result<Job, String> {
     let extensions = raw
         .extensions
         .map(|v| {
@@ -1678,10 +1744,10 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()
-        .map_err(|e| err(format!("extensions: {e}")))?;
+        .map_err(|e| format!("extensions: {e}"))?;
     let mut parameters = IndexMap::new();
     for (k, v) in raw.parameters.unwrap_or_default() {
-        let p = parameter_from_value(&v).map_err(|e| err(format!("parameters[{k}]: {e}")))?;
+        let p = parameter_from_value(&k, &v).map_err(|e| format!("parameters[{k}]: {e}"))?;
         parameters.insert(k, p);
     }
     Ok(Job {
@@ -1694,12 +1760,24 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
     })
 }
 
-fn parameter_from_value(v: &Value) -> Result<JobParameter, String> {
+/// The parameter stored under `key`.
+fn parameter_from_value(key: &str, v: &Value) -> Result<JobParameter, String> {
+    if let Some(extra) = v.as_object().and_then(|m| {
+        m.keys()
+            .find(|k| !["name", "paramType", "value"].contains(&k.as_str()))
+    }) {
+        return Err(format!("unknown field '{extra}'"));
+    }
     let name = v
         .get("name")
         .and_then(Value::as_str)
         .ok_or("'name' must be a string")?
         .to_string();
+    if name != key {
+        return Err(format!(
+            "'name' is '{name}', but the parameter's key is '{key}'"
+        ));
+    }
     let type_name = v
         .get("paramType")
         .and_then(Value::as_str)
@@ -1845,7 +1923,13 @@ fn expr_value(v: &Value) -> Result<ExprValue, String> {
         "ListList" => list(
             elements()?
                 .iter()
-                .map(expr_value)
+                .map(|e| match value_tag(e) {
+                    Some("ListInt") => expr_value(e),
+                    Some(t) => Err(format!(
+                        "a ListList element must be a 'ListInt' value, not a '{t}' value"
+                    )),
+                    None => Err(format!("unrecognized value {e}")),
+                })
                 .collect::<Result<_, _>>()?,
             ExprType::list(ExprType::INT),
         ),
