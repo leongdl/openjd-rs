@@ -19,6 +19,8 @@ Rust's clap derive API, async runtime (tokio), and the structured logging facade
 | [help.md](help.md) | Context-aware help: template-driven `--help` output for the `run` command |
 | [logging.md](logging.md) | Session logger: timestamp formatting, `openjd_log_content` filtering, log level control |
 | [output-formatting.md](output-formatting.md) | Structured output: human-readable, JSON, and YAML output modes across all commands |
+| [diff.md](diff.md) | `diff` command: template, parameter-set and built-job diffs, output forms, exit codes |
+| [build.md](build.md) | `build` command: print the job a template builds into |
 | [parameter-parsing.md](parameter-parsing.md) | CLI parameter parsing: `Key=Value`, `file://`, inline JSON, task params, path mapping rules |
 
 ## Relationship to the Python CLI
@@ -43,6 +45,8 @@ implementation:
 | `openjd check <path>` | Validate a job or environment template file |
 | `openjd summary <path>` | Print summary information about a job template |
 | `openjd run <path>` | Run a job template locally in an OpenJD session |
+| `openjd build <path>` | Print the job a template builds into, as JSON or YAML |
+| `openjd diff <old> [new]` | Diff two templates, one template under two parameter sets, or two built jobs |
 
 ## Not Yet Implemented
 

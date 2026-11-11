@@ -43,6 +43,7 @@ openjd_model              — crate root re-exports, the main public surface
 │   ├── create_job        — pipeline functions + MergedParameterDefinition
 │   ├── diff              — experimental: diff_jobs/diff_steps/diff_environments → DiffTree
 │   ├── task_delta        — experimental: task_delta → TaskDelta (product box algebra)
+│   ├── template_diff     — experimental: diff_templates/diff_parameter_sets → TemplateDiff
 │   ├── step_param_space  — StepParameterSpaceIterator
 │   └── step_dependency_graph — StepDependencyGraph + friends
 ├── symbol_table          — re-exported from openjd_expr
@@ -786,6 +787,67 @@ impl TaskBox {
     pub fn index_of(&self, task: &TaskParameterSet) -> Option<usize>; // row-major position
 }
 ```
+
+### Template Diff (experimental)
+
+Diff two templates or two parameter sets, with origins and stages; see
+[template-diff.md](template-diff.md).
+
+```rust
+pub fn job::template_diff::diff_templates(old: &TemplateInput, new: &TemplateInput, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
+pub fn job::template_diff::diff_parameter_sets(template: &TemplateInput, old: &JobParameterInputValues, new: &JobParameterInputValues, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
+pub fn job::template_diff::diff_built_jobs(old: Job, new: Job, options: &DiffOptions) -> TemplateDiff;   // origin Job, no template layer
+pub fn job::template_diff::job_from_str(text: &str) -> Result<Job, ModelError>;   // JSON or YAML serde form of a Job
+
+pub enum job::template_diff::TemplateSource { Path(PathBuf), Text(String), Value(serde_json::Value), Decoded(Box<JobTemplate>) }
+impl TemplateSource { pub fn guess(s: &str) -> Self; }   // Path if s names an existing file, else Text
+
+pub struct job::template_diff::TemplateInput { /* private */ }   // Debug, Clone
+impl TemplateInput {
+    pub fn new(source: TemplateSource) -> Self;          // every extension, default limits
+    pub fn param(self, name: impl Into<String>, value: impl Into<String>) -> Self;
+    pub fn params(self, values: impl IntoIterator<Item = (String, ExprValue)>) -> Self;
+    pub fn environment(self, source: TemplateSource) -> Self;
+    pub fn extensions(self, names: &[&str]) -> Self;
+    pub fn no_extensions(self) -> Self;
+    pub fn limits(self, limits: CallerLimits) -> Self;
+    pub fn template_dir(self, dir: impl Into<PathBuf>) -> Self;   // relative PATH defaults
+    pub fn cwd(self, dir: impl Into<PathBuf>) -> Self;            // relative PATH values
+    pub fn parameters(&self) -> &JobParameterInputValues;
+    pub fn build(&self) -> Result<Job, ModelError>;
+}
+
+pub struct job::template_diff::TemplateDiff { pub changes: Vec<Change>, pub steps: Vec<StepSummary>, pub job: DiffTree,
+    pub old_job: Job, pub new_job: Job, pub notes: Vec<String> }
+impl TemplateDiff {
+    pub fn is_changed(&self) -> bool;
+    pub fn changes_at<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a Change> + 'a;
+    pub fn step(&self, name: &str) -> Option<&StepSummary>;
+    pub fn plan(&self) -> Result<ApplyPlan<'_>, ModelError>;   // job::apply::plan(old_job, new_job)
+    pub fn stat(&self) -> DiffStat;
+}
+pub struct job::template_diff::Change { pub layer: Layer, pub path: String, pub field: String,
+    pub before: Option<Shown>, pub after: Option<Shown>, pub origin: Origin, pub stage: Stage }
+pub struct job::template_diff::Shown { pub raw: serde_json::Value, pub text: String }
+pub enum job::template_diff::Layer { Template, Job }
+pub enum job::template_diff::Origin { Template, Parameters, Both, Job }
+pub enum job::template_diff::Stage { Template, Parameters, Job, RunTime }
+pub struct job::template_diff::StepSummary { pub name: String, pub status: DiffStatus,
+    pub old_index: Option<usize>, pub new_index: Option<usize>, pub tasks: TaskSummary }
+impl StepSummary { pub fn stat_line(&self) -> String; }
+pub enum job::template_diff::TaskSummary { Unchanged { count: u64 }, Product { kept: BoxSummary, added: Vec<BoxSummary>, removed: Vec<BoxSummary> },
+    Replaced { old_count: u64, new_count: u64, reason: String }, Added { count: u64 }, Removed { count: u64 } }
+pub struct job::template_diff::BoxSummary { pub count: u64, pub dims: Vec<(String, String)> }
+pub struct job::template_diff::DiffStat { pub steps_changed: u64, pub steps_added: u64, pub steps_removed: u64,
+    pub tasks_kept: u64, pub tasks_added: u64, pub tasks_removed: u64, pub tasks_replaced: u64 }   // also Copy, Default
+```
+
+The result types derive `Debug`, `Clone`, `PartialEq` (`Eq` except `TemplateDiff`) and
+`Serialize` (camelCase), and implement `Display`: `TemplateDiff` the grouped listing,
+`Change` one line, `StepSummary` the step's task block, `TaskSummary` and `BoxSummary`
+their parts, `DiffStat` the totals line, and `Layer`, `Origin`, `Stage` and `Shown` their
+text. `Layer`, `Origin` and `Stage` are also `Copy`, `Eq` and `Hash`, and `Layer` is `Ord`
+(changes sort by it). Inputs that fail to build return `ModelError` naming the side.
 
 ### Job Apply (experimental)
 
