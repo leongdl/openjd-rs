@@ -416,7 +416,7 @@ fn task_change(change: &TaskChange) -> String {
             } else {
                 String::new()
             };
-            format!("keep {}, add {added}{at}, drop {removed}", d.kept.len())
+            format!("keep {}, add {added}{at}, remove {removed}", d.kept.len())
         }
         TaskChange::All => "all".to_string(),
         TaskChange::Replace => "replace all".to_string(),

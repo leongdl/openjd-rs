@@ -329,7 +329,6 @@ $ openjd diff crates/openjd-cli/examples/diff/param_type_v1.yaml crates/openjd-c
 crates/openjd-cli/examples/diff/param_type_v1.yaml -> crates/openjd-cli/examples/diff/param_type_v2.yaml
 ~ parameter definition Count.default: "5" -> 5  [template]
 ~ parameter definition Count.type: STRING -> INT  [template]
-~ parameter Count.type: STRING -> INT  [template]
 ~ parameter Count: "5" (STRING) -> 5 (INT)  [template]
 
 0 steps changed. Tasks: 1 kept, 0 added, 0 removed.
@@ -486,7 +485,7 @@ crates/openjd-cli/examples/diff/frames.yaml: old parameters -> new parameters
 
 apply plan:
   1. parameter modify Frames  [ParameterValue]
-  2. tasks of Render: keep 100, add 100 at index 100..199, drop 0  [TaskAppend]
+  2. tasks of Render: keep 100, add 100 at index 100..199, remove 0  [TaskAppend]
 kinds: ParameterValue, TaskAppend
 ```
 
@@ -1326,7 +1325,7 @@ crates/openjd-model/examples/template_diff/render_v1.yaml -> crates/openjd-model
 1 step changed. Tasks: 100 kept, 100 added, 0 removed.
 
 apply plan:
-  1. tasks of Render: keep 100, add 100 at index 100..199, drop 0  [TaskAppend]
+  1. tasks of Render: keep 100, add 100 at index 100..199, remove 0  [TaskAppend]
 kinds: TaskAppend
 ```
 

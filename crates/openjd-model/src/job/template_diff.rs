@@ -397,11 +397,9 @@ pub struct Shown {
 }
 
 impl Shown {
+    /// `text` in full; [`finish_texts`] cuts it once every change is built.
     fn new(raw: Value, text: String) -> Self {
-        Self {
-            raw,
-            text: truncate(text),
-        }
+        Self { raw, text }
     }
 
     fn generic(raw: Value) -> Self {
@@ -906,7 +904,7 @@ fn assemble(
     }
     changes.sort_by(|a, b| (&a.path, &a.field, a.layer).cmp(&(&b.path, &b.field, b.layer)));
     for c in &mut changes {
-        disambiguate(c, &old_job, &new_job);
+        finish_texts(c, &old_job, &new_job);
     }
     let steps = step_summaries(&old_job, &new_job, options, &mut notes);
     TemplateDiff {
@@ -919,76 +917,110 @@ fn assemble(
     }
 }
 
-/// Make the two sides of a change tell apart: a job parameter value whose
-/// type changes shows its type (`"5" (STRING) -> 5 (INT)`); a task parameter
-/// definition that renders the same text on both sides shows how its range
-/// is written (`range expression 1,2 -> list [1, 2]`); any other pair that
-/// renders the same text but differs shows as JSON (`"3"` and `3`), from
-/// just before the first difference when cutting at 120 characters would
-/// hide it.
-fn disambiguate(c: &mut Change, old_job: &Job, new_job: &Job) {
-    let (Some(b), Some(a)) = (&mut c.before, &mut c.after) else {
-        return;
+/// Cut each side's text to [`MAX_TEXT_CHARS`], once, after every rendering
+/// rule has run. Two sides with different values never show the same text:
+/// both sides are cut around their first difference, and when their full
+/// texts are equal the cut is over their JSON instead.
+fn finish_texts(c: &mut Change, old_job: &Job, new_job: &Job) {
+    match (&mut c.before, &mut c.after) {
+        (Some(b), Some(a)) => {
+            let (bf, af) = full_texts(c.layer, &c.path, &c.field, b, a, old_job, new_job);
+            (b.text, a.text) = cut_pair(&bf, &af);
+            if b.raw != a.raw && b.text == a.text {
+                (b.text, a.text) = around_difference(&b.raw.to_string(), &a.raw.to_string());
+            }
+        }
+        (Some(s), None) | (None, Some(s)) => s.text = truncate(std::mem::take(&mut s.text)),
+        (None, None) => {}
+    }
+}
+
+/// A side's text before the cut: `body` may be cut, `suffix` is always shown.
+struct FullText {
+    body: String,
+    suffix: String,
+}
+
+impl FullText {
+    fn plain(body: String) -> Self {
+        Self {
+            body,
+            suffix: String::new(),
+        }
+    }
+}
+
+/// Both sides' full texts. A job parameter value whose type changes shows
+/// its type (`"5" (STRING) -> 5 (INT)`); a task parameter definition whose
+/// sides render alike but differ shows how each range is written
+/// (`range expression 1,2 -> list [1, 2]`); anything else keeps its text.
+fn full_texts(
+    layer: Layer,
+    path: &str,
+    field: &str,
+    b: &Shown,
+    a: &Shown,
+    old_job: &Job,
+    new_job: &Job,
+) -> (FullText, FullText) {
+    let plain = || {
+        (
+            FullText::plain(b.text.clone()),
+            FullText::plain(a.text.clone()),
+        )
     };
-    if c.layer == Layer::Job && matches!(c.field.as_str(), "" | "value") {
-        if let Some(name) = c
-            .path
+    if layer != Layer::Job || !matches!(field, "" | "value" | "definition") {
+        return plain();
+    }
+    if field != "definition" {
+        let name = path
             .strip_prefix("parameters[")
-            .and_then(|r| r.strip_suffix(']'))
-        {
-            let types = (old_job.parameters.get(name), new_job.parameters.get(name));
-            if let (Some(o), Some(n)) = types {
-                if o.param_type != n.param_type {
-                    (b.text, a.text) = typed_texts(
-                        (&b.raw, o.param_type.as_spec_str()),
-                        (&a.raw, n.param_type.as_spec_str()),
-                    );
-                    return;
-                }
+            .and_then(|r| r.strip_suffix(']'));
+        let types = name.map(|n| (old_job.parameters.get(n), new_job.parameters.get(n)));
+        if let Some((Some(o), Some(n))) = types {
+            if o.param_type != n.param_type {
+                return (typed_text(b, o.param_type), typed_text(a, n.param_type));
             }
         }
     }
-    if b.text != a.text || b.raw == a.raw {
-        return;
-    }
-    if c.layer == Layer::Job
-        && c.path.contains(".parameterSpace.taskParameterDefinitions[")
-        && matches!(c.field.as_str(), "" | "definition")
+    if path.contains(".parameterSpace.taskParameterDefinitions[")
+        && b.text == a.text
+        && b.raw != a.raw
     {
         if let (Ok(op), Ok(np)) = (
             TaskParameter::deserialize(&b.raw),
             TaskParameter::deserialize(&a.raw),
         ) {
-            let (ot, nt) = (written_text(&op), written_text(&np));
-            if ot != nt {
-                (b.text, a.text) = (truncate(ot), truncate(nt));
-                return;
-            }
+            return (
+                FullText::plain(written_text(&op)),
+                FullText::plain(written_text(&np)),
+            );
         }
     }
-    (b.text, a.text) = around_difference(&b.raw.to_string(), &a.raw.to_string());
+    plain()
 }
 
-/// Both sides of a job parameter value whose type changes, each with its
-/// type: `"5" (STRING)`. The values are cut as [`around_difference`] cuts
-/// them, in the room the longer type suffix leaves, so the suffix is always
-/// shown and a late difference is too.
-fn typed_texts(old: (&Value, &str), new: (&Value, &str)) -> (String, String) {
-    let suffix = |t: &str| format!(" ({t})");
-    let (os, ns) = (suffix(old.1), suffix(new.1));
-    let room = MAX_TEXT_CHARS - os.chars().count().max(ns.chars().count());
-    let (ov, nv) = cut_around_difference(&typed_value(old.0), &typed_value(new.0), room);
-    (ov + &os, nv + &ns)
-}
-
-/// A job parameter value as JSON (strings quoted), without the variant tag
-/// the job writes around it.
-fn typed_value(raw: &Value) -> String {
-    match raw {
-        Value::Object(m) if m.len() == 1 => m.values().next().unwrap_or(raw),
-        _ => raw,
+/// A job parameter value with its type: `"5" (STRING)`, `4.5 (FLOAT)`.
+/// Only `STRING` and `PATH` values are quoted.
+fn typed_text(s: &Shown, ty: JobParameterType) -> FullText {
+    let body = match ty {
+        JobParameterType::String | JobParameterType::Path => {
+            Value::String(s.text.clone()).to_string()
+        }
+        _ => s.text.clone(),
+    };
+    FullText {
+        body,
+        suffix: format!(" ({})", ty.as_spec_str()),
     }
-    .to_string()
+}
+
+/// Both texts cut as [`cut_around_difference`] cuts them, in the room the
+/// longer suffix leaves, then each with its suffix.
+fn cut_pair(b: &FullText, a: &FullText) -> (String, String) {
+    let room = MAX_TEXT_CHARS - b.suffix.chars().count().max(a.suffix.chars().count());
+    let (bt, at) = cut_around_difference(&b.body, &a.body, room);
+    (bt + &b.suffix, at + &a.suffix)
 }
 
 /// A task parameter definition by how its range is written: an integer
@@ -1363,11 +1395,17 @@ fn render(v: &Value) -> String {
     }
 }
 
-/// A JSON number; a float whose value is a whole number is written without
-/// its `.0` (`4`, not `4.0`).
+/// 2^53: every whole number up to it in magnitude is exactly an `f64`.
+const MAX_EXACT_INTEGER: f64 = 9_007_199_254_740_992.0;
+
+/// A JSON number; a float whose value is a whole number of at most
+/// [`MAX_EXACT_INTEGER`] in magnitude is written without its `.0` (`4`,
+/// not `4.0`).
 fn number_text(n: &serde_json::Number) -> String {
     match n.as_f64() {
-        Some(f) if n.is_f64() && f.fract() == 0.0 && f.abs() < 1e15 => format!("{f:.0}"),
+        Some(f) if n.is_f64() && f.fract() == 0.0 && f.abs() <= MAX_EXACT_INTEGER => {
+            format!("{f:.0}")
+        }
         _ => n.to_string(),
     }
 }
@@ -2819,7 +2857,8 @@ impl fmt::Display for TemplateDiff {
         for c in &job_level {
             if let Some(line) = folded_parameter_line(c, &job_level) {
                 lines.push(line);
-            } else if !is_folded_definition(c, &job_level) {
+            } else if !is_folded_definition(c, &job_level) && !is_type_shown_by_value(c, &job_level)
+            {
                 lines.push(c.line(&c.job_label()));
             }
         }
@@ -2950,6 +2989,21 @@ fn is_folded_definition(d: &Change, job_level: &[&Change]) -> bool {
             .any(|c| definition_for(c, job_level).is_some_and(|x| std::ptr::eq(x, d)))
 }
 
+/// Whether `c` is a parameter's job-layer `type` change that its value line
+/// already shows, as `"5" (STRING) -> 5 (INT)`.
+fn is_type_shown_by_value(c: &Change, job_level: &[&Change]) -> bool {
+    c.layer == Layer::Job
+        && c.field == "type"
+        && c.path.starts_with("parameters[")
+        && job_level.iter().any(|v| {
+            v.layer == Layer::Job
+                && v.path == c.path
+                && v.field == "value"
+                && v.before.is_some()
+                && v.after.is_some()
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3030,5 +3084,18 @@ mod tests {
         let (x, y) = ("y".repeat(119) + "a", "y".repeat(119) + "b");
         let want = |c: char| format!("…{}{c}", "y".repeat(40));
         assert_eq!(around_difference(&x, &y), (want('a'), want('b')));
+    }
+
+    #[test]
+    fn whole_floats_drop_their_fraction_up_to_two_to_the_53() {
+        let text = |f: f64| number_text(&serde_json::Number::from_f64(f).unwrap());
+        assert_eq!(text(4.0), "4");
+        assert_eq!(text(-4.0), "-4");
+        assert_eq!(text(4.5), "4.5");
+        assert_eq!(text(1e15), "1000000000000000");
+        assert_eq!(text(MAX_EXACT_INTEGER), "9007199254740992");
+        assert_eq!(text(-MAX_EXACT_INTEGER), "-9007199254740992");
+        assert_eq!(text(MAX_EXACT_INTEGER + 2.0), "9007199254740994.0");
+        assert_eq!(number_text(&4.into()), "4");
     }
 }

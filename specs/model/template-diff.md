@@ -4,6 +4,11 @@
 depend on it outside openjd-rs. Applies to `job::template_diff`; each
 of its entry points says so in its doc comment.
 
+In code, the banner is the second paragraph of the module docs of `job::template_diff`,
+`job::diff`, `job::task_delta` and `job::apply`, after the one-line summary, because
+rustdoc shows the first paragraph in module lists. Each public function of
+`job::template_diff` ends its docs with `Unstable: see the module docs.` A test checks both.
+
 `job::template_diff` diffs two job templates, or one template under two parameter sets.
 It builds both jobs, runs [`diff_jobs`](job-diff.md) on them, adds a *template layer* for
 what a built job cannot show, and tags every change with its origin and stage. The result
@@ -312,9 +317,11 @@ layer](#the-job-layer)). `Shown::text` is for people:
   constraint (`1-40 chunks of 10, target 5s, noncontiguous`);
 - a job parameter value is bare (`1-200`, not `{"String":"1-200"}`), and its type is the
   spec name (`INT`). When the parameter's type differs between the two sides, each value
-  is its JSON with its type: `~ parameter Count: "5" (STRING) -> 5 (INT)`. A long value is
-  cut as below, from 40 characters before the first difference, and its type is always
-  shown: `…aaaa1" (STRING) -> …aaaa2" (PATH)`;
+  is followed by its type, and only `STRING` and `PATH` values are quoted:
+  `~ parameter Count: "5" (STRING) -> 5 (INT)`, `~ parameter X: 4 (INT) -> 4.5 (FLOAT)`.
+  A whole parameter left unexpanded by the depth limit is shown the same way. A long
+  value is cut as below, and its type is always shown: `…aaaa1" (STRING) -> …aaaa2"
+  (PATH)`;
 - a symbol table is `name=value` pairs, and an empty one is `(none)`;
 - a whole parameter space is each task parameter's range in definition order, then the
   `combination` when one is set: `{Frame: 1-10, Eye: [left, right]}, combination (Frame, Eye)`;
@@ -325,20 +332,22 @@ layer](#the-job-layer)). `Shown::text` is for people:
   empty `resolvedSymTab`. This depends only on the value and the node, so a value looks
   the same wherever it is: `+ jobEnvironments[Tools].script.embeddedFiles[F]: {data: hi,
   fileType: TEXT}` and `+ steps[S].script.embeddedFiles[F]: {data: hi, fileType: TEXT}`;
-- a float that is a whole number is written without its fraction (`min: 4`, not `4.0`);
-  `raw` keeps the number as the job holds it;
+- a float that is a whole number of at most 2^53 in magnitude (every such number is
+  exactly an `f64`) is written without its fraction (`min: 4`, not `4.0`); a larger one
+  keeps it (`9007199254740994.0`). `raw` keeps the number as the job holds it;
 - other strings are bare, lists are `[a, b]`, objects are `{key: value}`;
-- text longer than 120 characters is cut to 119 and ends with `…`;
-- when both sides render the same text but differ, a task parameter definition shows how
-  each side's range is written: an integer range as `range expression 1,2` or
-  `list [1, 2]`, any other type as its type and list (`FLOAT [1.5, 2.5] -> STRING [1.5,
-  2.5]`), then its chunk settings. The built job keeps only a range expression's canonical
-  form, so `"1-2"` shows as `range expression 1,2`. Any other pair, and a definition pair
-  that still renders alike, shows both sides as JSON (`"3"` and `3`); when the JSON first
-  differs past the cut, both start with `…` 40 characters before the first difference, so
-  the two sides stay distinguishable. `create_job` never builds a definition pair that
-  renders alike; a hand-made `--jobs` pair can (an `INT` with `chunks` against the
-  `CHUNK[INT]` it mirrors).
+- when both sides' full texts are equal but their values differ, a task parameter
+  definition shows how each side's range is written: an integer range as
+  `range expression 1,2` or `list [1, 2]`, any other type as its type and list
+  (`FLOAT [1.5, 2.5] -> STRING [1.5, 2.5]`), then its chunk settings. The built job keeps
+  only a range expression's canonical form, so `"1-2"` shows as `range expression 1,2`.
+- text longer than 120 characters is cut to 119 and ends with `…`. The cut happens once,
+  after every rule above, and a type suffix such as ` (STRING)` is never cut. **Two sides
+  with different values never show the same text**: when the first difference between
+  the two full texts would be cut off, both start with `…` 40 characters before it; when
+  the full texts are equal (`"3"` and `3` as generic values, a hand-made `--jobs` pair
+  with an `INT` with `chunks` against the `CHUNK[INT]` it mirrors), both sides show as
+  their JSON, cut the same way.
 
 `Display` is deterministic, so tests assert whole outputs:
 
@@ -366,6 +375,8 @@ layer](#the-job-layer)). `Shown::text` is for people:
   not aligned into a column, because the value text varies too much in width.
 - Labels: `parameter P` (`parameters[P]`), `parameter definition P.field`, a task
   parameter definition by its name, other paths relative to the step.
+- A parameter whose type changes prints its value line with both types and leaves out its
+  job-layer `parameter P.type` line, which says the same; `changes` keeps that change.
 - A parameter added or removed together with its definition prints once:
   `- parameter Gone: g, defined as {default: g, type: STRING}  [template]`, with the
   parameter change's origin. A definition added or removed without the parameter (an

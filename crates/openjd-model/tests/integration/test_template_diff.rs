@@ -312,7 +312,6 @@ fn parameter_definition_changes_are_compared_field_by_field() {
 ~ parameter definition T.type: STRING -> INT  [template]
 - parameter Gone: g, defined as {default: g, type: STRING}  [template]
 + parameter New: n, defined as {default: n, type: STRING}  [template]
-~ parameter T.type: STRING -> INT  [template]
 ~ parameter T: "3" (STRING) -> 3 (INT)  [template]
 
 0 steps changed. Tasks: 1 kept, 0 added, 0 removed."#
@@ -1032,8 +1031,8 @@ fn long_values_that_truncate_alike_show_where_they_differ() {
     let c = &d.changes[0];
     let (b, a) = (c.before.as_ref().unwrap(), c.after.as_ref().unwrap());
     assert_ne!(b.text, a.text);
-    assert_eq!(b.text, format!("…{}a\"]", "x".repeat(40)));
-    assert_eq!(a.text, format!("…{}b\"]", "x".repeat(40)));
+    assert_eq!(b.text, format!("…{}a]", "x".repeat(40)));
+    assert_eq!(a.text, format!("…{}b]", "x".repeat(40)));
 }
 
 #[test]
@@ -3340,4 +3339,223 @@ fn a_definition_pair_written_alike_shows_as_json() {
         b.text
     );
     assert!(a.text.starts_with("{\"int\":{\"chunks\":"), "{}", a.text);
+}
+
+// ─── diff gallery audit round 3: rendering ──────────────────────────
+
+/// A job whose only parameter `X` has type `ty` and the value `v`.
+fn typed_param_job(ty: &str, v: &str) -> TemplateInput {
+    let t = format!(
+        "\
+specificationVersion: jobtemplate-2023-09
+name: J
+parameterDefinitions:
+  - {{name: X, type: {ty}}}
+steps:
+  - name: S
+    script: {{actions: {{onRun: {{command: a}}}}}}
+"
+    );
+    text(&t).param("X", v)
+}
+
+#[test]
+fn a_task_parameter_differing_past_the_cut_shows_where_it_differs() {
+    let q = "q".repeat(150);
+    let d = diff_templates(
+        &text(&one_param_job(&format!(
+            "{{name: P, type: STRING, range: [{q}1]}}"
+        ))),
+        &text(&one_param_job(&format!(
+            "{{name: P, type: STRING, range: [{q}2]}}"
+        ))),
+        &opts(),
+    )
+    .unwrap();
+    let tail = "q".repeat(40);
+    assert_eq!(
+        lines(&d.changes),
+        [format!(
+            "~ steps[S].parameterSpace.taskParameterDefinitions[P].definition: …{tail}1] -> …{tail}2]  [template]"
+        )]
+    );
+}
+
+#[test]
+fn an_unexpanded_parameter_whose_type_changes_shows_its_value_and_type() {
+    let d = diff_templates(
+        &typed_param_job("STRING", "//x/1"),
+        &typed_param_job("PATH", "//x/2"),
+        &opts().with_max_depth(1),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
+~ parameter definition X.type: STRING -> PATH  [template]
+~ parameter X: \"//x/1\" (STRING) -> \"//x/2\" (PATH)  [both]
+
+0 steps changed. Tasks: 1 kept, 0 added, 0 removed."
+    );
+}
+
+#[test]
+fn a_long_value_whose_type_changes_is_cut_short_enough_to_keep_its_type() {
+    let long = "a".repeat(200);
+    let d = diff_templates(
+        &typed_param_job("STRING", &format!("//sr1/{long}")),
+        &typed_param_job("PATH", &format!("//sr2/{long}")),
+        &opts(),
+    )
+    .unwrap();
+    let value = d
+        .changes
+        .iter()
+        .find(|c| c.path == "parameters[X]" && c.field == "value")
+        .unwrap();
+    let (b, a) = (
+        value.before.as_ref().unwrap(),
+        value.after.as_ref().unwrap(),
+    );
+    for (s, ty) in [(b, " (STRING)"), (a, " (PATH)")] {
+        assert!(s.text.chars().count() <= 120, "{}", s.text);
+        assert!(s.text.ends_with(&format!("…{ty}")), "{}", s.text);
+    }
+    assert!(b.text.starts_with("\"//sr1/aaa"), "{}", b.text);
+    assert!(a.text.starts_with("\"//sr2/aaa"), "{}", a.text);
+}
+
+#[test]
+fn only_string_and_path_values_are_quoted_and_the_type_line_is_folded() {
+    let d = diff_templates(
+        &typed_param_job("INT", "4"),
+        &typed_param_job("FLOAT", "4.5"),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
+~ parameter definition X.type: INT -> FLOAT  [template]
+~ parameter X: 4 (INT) -> 4.5 (FLOAT)  [parameters]
+
+0 steps changed. Tasks: 1 kept, 0 added, 0 removed."
+    );
+    // The job layer still reports the type change, as plain type names.
+    let ty = d
+        .changes
+        .iter()
+        .find(|c| c.path == "parameters[X]" && c.field == "type")
+        .unwrap();
+    assert_eq!(
+        ty.to_string(),
+        "~ parameters[X].type: INT -> FLOAT  [template]"
+    );
+}
+
+/// The `range: "1-60"` and `range: [1, ..., 60]` pair.
+fn sixty_written_two_ways() -> (TemplateInput, TemplateInput) {
+    let list = (1..=60)
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    (
+        text(&one_param_job(r#"{name: P, type: INT, range: "1-60"}"#)),
+        text(&one_param_job(&format!(
+            "{{name: P, type: INT, range: [{list}]}}"
+        ))),
+    )
+}
+
+const SIXTY_LIST: &str = "list [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31…";
+
+#[test]
+fn a_long_range_rewrite_label_is_cut() {
+    let (old, new) = sixty_written_two_ways();
+    let d = diff_templates(&old, &new, &opts()).unwrap();
+    assert_eq!(
+        lines(&d.changes),
+        [format!("~ steps[S].parameterSpace.taskParameterDefinitions[P].definition: range expression 1-60 -> {SIXTY_LIST}  [template]")]
+    );
+    assert_eq!(SIXTY_LIST.chars().count(), 120);
+}
+
+#[test]
+fn an_unexpanded_definition_node_shows_how_each_range_is_written() {
+    let (old, new) = sixty_written_two_ways();
+    let d = diff_templates(&old, &new, &opts().with_max_depth(3)).unwrap();
+    assert_eq!(
+        d.to_string(),
+        format!(
+            "\
+~ step S
+    ~ P: range expression 1-60 -> {SIXTY_LIST}  [template]
+    tasks: 60 unchanged
+
+1 step changed. Tasks: 60 kept, 0 added, 0 removed."
+        )
+    );
+    assert_eq!(d.changes[0].field, "");
+}
+
+#[test]
+fn diff_modules_carry_the_unstable_banner_and_entry_points_end_with_it() {
+    const BANNER: &str = "//! **Unstable.** This API may change or be removed in any release without\n//! notice. Don't depend on it outside openjd-rs.";
+    let src = |m: &str| {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("src/job/{m}.rs"));
+        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    };
+    for m in ["template_diff", "diff", "task_delta", "apply"] {
+        let s = src(m);
+        let docs: Vec<&str> = s
+            .lines()
+            .skip_while(|l| !l.starts_with("//!"))
+            .take_while(|l| l.starts_with("//!"))
+            .collect();
+        let docs = docs.join("\n");
+        // The banner is the second paragraph: rustdoc lists the first.
+        let paragraphs: Vec<&str> = docs.split("\n//!\n").collect();
+        assert_eq!(paragraphs.get(1), Some(&BANNER), "{m}");
+    }
+    let s = src("template_diff");
+    let lines: Vec<&str> = s.lines().collect();
+    let mut entry_points = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(rest) = line.strip_prefix("pub fn ") {
+            let last_doc = lines[..i].iter().rev().find(|l| !l.starts_with("#["));
+            assert_eq!(
+                last_doc,
+                Some(&"/// Unstable: see the module docs."),
+                "{line}"
+            );
+            entry_points.push(rest.split('(').next().unwrap_or_default());
+        }
+    }
+    assert_eq!(
+        entry_points,
+        [
+            "diff_templates",
+            "diff_job_template_with_parameter_sets",
+            "diff_built_jobs",
+            "job_from_str"
+        ]
+    );
+}
+
+#[test]
+fn a_type_change_with_the_same_value_keeps_its_type_line() {
+    let d = diff_templates(
+        &typed_param_job("STRING", "//x/1"),
+        &typed_param_job("PATH", "//x/1"),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
+~ parameter definition X.type: STRING -> PATH  [template]
+~ parameter X.type: STRING -> PATH  [template]
+
+0 steps changed. Tasks: 1 kept, 0 added, 0 removed."
+    );
 }

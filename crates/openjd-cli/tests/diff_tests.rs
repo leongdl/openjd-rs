@@ -178,7 +178,7 @@ fn plan() {
             "{V1_V2}{CASE3_OUT}
 apply plan:
   1. parameter modify Frames  [ParameterValue]
-  2. tasks of Render: keep 100, add 300 at index 100..399, drop 0  [TaskAppend]
+  2. tasks of Render: keep 100, add 300 at index 100..399, remove 0  [TaskAppend]
 kinds: ParameterValue, TaskAppend
 "
         ),
@@ -644,7 +644,7 @@ fn multi_step_plan_has_every_op_kind() {
 apply plan:
   1. job modify  [JobMetadata]
   2. job environment modify Tools  [EnvVariables]
-  3. tasks of Shrink: keep 3, add 0, drop 3  [TaskRemove]
+  3. tasks of Shrink: keep 3, add 0, remove 3  [TaskRemove]
   4. step modify Modify  [StepScript]
   5. step add Added  [StepAdd]
   6. tasks of Added: all  [TaskAppend]
@@ -670,7 +670,7 @@ kinds: JobMetadata, EnvVariables, StepScript, StepAdd, TaskAppend, TaskRemove
         plan,
         "  1. job modify  [JobMetadata]
   2. job environment modify Tools  [EnvVariables]
-  3. tasks of Shrink: keep 3, add 3 at index 3..5, drop 0  [TaskAppend]
+  3. tasks of Shrink: keep 3, add 3 at index 3..5, remove 0  [TaskAppend]
   4. step modify Modify  [StepScript]
   5. step remove Added  [StepRemove]
 kinds: JobMetadata, EnvVariables, StepScript, StepRemove, TaskAppend
@@ -706,7 +706,7 @@ kinds: JobMetadata, EnvVariables, StepScript
             "ops": [
                 {"action": "job modify", "kinds": ["JobMetadata"]},
                 {"action": "job environment modify Tools", "kinds": ["EnvVariables"]},
-                {"action": "tasks of Shrink: keep 3, add 0, drop 3", "kinds": ["TaskRemove"]},
+                {"action": "tasks of Shrink: keep 3, add 0, remove 3", "kinds": ["TaskRemove"]},
             ],
             "kinds": ["JobMetadata", "EnvVariables", "TaskRemove"],
         })
