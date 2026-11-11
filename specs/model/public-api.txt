@@ -826,7 +826,7 @@ pub fn openjd_model::job::template_diff::TemplateInput::clone(&self) -> openjd_m
 impl core::fmt::Debug for openjd_model::job::template_diff::TemplateInput
 pub fn openjd_model::job::template_diff::TemplateInput::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn openjd_model::job::template_diff::diff_built_jobs(openjd_model::job::Job, openjd_model::job::Job, &openjd_model::job::diff::DiffOptions) -> openjd_model::job::template_diff::TemplateDiff
-pub fn openjd_model::job::template_diff::diff_parameter_sets(&openjd_model::job::template_diff::TemplateInput, &openjd_model::types::JobParameterInputValues, &openjd_model::types::JobParameterInputValues, &openjd_model::job::diff::DiffOptions) -> core::result::Result<openjd_model::job::template_diff::TemplateDiff, openjd_model::error::ModelError>
+pub fn openjd_model::job::template_diff::diff_job_template_with_parameter_sets(&openjd_model::job::template_diff::TemplateInput, &openjd_model::types::JobParameterInputValues, &openjd_model::types::JobParameterInputValues, &openjd_model::job::diff::DiffOptions) -> core::result::Result<openjd_model::job::template_diff::TemplateDiff, openjd_model::error::ModelError>
 pub fn openjd_model::job::template_diff::diff_templates(&openjd_model::job::template_diff::TemplateInput, &openjd_model::job::template_diff::TemplateInput, &openjd_model::job::diff::DiffOptions) -> core::result::Result<openjd_model::job::template_diff::TemplateDiff, openjd_model::error::ModelError>
 pub fn openjd_model::job::template_diff::job_from_str(&str) -> core::result::Result<openjd_model::job::Job, openjd_model::error::ModelError>
 pub enum openjd_model::job::CancelationMode

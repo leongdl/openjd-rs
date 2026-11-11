@@ -61,7 +61,7 @@ const CASE1: &str = "\
 
 #[test]
 fn case1_frames_parameter_set_appends_100_tasks() {
-    let d = diff_parameter_sets(
+    let d = diff_job_template_with_parameter_sets(
         &input("render_v1.yaml"),
         &params(&[("Frames", "1-100")]),
         &params(&[("Frames", "1-200")]),
@@ -196,7 +196,7 @@ fn case5_scene_path_changes_the_raw_param_symbol() {
     } else {
         ("/proj/a.blend", "/proj/b.blend")
     };
-    let d = diff_parameter_sets(
+    let d = diff_job_template_with_parameter_sets(
         &input("render_v1.yaml"),
         &params(&[("Scene", a)]),
         &params(&[("Scene", b)]),
@@ -552,7 +552,7 @@ fn errors_name_the_side() {
         err.to_string(),
         "Validation error: old template: Template is missing Open Job Description schema version key: specificationVersion"
     );
-    let err = diff_parameter_sets(
+    let err = diff_job_template_with_parameter_sets(
         &text(&old),
         &params(&[("Scene", "s")]),
         &params(&[]),
@@ -631,7 +631,13 @@ environment:
     let job = TemplateInput::new(sample("render_v1.yaml"))
         .param("Scene", "s")
         .environment(TemplateSource::Text(env.into()));
-    let d = diff_parameter_sets(&job, &params(&[]), &params(&[("Tool", "t2")]), &opts()).unwrap();
+    let d = diff_job_template_with_parameter_sets(
+        &job,
+        &params(&[]),
+        &params(&[("Tool", "t2")]),
+        &opts(),
+    )
+    .unwrap();
     assert_eq!(
         lines(&d.changes),
         ["~ parameters[Tool].value: t1 -> t2  [parameters]"]
@@ -1155,7 +1161,7 @@ fn stage_is_run_time_only_for_task_or_session_references_in_format_strings() {
 #[test]
 fn errors_name_the_parameter_set_in_a_parameter_set_diff() {
     let old = std::fs::read_to_string(sample_path("render_v1.yaml")).unwrap();
-    let err = diff_parameter_sets(
+    let err = diff_job_template_with_parameter_sets(
         &text(&old),
         &params(&[]),
         &params(&[("Scene", "s")]),
@@ -1166,7 +1172,7 @@ fn errors_name_the_parameter_set_in_a_parameter_set_diff() {
         err.to_string(),
         "Validation error: old parameters: Values missing for required job parameters: Scene"
     );
-    let err = diff_parameter_sets(
+    let err = diff_job_template_with_parameter_sets(
         &text(&old),
         &params(&[("Scene", "s")]),
         &params(&[]),
@@ -1177,8 +1183,13 @@ fn errors_name_the_parameter_set_in_a_parameter_set_diff() {
         err.to_string(),
         "Validation error: new parameters: Values missing for required job parameters: Scene"
     );
-    let err =
-        diff_parameter_sets(&text("name: x"), &params(&[]), &params(&[]), &opts()).unwrap_err();
+    let err = diff_job_template_with_parameter_sets(
+        &text("name: x"),
+        &params(&[]),
+        &params(&[]),
+        &opts(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: the template: Template is missing Open Job Description schema version key: specificationVersion"
@@ -1455,7 +1466,7 @@ fn parameter_order_is_deterministic_with_many_parameters() {
     );
     let all_b: Vec<(String, String)> = (0..10).map(|i| (format!("P{i}"), "b".into())).collect();
     let run = || {
-        let d = diff_parameter_sets(
+        let d = diff_job_template_with_parameter_sets(
             &text(&t),
             &params(&[]),
             &params(
@@ -2732,7 +2743,7 @@ fn a_change_belongs_to_its_step_by_identity_not_by_path_prefix() {
 
 #[test]
 fn job_level_changes_have_no_step() {
-    let d = diff_parameter_sets(
+    let d = diff_job_template_with_parameter_sets(
         &input("render_v1.yaml"),
         &params(&[("Frames", "1-100")]),
         &params(&[("Frames", "1-200")]),

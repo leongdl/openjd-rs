@@ -5,7 +5,8 @@
 //! Template-level diff: build two jobs from templates and parameter sets,
 //! diff them, and tag every change with where it came from.
 //!
-//! **Status: experimental prototype.** The API may change without notice.
+//! **Unstable.** This API may change or be removed in any release without
+//! notice. Don't depend on it outside openjd-rs.
 //!
 //! [`diff_templates`] takes two [`TemplateInput`]s, builds each into a
 //! [`Job`] with the same decode, parameter preprocessing and `create_job`
@@ -701,6 +702,8 @@ fn under(path: &str, prefix: &str) -> bool {
 /// Diff two templates, each with its own parameters and options.
 ///
 /// Errors name the side that failed: `old template: …` or `new template: …`.
+///
+/// Unstable: see the module docs.
 pub fn diff_templates(
     old: &TemplateInput,
     new: &TemplateInput,
@@ -744,7 +747,9 @@ pub fn diff_templates(
 /// Errors name the build that failed: `old parameters: …` or
 /// `new parameters: …`, or `the template: …` when the template itself
 /// does not decode.
-pub fn diff_parameter_sets(
+///
+/// Unstable: see the module docs.
+pub fn diff_job_template_with_parameter_sets(
     template: &TemplateInput,
     old: &JobParameterInputValues,
     new: &JobParameterInputValues,
@@ -774,6 +779,8 @@ pub fn diff_parameter_sets(
 
 /// Diff two jobs that are already built. There is no template layer, and
 /// every change has origin [`Origin::Job`].
+///
+/// Unstable: see the module docs.
 #[must_use]
 pub fn diff_built_jobs(old: Job, new: Job, options: &DiffOptions) -> TemplateDiff {
     assemble(
@@ -1766,6 +1773,8 @@ struct BuiltJob {
 /// It takes text, not a `serde_json::Value`, because a `Value` object
 /// sorts its keys, which would reorder task parameter definitions and so
 /// change task order.
+///
+/// Unstable: see the module docs.
 pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
     let err = |m: String| ModelError::DecodeValidation(format!("not a built job: {m}"));
     let json = text.trim_start().starts_with('{');

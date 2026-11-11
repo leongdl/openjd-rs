@@ -4,7 +4,8 @@
 
 //! Structural diff of instantiated jobs, steps and environments.
 //!
-//! **Status: experimental prototype.** The API may change without notice.
+//! **Unstable.** This API may change or be removed in any release without
+//! notice. Don't depend on it outside openjd-rs.
 //!
 //! The diff is built breadth-first into an arena ([`DiffTree`]). Each node's
 //! [`DiffStatus`] is decided with one `PartialEq` comparison of the whole

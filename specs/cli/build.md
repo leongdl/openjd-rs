@@ -1,4 +1,10 @@
-# build Command
+# build Command (unstable)
+
+**Unstable.** The flags and output of `openjd build` may change in any release. The
+command prints `warning: 'openjd build' is unstable; its flags and output may change.` to
+stderr when it starts. Stdout is only the job document, so `openjd build … > job.json`
+still writes a job that `openjd diff --jobs` reads. `openjd build --help` ends its summary
+line with ` (unstable)`.
 
 ## Purpose
 
@@ -36,7 +42,7 @@ reorder task parameter definitions and so change task order when the job is read
 `openjd build` for the same inputs prints `no changes`. The document is data, so it has no
 `status` or `message` field ([output-formatting.md](output-formatting.md#status-convention)).
 
-Errors print `ERROR: …` and exit 1, as for every command.
+Errors print `ERROR: …` after the warning and exit 1, as for every command.
 
 Tests: `crates/openjd-cli/tests/diff_tests.rs` (`jobs_round_trip_through_build`,
 `build_errors_and_bad_jobs`, `build_defaults_to_json_and_sorts_environment_variables`,

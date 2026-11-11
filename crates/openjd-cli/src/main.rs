@@ -97,9 +97,9 @@ enum Commands {
     Summary(summary::SummaryArgs),
     /// Run a job template locally
     Run(run::RunArgs),
-    /// Print the job a template builds into, as JSON or YAML
+    /// Print the job a template builds into, as JSON or YAML (unstable)
     Build(build::BuildArgs),
-    /// Diff two templates, one template under two parameter sets, or two built jobs
+    /// Diff two templates, one template under two parameter sets, or two built jobs (unstable)
     Diff(diff::DiffArgs),
 }
 

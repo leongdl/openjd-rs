@@ -1,6 +1,8 @@
-# Template Diff (experimental)
+# Template Diff (unstable)
 
-**Status: experimental prototype.** `job::template_diff` may change without notice.
+**Unstable.** This API may change or be removed in any release without notice. Don't
+depend on it outside openjd-rs. Applies to `job::template_diff`; each
+of its entry points says so in its doc comment.
 
 `job::template_diff` diffs two job templates, or one template under two parameter sets.
 It builds both jobs, runs [`diff_jobs`](job-diff.md) on them, adds a *template layer* for
@@ -13,13 +15,13 @@ The command-line form is [`openjd diff`](../cli/diff.md).
 
 ```rust
 pub fn diff_templates(old: &TemplateInput, new: &TemplateInput, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
-pub fn diff_parameter_sets(template: &TemplateInput, old: &JobParameterInputValues, new: &JobParameterInputValues, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
+pub fn diff_job_template_with_parameter_sets(template: &TemplateInput, old: &JobParameterInputValues, new: &JobParameterInputValues, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
 pub fn diff_built_jobs(old: Job, new: Job, options: &DiffOptions) -> TemplateDiff;
 pub fn job_from_str(text: &str) -> Result<Job, ModelError>;
 ```
 
-- `diff_parameter_sets` lays `old` and `new` over the template input's own parameters (a
-  later value wins), decodes the template once and builds it twice. It has no template
+- `diff_job_template_with_parameter_sets` lays `old` and `new` over the template input's
+  own parameters (a later value wins), decodes the template once and builds it twice. It has no template
   layer, and every change has origin `Parameters`.
 - `diff_built_jobs` is for callers that already hold two jobs. It has no template layer,
   and every change has origin `Job`, because the cause is not known.
@@ -77,8 +79,8 @@ Each side is built exactly as `openjd summary` and `openjd run` build a job:
 3. `create_job` with `default_validation_context().with_caller_limits(limits)`.
 
 `TemplateInput::build` runs these for one side. A failure names the input that failed. In
-`diff_templates` it is `old template: …` or `new template: …`. In `diff_parameter_sets`
-the template is shared, so a build failure is `old parameters: …` or `new parameters: …`,
+`diff_templates` it is `old template: …` or `new template: …`. In
+`diff_job_template_with_parameter_sets` the template is shared, so a build failure is `old parameters: …` or `new parameters: …`,
 and `the template: …` when the template does not decode. The error keeps its variant when
 it carries a message (`DecodeValidation`, `Compatibility`, `UnsupportedSchema`); any other
 error becomes `DecodeValidation` with its display text.
@@ -121,6 +123,12 @@ What the built job cannot show, compared on the decoded templates:
 Definitions are matched by name. `extensions` is also a field of the built job, so both
 layers report it; `Display` prints only the template layer's line, whatever the job
 layer's origin.
+
+An extension added, removed or reordered is therefore printed once (`+ extensions: [EXPR]
+[template]`) and kept twice in `changes`, once per layer. `job::apply::plan` turns the job
+layer's change into the root `Job` modify op with kind `JobExtensions`, and a store applies
+it through `JobApplier::job`. The gallery's `extension_added` and `extension_removed`
+cases show both ([cli/diff-examples.md](../cli/diff-examples.md)).
 
 **Deferred**, and recorded here so they are not mistaken for gaps:
 
@@ -353,7 +361,8 @@ layer](#the-job-layer)). `Shown::text` is for people:
 ## Examples
 
 The samples are in `crates/openjd-model/examples/template_diff/` and are the cases of the
-design's §7.4:
+design's §7.4. [cli/diff-examples.md](../cli/diff-examples.md) has one generated example per
+field the diff reports, with its output:
 
 | case | inputs | result |
 |---|---|---|

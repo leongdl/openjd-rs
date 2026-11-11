@@ -1,6 +1,8 @@
-# Job Diff (experimental)
+# Job Diff (unstable)
 
-**Status: experimental prototype.** `job::diff` may change without notice.
+**Unstable.** This API may change or be removed in any release without notice. Don't
+depend on it outside openjd-rs. Applies to `job::diff` and
+`job::task_delta`.
 
 `job::diff` compares two instantiated jobs, steps, or environments and returns a
 `DiffTree`: an arena of `DiffNode`s in breadth-first order, node 0 the root.

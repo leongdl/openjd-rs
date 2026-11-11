@@ -1,4 +1,10 @@
-# diff Command
+# diff Command (unstable)
+
+**Unstable.** The flags and output of `openjd diff` may change in any release. The
+command prints `warning: 'openjd diff' is unstable; its flags and output may change.` to
+stderr when it starts, after argument parsing, so a usage error prints only the usage
+error. Stdout is only the diff or the document. `openjd diff --help` ends its summary
+line with ` (unstable)`.
 
 ## Purpose
 
@@ -39,7 +45,7 @@ Which library call runs:
 
 | inputs | call |
 |---|---|
-| `OLD` only | `diff_parameter_sets(OLD, -p + --old-param, -p + --new-param)` |
+| `OLD` only | `diff_job_template_with_parameter_sets(OLD, -p + --old-param, -p + --new-param)` |
 | `OLD NEW` | `diff_templates(OLD with -p + --old-param, NEW with -p + --new-param)` |
 | `--jobs OLD NEW` | `diff_built_jobs(job_from_str(OLD), job_from_str(NEW))` |
 
@@ -49,7 +55,9 @@ directory sets relative PATH defaults. Stdin text is JSON when its first non-whi
 character is `{` and YAML otherwise, with the working directory as its template directory. Inline template text is
 not accepted on the command line, because YAML is hard to quote in a shell argument.
 
-`--help` prints an example of each form.
+`--help` ends with examples of each form that use the shipped files in
+`crates/openjd-cli/examples/diff/` and `crates/openjd-model/examples/template_diff/`, and a
+line pointing to the full gallery, [diff-examples.md](diff-examples.md).
 
 ## Output
 
@@ -162,4 +170,12 @@ that one template does not decode.
 spaces), `--origin` as a switch (the origin tag is always printed), and a render check.
 See [model/template-diff.md](../model/template-diff.md#the-template-layer).
 
-Tests: `crates/openjd-cli/tests/diff_tests.rs`.
+## Examples
+
+[diff-examples.md](diff-examples.md) has one case per field the diff can report: the
+command, its output, and for some cases its `--plan` output and JSON document. The test
+`crates/openjd-cli/tests/diff_examples.rs` runs every case and fails when the file is out
+of date; `UPDATE_DIFF_EXAMPLES=1 cargo test -p openjd-cli --test diff_examples` rewrites
+it, and the two built jobs its `--jobs` case reads.
+
+Tests: `crates/openjd-cli/tests/diff_tests.rs` and `diff_examples.rs`.

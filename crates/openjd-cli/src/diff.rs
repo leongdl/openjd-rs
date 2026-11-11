@@ -13,8 +13,8 @@ use clap::Args;
 use openjd_model::job::apply::{Action, ApplyPlan, Op, TaskChange};
 use openjd_model::job::diff::DiffOptions;
 use openjd_model::job::template_diff::{
-    diff_built_jobs, diff_parameter_sets, diff_templates, job_from_str, Change, Note, StepSummary,
-    TemplateDiff, TemplateInput, TemplateSource,
+    diff_built_jobs, diff_job_template_with_parameter_sets, diff_templates, job_from_str, Change,
+    Note, StepSummary, TemplateDiff, TemplateInput, TemplateSource,
 };
 use openjd_model::job::Job;
 use serde::Serialize;
@@ -22,15 +22,23 @@ use serde::Serialize;
 /// Exit code of `--exit-code` when the inputs differ.
 const EXIT_DIFFERENT: i32 = 4;
 
+/// Printed to stderr when the command starts; stdout stays the diff.
+const UNSTABLE_WARNING: &str =
+    "warning: 'openjd diff' is unstable; its flags and output may change.";
+
 const EXAMPLES: &str = "\
-Examples:
-  openjd diff render_v1.yaml render_v2.yaml -p Scene=/proj/shot010.blend
-  openjd diff render.yaml --old-param Frames=1-100 --new-param Frames=1-200
-  openjd diff render.yaml --old-param file://old.json --new-param file://new.json --tasks
-  openjd build render.yaml -p Frames=1-100 > old.json
-  openjd diff --jobs old.json new.json --plan
-  openjd diff old.yaml - --stat < new.yaml
-  openjd diff old.yaml new.yaml --output json --exit-code";
+Examples, from the openjd-rs repository root with E=crates/openjd-cli/examples/diff
+and M=crates/openjd-model/examples/template_diff:
+  openjd diff $E/frames.yaml --old-param Frames=1-100 --new-param Frames=1-200
+  openjd diff $M/render_v1.yaml $M/render_v2.yaml -p Scene=/s
+  openjd diff $E/let_script_v1.yaml $E/let_script_v2.yaml
+  openjd diff $E/extensions_v1.yaml $E/extensions_v2.yaml --plan
+  openjd build $E/frames.yaml -p Frames=1-100 > old.json
+  openjd diff --jobs old.json $E/frames_1_200.json --plan
+  openjd diff $M/render_v1.yaml $M/render_v2.yaml -p Scene=/s --stat
+  openjd diff old.yaml - --output json --exit-code < new.yaml
+
+Every field the diff reports, with its output: specs/cli/diff-examples.md";
 
 #[derive(Args)]
 #[command(after_help = EXAMPLES)]
@@ -124,6 +132,7 @@ pub fn execute(args: DiffArgs) -> Result<i32, Box<dyn std::error::Error>> {
         )
         .exit();
     }
+    eprintln!("{UNSTABLE_WARNING}");
     let mut options = DiffOptions::default().with_resolved_symtab(!args.ignore_symbols);
     if let Some(n) = args.depth {
         options = options.with_max_depth(n);
@@ -168,7 +177,12 @@ pub fn execute(args: DiffArgs) -> Result<i32, Box<dyn std::error::Error>> {
         match args.new.as_deref() {
             None => (
                 format!("{}: old parameters -> new parameters", args.old),
-                diff_parameter_sets(&base(&args.old)?, &old_params, &new_params, &options)?,
+                diff_job_template_with_parameter_sets(
+                    &base(&args.old)?,
+                    &old_params,
+                    &new_params,
+                    &options,
+                )?,
             ),
             Some(new) => {
                 let old_input = base(&args.old)?.params(old_params);

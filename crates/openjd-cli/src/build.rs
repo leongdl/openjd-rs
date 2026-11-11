@@ -37,7 +37,12 @@ pub struct BuildArgs {
     pub output: String,
 }
 
+/// Printed to stderr when the command starts; stdout stays the job document.
+const UNSTABLE_WARNING: &str =
+    "warning: 'openjd build' is unstable; its flags and output may change.";
+
 pub fn execute(args: BuildArgs) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!("{UNSTABLE_WARNING}");
     let exts = crate::common::parse_extensions(&args.extensions)?;
     let exts: Vec<&str> = exts.iter().map(String::as_str).collect();
     crate::common::read_input_file(&args.path)?;

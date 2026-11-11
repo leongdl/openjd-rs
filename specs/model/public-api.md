@@ -39,11 +39,11 @@ openjd_model              — crate root re-exports, the main public surface
 ├── error                 — ModelError + structured validation errors
 ├── format_string         — re-exported from openjd_expr
 ├── job                   — instantiated (resolved) job types
-│   ├── apply             — experimental: plan/validate/execute a DiffTree through JobApplier
+│   ├── apply             — unstable: plan/validate/execute a DiffTree through JobApplier
 │   ├── create_job        — pipeline functions + MergedParameterDefinition
-│   ├── diff              — experimental: diff_jobs/diff_steps/diff_environments → DiffTree
-│   ├── task_delta        — experimental: task_delta → TaskDelta (product box algebra)
-│   ├── template_diff     — experimental: diff_templates/diff_parameter_sets → TemplateDiff
+│   ├── diff              — unstable: diff_jobs/diff_steps/diff_environments → DiffTree
+│   ├── task_delta        — unstable: task_delta → TaskDelta (product box algebra)
+│   ├── template_diff     — unstable: diff_templates/diff_job_template_with_parameter_sets → TemplateDiff
 │   ├── step_param_space  — StepParameterSpaceIterator
 │   └── step_dependency_graph — StepDependencyGraph + friends
 ├── symbol_table          — re-exported from openjd_expr
@@ -710,7 +710,7 @@ pub struct job::StepDependency {
 }
 ```
 
-### Job Diff (experimental)
+### Job Diff (unstable)
 
 Breadth-first structural diff; see [job-diff.md](job-diff.md).
 
@@ -764,7 +764,7 @@ pub enum job::diff::DiffNodeKind { Job, JobParameter, Environment, Step, StepScr
     Action, EmbeddedFile, ParameterSpace, TaskParameter, HostRequirements }
 ```
 
-### Task Delta (experimental)
+### Task Delta (unstable)
 
 Product decomposition of a step's task change; see [job-diff.md](job-diff.md#task-delta-jobtask_delta).
 
@@ -788,14 +788,14 @@ impl TaskBox {
 }
 ```
 
-### Template Diff (experimental)
+### Template Diff (unstable)
 
 Diff two templates or two parameter sets, with origins and stages; see
 [template-diff.md](template-diff.md).
 
 ```rust
 pub fn job::template_diff::diff_templates(old: &TemplateInput, new: &TemplateInput, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
-pub fn job::template_diff::diff_parameter_sets(template: &TemplateInput, old: &JobParameterInputValues, new: &JobParameterInputValues, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
+pub fn job::template_diff::diff_job_template_with_parameter_sets(template: &TemplateInput, old: &JobParameterInputValues, new: &JobParameterInputValues, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
 pub fn job::template_diff::diff_built_jobs(old: Job, new: Job, options: &DiffOptions) -> TemplateDiff;   // origin Job, no template layer
 pub fn job::template_diff::job_from_str(text: &str) -> Result<Job, ModelError>;   // JSON or YAML serde form of a Job
 pub struct job::template_diff::JobDocument<'a>(pub &'a Job);   // Serialize: the Job serde form, parameters and environment variables sorted; Debug, Clone, Copy
@@ -858,7 +858,7 @@ and `Stage` are also `Copy`, `Eq` and `Hash`, and `Layer` is `Ord`
 and `newJob` as `JobDocument`s, so its serde form is deterministic; `openjd build` prints
 the same form, and `job_from_str` reads it back. Task counts saturate at `u64::MAX`.
 
-### Job Apply (experimental)
+### Job Apply (unstable)
 
 Ordered, gated application of a job diff to a store; see [job-apply.md](job-apply.md).
 

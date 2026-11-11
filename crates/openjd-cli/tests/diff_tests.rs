@@ -47,8 +47,15 @@ fn stderr(o: &Output) -> String {
     String::from_utf8(o.stderr.clone()).unwrap()
 }
 
+/// The line `openjd diff` prints to stderr before anything else.
+const DIFF_WARNING: &str = "warning: 'openjd diff' is unstable; its flags and output may change.\n";
+
+/// The line `openjd build` prints to stderr before anything else.
+const BUILD_WARNING: &str =
+    "warning: 'openjd build' is unstable; its flags and output may change.\n";
+
 fn assert_ok(o: &Output, expected: &str) {
-    assert_eq!(stderr(o), "");
+    assert_eq!(stderr(o), DIFF_WARNING);
     assert_eq!(stdout(o), expected);
     assert_eq!(o.status.code(), Some(0));
 }
@@ -188,7 +195,7 @@ fn step_filter() {
     let o = openjd(&with(CASE3, &["--step", "Nope"]), None);
     assert_eq!(
         stderr(&o),
-        "ERROR: Step 'Nope' does not exist in either job.\n"
+        format!("{DIFF_WARNING}ERROR: Step 'Nope' does not exist in either job.\n")
     );
     assert_eq!(o.status.code(), Some(1));
 }
@@ -307,7 +314,7 @@ fn exit_code() {
     );
     assert_eq!(
         stderr(&error),
-        "ERROR: Validation error: old template: Values missing for required job parameters: Scene\n"
+        format!("{DIFF_WARNING}ERROR: Validation error: old template: Values missing for required job parameters: Scene\n")
     );
     assert_eq!(error.status.code(), Some(1));
     // Without the flag, differences still exit 0.
@@ -328,7 +335,7 @@ fn stdin() {
     let o = openjd(&["diff", "-", "-"], Some(&v2));
     assert_eq!(
         stderr(&o),
-        "ERROR: Only one input can be read from stdin ('-').\n"
+        format!("{DIFF_WARNING}ERROR: Only one input can be read from stdin ('-').\n")
     );
     assert_eq!(o.status.code(), Some(1));
 }
@@ -368,11 +375,17 @@ environment:
 #[test]
 fn missing_file_names_the_path() {
     let o = openjd(&["diff", "nope.yaml", "render_v1.yaml"], None);
-    assert_eq!(stderr(&o), "ERROR: 'nope.yaml' does not exist.\n");
+    assert_eq!(
+        stderr(&o),
+        format!("{DIFF_WARNING}ERROR: 'nope.yaml' does not exist.\n")
+    );
     assert_eq!(stdout(&o), "");
     assert_eq!(o.status.code(), Some(1));
     let o = openjd(&["diff", "--jobs", "nope.json", "other.json"], None);
-    assert_eq!(stderr(&o), "ERROR: 'nope.json' does not exist.\n");
+    assert_eq!(
+        stderr(&o),
+        format!("{DIFF_WARNING}ERROR: 'nope.json' does not exist.\n")
+    );
 }
 
 #[test]
@@ -391,13 +404,13 @@ fn errors_name_the_parameter_set_or_the_template() {
     let o = openjd(&["diff", "render_v1.yaml", "--old-param", "Scene=/s"], None);
     assert_eq!(
         stderr(&o),
-        "ERROR: Validation error: new parameters: Values missing for required job parameters: Scene\n"
+        format!("{DIFF_WARNING}ERROR: Validation error: new parameters: Values missing for required job parameters: Scene\n")
     );
     assert_eq!(o.status.code(), Some(1));
     let o = openjd(&["diff", "render_v1.yaml", "--new-param", "Scene=/s"], None);
     assert_eq!(
         stderr(&o),
-        "ERROR: Validation error: old parameters: Values missing for required job parameters: Scene\n"
+        format!("{DIFF_WARNING}ERROR: Validation error: old parameters: Values missing for required job parameters: Scene\n")
     );
     let o = openjd(
         &[
@@ -411,7 +424,7 @@ fn errors_name_the_parameter_set_or_the_template() {
     );
     assert_eq!(
         stderr(&o),
-        "ERROR: Validation error: new template: Values missing for required job parameters: Scene\n"
+        format!("{DIFF_WARNING}ERROR: Validation error: new template: Values missing for required job parameters: Scene\n")
     );
 }
 
@@ -420,7 +433,7 @@ fn build_errors_and_bad_jobs() {
     let o = openjd(&["build", "render_v1.yaml"], None);
     assert_eq!(
         stderr(&o),
-        "ERROR: Validation error: Values missing for required job parameters: Scene\n"
+        format!("{BUILD_WARNING}ERROR: Validation error: Values missing for required job parameters: Scene\n")
     );
     assert_eq!(o.status.code(), Some(1));
     let o = openjd(
@@ -429,7 +442,7 @@ fn build_errors_and_bad_jobs() {
     );
     assert_eq!(
         stderr(&o),
-        "ERROR: '-': Validation error: not a built job: unknown field `bogus`, expected one of `name`, `description`, `extensions`, `parameters`, `steps`, `jobEnvironments` at line 1 column 34\n"
+        format!("{DIFF_WARNING}ERROR: '-': Validation error: not a built job: unknown field `bogus`, expected one of `name`, `description`, `extensions`, `parameters`, `steps`, `jobEnvironments` at line 1 column 34\n")
     );
 }
 
@@ -1234,7 +1247,7 @@ fn build_merges_environment_parameters_under_both_spellings() {
     for flag in ["--environment", "--env"] {
         let o = openjd_in(dir.path(), &["build", "a.yaml", flag, "env.yaml"], None);
         assert_eq!(o.status.code(), Some(0), "{flag}: {}", stderr(&o));
-        assert_eq!(stderr(&o), "");
+        assert_eq!(stderr(&o), BUILD_WARNING);
         assert!(stdout(&o).contains(expected), "{flag}: {}", stdout(&o));
     }
 }
@@ -1265,7 +1278,10 @@ fn build_applies_the_cli_caller_limits() {
     std::fs::write(dir.path().join("long.yaml"), LONG_ARG).unwrap();
     let o = openjd_in(dir.path(), &["build", "long.yaml"], None);
     assert_eq!(stdout(&o), "");
-    assert_eq!(stderr(&o), format!("ERROR: {LONG_ARG_ERROR}"));
+    assert_eq!(
+        stderr(&o),
+        format!("{BUILD_WARNING}ERROR: {LONG_ARG_ERROR}")
+    );
     assert_eq!(o.status.code(), Some(1));
 }
 
@@ -1278,7 +1294,7 @@ fn diff_applies_the_cli_caller_limits() {
     assert_eq!(stdout(&o), "");
     assert_eq!(
         stderr(&o),
-        format!("ERROR: Validation error: new template: {LONG_ARG_ERROR}")
+        format!("{DIFF_WARNING}ERROR: Validation error: new template: {LONG_ARG_ERROR}")
     );
     assert_eq!(o.status.code(), Some(1));
 }

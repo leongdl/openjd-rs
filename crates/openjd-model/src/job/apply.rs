@@ -4,7 +4,8 @@
 
 //! Applying a job diff to a store, without knowing what the store is.
 //!
-//! **Status: experimental prototype.** The API may change without notice.
+//! **Unstable.** This API may change or be removed in any release without
+//! notice. Don't depend on it outside openjd-rs.
 //!
 //! Three stages:
 //!
