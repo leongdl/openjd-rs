@@ -879,7 +879,7 @@ fn assemble(
             });
         };
         let side = |doc: &Value, job: &Job| {
-            lookup(doc, &segments).map(|v| shown_node(node, "", v.clone(), job))
+            lookup(doc, &segments).map(|v| shown_node(node, &path, "", v.clone(), job))
         };
         match node.status {
             DiffStatus::Added => push(String::new(), None, side(&new_doc, &new_job)),
@@ -892,7 +892,7 @@ fn assemble(
             DiffStatus::Modified => {
                 for fc in &node.field_changes {
                     let shown = |v: &Value, job: &Job| {
-                        (!v.is_null()).then(|| shown_node(node, &fc.field, v.clone(), job))
+                        (!v.is_null()).then(|| shown_node(node, &path, &fc.field, v.clone(), job))
                     };
                     push(
                         fc.field.clone(),
@@ -906,7 +906,7 @@ fn assemble(
     }
     changes.sort_by(|a, b| (&a.path, &a.field, a.layer).cmp(&(&b.path, &b.field, b.layer)));
     for c in &mut changes {
-        disambiguate(c);
+        disambiguate(c, &old_job, &new_job);
     }
     let steps = step_summaries(&old_job, &new_job, options, &mut notes);
     TemplateDiff {
@@ -919,14 +919,81 @@ fn assemble(
     }
 }
 
-/// When both sides render the same text but differ, show them as JSON
-/// (`"3"` and `3`), from just before the first difference when cutting at
-/// 120 characters would hide it.
-fn disambiguate(c: &mut Change) {
-    if let (Some(b), Some(a)) = (&mut c.before, &mut c.after) {
-        if b.text == a.text && b.raw != a.raw {
-            (b.text, a.text) = around_difference(&b.raw.to_string(), &a.raw.to_string());
+/// Make the two sides of a change tell apart: a job parameter value whose
+/// type changes shows its type (`"5" (STRING) -> 5 (INT)`); a task parameter
+/// definition that renders the same text on both sides shows how its range
+/// is written (`range expression 1,2 -> list [1, 2]`); any other pair that
+/// renders the same text but differs shows as JSON (`"3"` and `3`), from
+/// just before the first difference when cutting at 120 characters would
+/// hide it.
+fn disambiguate(c: &mut Change, old_job: &Job, new_job: &Job) {
+    let (Some(b), Some(a)) = (&mut c.before, &mut c.after) else {
+        return;
+    };
+    if c.layer == Layer::Job && matches!(c.field.as_str(), "" | "value") {
+        if let Some(name) = c
+            .path
+            .strip_prefix("parameters[")
+            .and_then(|r| r.strip_suffix(']'))
+        {
+            let types = (old_job.parameters.get(name), new_job.parameters.get(name));
+            if let (Some(o), Some(n)) = types {
+                if o.param_type != n.param_type {
+                    b.text = truncate(typed_text(&b.raw, o.param_type.as_spec_str()));
+                    a.text = truncate(typed_text(&a.raw, n.param_type.as_spec_str()));
+                    return;
+                }
+            }
         }
+    }
+    if b.text != a.text || b.raw == a.raw {
+        return;
+    }
+    if c.layer == Layer::Job
+        && c.path.contains(".parameterSpace.taskParameterDefinitions[")
+        && matches!(c.field.as_str(), "" | "definition")
+    {
+        if let (Ok(op), Ok(np)) = (
+            TaskParameter::deserialize(&b.raw),
+            TaskParameter::deserialize(&a.raw),
+        ) {
+            let (ot, nt) = (written_text(&op), written_text(&np));
+            if ot != nt {
+                (b.text, a.text) = (truncate(ot), truncate(nt));
+                return;
+            }
+        }
+    }
+    (b.text, a.text) = around_difference(&b.raw.to_string(), &a.raw.to_string());
+}
+
+/// A job parameter value with its type, `"5" (STRING)`: the value as JSON
+/// (strings quoted) without the variant tag the job writes around it.
+fn typed_text(raw: &Value, spec_type: &str) -> String {
+    let inner = match raw {
+        Value::Object(m) if m.len() == 1 => m.values().next().unwrap_or(raw),
+        _ => raw,
+    };
+    format!("{inner} ({spec_type})")
+}
+
+/// A task parameter definition by how its range is written: an integer
+/// range as `range expression 1,2` or `list [1, 2]`, any other type as its
+/// type and list (`STRING [1, 2]`), then any chunk settings.
+fn written_text(p: &TaskParameter) -> String {
+    let int = |range: &TaskParamRange<i64>| match range {
+        TaskParamRange::RangeExpr(e) => format!("range expression {e}"),
+        TaskParamRange::List(v) => format!("list {}", list_text(v.iter().map(i64::to_string))),
+    };
+    match p {
+        TaskParameter::Int { range, chunks } => match chunks {
+            Some(c) => chunk_suffix(int(range), c),
+            None => int(range),
+        },
+        TaskParameter::ChunkInt { range, chunks } => chunk_suffix(int(range), chunks),
+        TaskParameter::Float { .. } => format!("FLOAT {}", range_text(p)),
+        TaskParameter::String { .. } => format!("STRING {}", range_text(p)),
+        TaskParameter::Path { .. } => format!("PATH {}", range_text(p)),
     }
 }
 
@@ -1101,8 +1168,9 @@ fn truncate(s: String) -> String {
     out
 }
 
-/// A job-layer value, rendered by what the node holds.
-fn shown_node(node: &DiffNode, field: &str, raw: Value, job: &Job) -> Shown {
+/// A job-layer value, rendered by what the node holds. `path` is the
+/// node's path.
+fn shown_node(node: &DiffNode, path: &str, field: &str, raw: Value, job: &Job) -> Shown {
     use crate::job::diff::DiffNodeKind;
     let text = match (node.kind, field) {
         (DiffNodeKind::TaskParameter, "definition" | "") => {
@@ -1118,9 +1186,59 @@ fn shown_node(node: &DiffNode, field: &str, raw: Value, job: &Job) -> Shown {
             .as_ref()
             .and_then(|k| job.parameters.get(k))
             .map_or_else(|| render(&raw), |p| p.param_type.as_spec_str().to_string()),
+        (DiffNodeKind::ParameterSpace, "") => space_text(&raw),
+        (_, "resolvedSymTab") if raw.as_array().is_some_and(Vec::is_empty) => NO_SYMBOLS.into(),
+        (DiffNodeKind::Environment, "") => {
+            let mut env = raw.clone();
+            if let Some(m) = env.as_object_mut() {
+                m.remove("name");
+                if m.get("resolvedSymTab")
+                    .and_then(Value::as_array)
+                    .is_some_and(Vec::is_empty)
+                {
+                    m.remove("resolvedSymTab");
+                }
+            }
+            render_compact(&env)
+        }
+        _ if path.contains("Environments[") => render_compact(&raw),
         _ => render(&raw),
     };
     Shown::new(raw, text)
+}
+
+/// How an empty symbol table is shown.
+const NO_SYMBOLS: &str = "(none)";
+
+/// A whole parameter space: each task parameter's range in definition
+/// order, `{Frame: 1-10, Eye: [left]}`, then `, combination Frame * Eye`
+/// when one is set.
+fn space_text(raw: &Value) -> String {
+    let Some(defs) = raw
+        .get("taskParameterDefinitions")
+        .and_then(Value::as_array)
+    else {
+        return render(raw);
+    };
+    let ranges = defs
+        .iter()
+        .map(|d| {
+            let name = d.get("name").map_or_else(String::new, render);
+            let range = d
+                .get("definition")
+                .and_then(|v| TaskParameter::deserialize(v).ok())
+                .map_or_else(
+                    || d.get("definition").map_or_else(String::new, render),
+                    |p| range_text(&p),
+                );
+            format!("{name}: {range}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    match raw.get("combination").filter(|c| !c.is_null()) {
+        Some(c) => format!("{{{ranges}}}, combination {}", render(c)),
+        None => format!("{{{ranges}}}"),
+    }
 }
 
 /// A task parameter's range: integers as range expressions (`1-100`,
@@ -1143,11 +1261,12 @@ fn range_text(p: &TaskParameter) -> String {
 /// `1-40 chunks of 10`, then `, target 5s` when `targetRuntimeSeconds` is
 /// set and `, noncontiguous` for a noncontiguous range constraint.
 fn chunked_text(range: &TaskParamRange<i64>, c: &crate::job::ResolvedChunks) -> String {
-    let mut s = format!(
-        "{} chunks of {}",
-        int_range_text(range),
-        c.default_task_count
-    );
+    chunk_suffix(int_range_text(range), c)
+}
+
+/// `range` followed by ` chunks of N` and the optional chunk settings.
+fn chunk_suffix(range: String, c: &crate::job::ResolvedChunks) -> String {
+    let mut s = format!("{range} chunks of {}", c.default_task_count);
     if let Some(t) = c.target_runtime_seconds {
         s.push_str(&format!(", target {t}s"));
     }
@@ -1174,6 +1293,16 @@ fn list_text(items: impl Iterator<Item = String>) -> String {
 /// Generic rendering: strings bare, lists as `[a, b]`, symbol tables as
 /// `name=value` pairs, objects as `{key: value}`.
 fn render(v: &Value) -> String {
+    render_with(v, false)
+}
+
+/// [`render`], leaving out object fields that are `null`.
+fn render_compact(v: &Value) -> String {
+    render_with(v, true)
+}
+
+fn render_with(v: &Value, compact: bool) -> String {
+    let render = |v: &Value| render_with(v, compact);
     match v {
         Value::Null => "null".into(),
         Value::Bool(b) => b.to_string(),
@@ -1194,6 +1323,7 @@ fn render(v: &Value) -> String {
         Value::Object(m) => format!(
             "{{{}}}",
             m.iter()
+                .filter(|(_, v)| !(compact && v.is_null()))
                 .map(|(k, v)| format!("{k}: {}", render(v)))
                 .collect::<Vec<_>>()
                 .join(", ")

@@ -311,13 +311,24 @@ layer](#the-job-layer)). `Shown::text` is for people:
   `targetRuntimeSeconds` is set and `, noncontiguous` for a noncontiguous range
   constraint (`1-40 chunks of 10, target 5s, noncontiguous`);
 - a job parameter value is bare (`1-200`, not `{"String":"1-200"}`), and its type is the
-  spec name (`INT`);
-- a symbol table is `name=value` pairs;
+  spec name (`INT`). When the parameter's type differs between the two sides, each value
+  is its JSON with its type: `~ parameter Count: "5" (STRING) -> 5 (INT)`;
+- a symbol table is `name=value` pairs, and an empty one is `(none)`;
+- a whole parameter space is each task parameter's range in definition order, then the
+  `combination` when one is set: `{Frame: 1-10, Eye: [left, right]}, combination (Frame, Eye)`;
+- a whole environment leaves out its `name` (the path has it), its `null` fields, and an
+  empty `resolvedSymTab`, so job and step environments look alike:
+  `+ jobEnvironments[Tools]: {variables: {TOOL: v1}}`. Any other value under an
+  environment leaves out its `null` fields too (`{actions: {onEnter: {command: setup}}}`);
 - other strings are bare, lists are `[a, b]`, objects are `{key: value}`;
 - text longer than 120 characters is cut to 119 and ends with `…`;
-- when both sides render the same text but differ (`"3"` and `3`), both show as JSON; when
-  the JSON first differs past the cut, both start with `…` 40 characters before the first
-  difference, so the two sides stay distinguishable.
+- when both sides render the same text but differ, a task parameter definition shows how
+  each side's range is written: an integer range as `range expression 1,2` or
+  `list [1, 2]`, any other type as its type and list (`FLOAT [1.5, 2.5] -> STRING [1.5,
+  2.5]`), then its chunk settings. Any other pair, and a definition pair that still
+  renders alike, shows both sides as JSON (`"3"` and `3`); when the JSON first differs
+  past the cut, both start with `…` 40 characters before the first difference, so the two
+  sides stay distinguishable.
 
 `Display` is deterministic, so tests assert whole outputs:
 
@@ -370,7 +381,7 @@ field the diff reports, with its output:
 | 2 | `render_v1.yaml` → `render_v2.yaml` (`Eye` gains `right`) | `Eye` [template]; keep 100, add 100 |
 | 3 | both | mixed origins; keep 100, add 300 |
 | 4 | `render_no_eye.yaml` → `render_v1.yaml` | `+ Eye`, `args` (stage run time); every task replaced |
-| 5 | `Scene` /a → /b | `parameters[Scene]` and `resolvedSymTab` `RawParam.Scene` (stage job) |
+| 5 | `Scene` //srv/a → //srv/b | `parameters[Scene]` and `resolvedSymTab` `RawParam.Scene` (stage job) |
 | A4 | `render_v1.yaml` → `render_default_1_200.yaml`, `Frames` not supplied | `parameterDefinitions[Frames].default` and the job changes, all [template] |
 
 Tests: `crates/openjd-model/tests/integration/test_template_diff.rs`.

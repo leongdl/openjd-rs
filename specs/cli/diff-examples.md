@@ -14,7 +14,9 @@ each command, checked by a test.
 
 ## Coverage
 
-`shown as` is the main output line. `origin` and `stage` are the values over the case's
+`shown as` is the main output line. A line printed under a step header is relative to the
+step, so here it carries the change's full path, as a change prints on its own
+(`~ steps[Render].description: …`). `origin` and `stage` are the values over the case's
 changes, and `plan kinds` the mutation kinds of `--plan`.
 
 | field | example | shown as | origin | stage | plan kinds |
@@ -27,6 +29,7 @@ changes, and `plan kinds` the mutation kinds of `--plan`.
 | parameter definition added | [param_def_added](#param_def_added) | `+ parameter Quality: 3, defined as {default: 3, type: INT}  [template]` | template | parameters, template | ParameterAdd |
 | parameter definition removed | [param_def_removed](#param_def_removed) | `- parameter Quality: 3, defined as {default: 3, type: INT}  [template]` | template | parameters, template | ParameterRemove |
 | parameter `type` | [param_def_type](#param_def_type) | `~ parameter definition Count.type: STRING -> INT  [template]` | template | parameters, template | ParameterValue |
+| parameter `description` | [param_def_description](#param_def_description) | `~ parameter definition Quality.description: first cut -> final  [template]` | template | template | — |
 | parameter `default`, not supplied | [param_def_default](#param_def_default) | `~ parameter definition Frames.default: 1-100 -> 1-200  [template]` | template | job, parameters, template | ParameterValue, TaskAppend |
 | parameter `default`, supplied | [param_def_default_supplied](#param_def_default_supplied) | `~ parameter definition Frames.default: 1-100 -> 1-200  [template]` | template | template | — |
 | parameter `allowedValues` | [param_def_allowed_values](#param_def_allowed_values) | `~ parameter definition Quality.allowedValues: [low, high] -> [low, medium, high]  [template]` | template | template | — |
@@ -36,11 +39,13 @@ changes, and `plan kinds` the mutation kinds of `--plan`.
 | parameter `objectType`, `dataFlow` | [param_def_path_kind](#param_def_path_kind) | `~ parameter definition Output.objectType: FILE -> DIRECTORY  [template]` | template | template | — |
 | parameter `item.*` (LIST) | [param_def_list_item](#param_def_list_item) | `~ parameter definition Layers.item.allowedValues: [beauty, depth] -> [beauty, depth, normal]  [template]` | template | template | — |
 | parameter value | [param_value](#param_value) | `~ parameter Frames: 1-100 -> 1-200  [parameters]` | parameters | job, parameters | ParameterValue, TaskAppend |
-| `PATH` parameter value | [param_value_path](#param_value_path) | `~ resolvedSymTab: RawParam.Scene=/a -> RawParam.Scene=/b  [parameters]` | parameters | job, parameters | ParameterValue, StepSymbols |
+| `PATH` parameter value | [param_value_path](#param_value_path) | `~ steps[Render].resolvedSymTab: RawParam.Scene=//srv/a -> RawParam.Scene=//srv/b  [parameters]` | parameters | job, parameters | ParameterValue, StepSymbols |
 | parameter read by a job environment | [param_value_env](#param_value_env) | `~ jobEnvironments[Tools].resolvedSymTab: Param.Tool=v1 -> Param.Tool=v2  [parameters]` | parameters | job, parameters | EnvSymbols, ParameterValue |
-| job environment added | [env_added](#env_added) | `+ jobEnvironments[Tools]: {description: null, name: Tools, resolvedSymTab: [], script: null, variables: {TOOL: v1}}  [template]` | template | job | EnvAdd |
-| job environment removed | [env_removed](#env_removed) | `- jobEnvironments[Tools]: {description: null, name: Tools, resolvedSymTab: [], script: null, variables: {TOOL: v1}}  [template]` | template | job | EnvRemove |
+| job environment added | [env_added](#env_added) | `+ jobEnvironments[Tools]: {variables: {TOOL: v1}}  [template]` | template | job | EnvAdd |
+| job environment removed | [env_removed](#env_removed) | `- jobEnvironments[Tools]: {variables: {TOOL: v1}}  [template]` | template | job | EnvRemove |
 | job environment order | [env_reordered](#env_reordered) | `~ jobEnvironments.order: [Tools, License] -> [License, Tools]  [template]` | template | job | EnvReorder |
+| environment `description` | [env_description](#env_description) | `~ jobEnvironments[Tools].description: first cut -> final  [template]` | template | job | EnvMetadata |
+| environment `script` added | [env_script_added](#env_script_added) | `+ jobEnvironments[Tools].script: {actions: {onEnter: {command: setup}}}  [template]` | template | job | EnvScript |
 | environment `variables` | [env_variables](#env_variables) | `~ jobEnvironments[Tools].variables.TOOL: v1 -> v2  [template]` | template | job | EnvVariables |
 | environment action `command` | [env_command](#env_command) | `~ jobEnvironments[Tools].script.onEnter.command: setup-v1 -> setup-v2  [template]` | template | job | EnvScript |
 | environment script `let` (EXPR) | [env_let](#env_let) | `~ jobEnvironments[Tools].script.let: [tool = 'v1'] -> [tool = 'v2']  [template]` | template | job | EnvScript |
@@ -49,36 +54,45 @@ changes, and `plan kinds` the mutation kinds of `--plan`.
 | step removed | [step_removed](#step_removed) | `- step Composite` | template | job | StepRemove |
 | step `name` | [step_renamed](#step_renamed) | `+ step Beauty` | template | job | StepAdd, StepRemove, TaskAppend |
 | step order | [step_reordered](#step_reordered) | `~ steps.order: [Render, Composite] -> [Composite, Render]  [template]` | template | job | StepReorder |
-| step `description` | [step_description](#step_description) | `~ description: draft -> final  [template]` | template | job | StepMetadata |
-| step `dependencies` | [step_dependencies](#step_dependencies) | `~ dependencies: [] -> [Render]  [template]` | template | job | StepDependencies |
-| host requirement amount | [host_amount](#host_amount) | `~ hostRequirements.amounts[amount.worker.vcpu]: {max: null, min: 4.0, name: amount.worker.vcpu} -> {max: null, min: 8.0, name: amount.worker.vcpu}  [template]` | template | job | StepHostRequirements |
-| host requirement attribute | [host_attribute](#host_attribute) | `~ hostRequirements.attributes[attr.worker.os.family]: {allOf: null, anyOf: [linux], name: attr.worker.os.family} -> {allOf: null, anyOf: [linux, windows], name: attr.worker.os.family}  [template]` | template | job | StepHostRequirements |
-| action `command` | [script_command](#script_command) | `~ script.onRun.command: render -> render2  [template]` | template | job | StepScript |
-| action `args` | [script_args](#script_args) | `~ script.onRun.args: [--fast] -> [--fast, --denoise]  [template]` | template | job | StepScript |
-| action `timeout` (FEATURE_BUNDLE_1) | [script_timeout](#script_timeout) | `~ script.onRun.timeout: 600 -> 1200  [template]` | template | job | StepScript |
-| action `cancelation` (FEATURE_BUNDLE_1) | [script_cancelation](#script_cancelation) | `~ script.onRun.cancelation: {mode: NOTIFY_THEN_TERMINATE, notifyPeriodInSeconds: 30} -> {mode: NOTIFY_THEN_TERMINATE, notifyPeriodInSeconds: 120}  [template]` | template | job | StepScript |
-| embedded file `data` | [embedded_file_data](#embedded_file_data) | `~ script.embeddedFiles[Run].data: render --fast -> render --denoise  [template]` | template | job | StepScript |
-| embedded file `filename` | [embedded_file_filename](#embedded_file_filename) | `~ script.embeddedFiles[Run].filename: run.sh -> render.sh  [template]` | template | job | StepScript |
-| embedded file `runnable` | [embedded_file_runnable](#embedded_file_runnable) | `+ script.embeddedFiles[Run].runnable: true  [template]` | template | job | StepScript |
-| step script `let` (EXPR) | [let_script](#let_script) | `~ script.let: [quality = 'draft'] -> [quality = 'final']  [template]` | template | job | StepScript |
-| step `let` added, read by an arg (EXPR) | [let_step_used](#let_step_used) | `+ let: [mode = '--denoise']  [template]` | template | job, template | StepScript, StepSymbols |
-| step `let`, read by nothing (EXPR) | [let_step_unused](#let_step_unused) | `~ let: [unused = 1] -> [unused = 2]  [template]` | template | template | — |
-| step environment added | [step_env_added](#step_env_added) | `+ stepEnvironments[Cache]: {description: null, name: Cache, script: null, variables: {CACHE: /tmp/a}}  [template]` | template | job | EnvAdd |
-| step environment `variables` | [step_env_changed](#step_env_changed) | `~ stepEnvironments[Cache].variables.CACHE: /tmp/a -> /tmp/b  [template]` | template | job | EnvVariables |
-| task range extended | [frames_extended](#frames_extended) | `~ Frame: 1-10 -> 1-20  [template]` | template | job | TaskAppend |
-| task range shrunk | [frames_shrunk](#frames_shrunk) | `~ Frame: 1-20 -> 1-10  [template]` | template | job | TaskRemove |
-| task range value added to one dimension | [eye_added](#eye_added) | `~ Eye: [left] -> [left, right]  [template]` | template | job | TaskAppend |
-| task parameter added (new dimension) | [new_dimension](#new_dimension) | `+ Eye: [left]  [template]` | template | job, runTime | StepScript, TaskReplace |
-| task parameter definition order | [dimension_reordered](#dimension_reordered) | `~ parameterSpace.taskParameterDefinitions.order: [Frame, Eye] -> [Eye, Frame]  [template]` | template | job | TaskReplace |
-| `combination` | [combination](#combination) | `~ parameterSpace.combination: Frame * Eye -> (Frame, Eye)  [template]` | template | job | TaskReplace |
-| chunking (CHUNK[INT]) | [chunk_size](#chunk_size) | `~ Frame: 1-20 chunks of 5 -> 1-20 chunks of 10  [template]` | template | job | TaskReplace |
-| adaptive chunking | [chunk_adaptive](#chunk_adaptive) | `~ Frame: 1-20 chunks of 5 -> 1-20 chunks of 5, target 300s  [template]` | template | job | TaskReplace |
-| `{{Task.Param.X}}` reference | [runtime_task_param](#runtime_task_param) | `~ script.onRun.args: [frame-{{Task.Param.Frame}}] -> [--frame, {{Task.Param.Frame}}]  [template]` | template | runTime | StepScript |
-| `{{Session.WorkingDirectory}}` reference | [runtime_session_dir](#runtime_session_dir) | `~ script.onRun.args: [{{Session.WorkingDirectory}}/out] -> [{{Session.WorkingDirectory}}/render]  [template]` | template | runTime | StepScript |
-| origin `both` | [origin_both](#origin_both) | `~ Frame: 1-10 -> 1-20,50  [both]` | both, parameters | job, parameters | ParameterValue, TaskAppend |
+| step `description` | [step_description](#step_description) | `~ steps[Render].description: draft -> final  [template]` | template | job | StepMetadata |
+| step `dependencies` | [step_dependencies](#step_dependencies) | `~ steps[Composite].dependencies: [] -> [Render]  [template]` | template | job | StepDependencies |
+| step `dependencies` order | [step_dependencies_reordered](#step_dependencies_reordered) | `~ steps[Composite].dependencies.order: [{dependsOn: Prep}, {dependsOn: Render}] -> [{dependsOn: Render}, {dependsOn: Prep}]  [template]` | template | job | StepDependencies |
+| `hostRequirements` added | [host_added](#host_added) | `+ steps[Render].hostRequirements: {amounts: [{max: null, min: 4.0, name: amount.worker.vcpu}], attributes: null}  [template]` | template | job | StepHostRequirements |
+| host requirement amount | [host_amount](#host_amount) | `~ steps[Render].hostRequirements.amounts[amount.worker.vcpu]: {max: null, min: 4.0, name: amount.worker.vcpu} -> {max: null, min: 8.0, name: amount.worker.vcpu}  [template]` | template | job | StepHostRequirements |
+| host requirement attribute | [host_attribute](#host_attribute) | `~ steps[Render].hostRequirements.attributes[attr.worker.os.family]: {allOf: null, anyOf: [linux], name: attr.worker.os.family} -> {allOf: null, anyOf: [linux, windows], name: attr.worker.os.family}  [template]` | template | job | StepHostRequirements |
+| host requirement `amounts`, `attributes` order | [host_reordered](#host_reordered) | `~ steps[Render].hostRequirements.amounts.order: [amount.worker.vcpu, amount.worker.memory] -> [amount.worker.memory, amount.worker.vcpu]  [template]` | template | job | StepHostRequirements |
+| action `command` | [script_command](#script_command) | `~ steps[Render].script.onRun.command: render -> render2  [template]` | template | job | StepScript |
+| action `args` | [script_args](#script_args) | `~ steps[Render].script.onRun.args: [--fast] -> [--fast, --denoise]  [template]` | template | job | StepScript |
+| action `timeout` (FEATURE_BUNDLE_1) | [script_timeout](#script_timeout) | `~ steps[Render].script.onRun.timeout: 600 -> 1200  [template]` | template | job | StepScript |
+| action `cancelation` (FEATURE_BUNDLE_1) | [script_cancelation](#script_cancelation) | `~ steps[Render].script.onRun.cancelation: {mode: NOTIFY_THEN_TERMINATE, notifyPeriodInSeconds: 30} -> {mode: NOTIFY_THEN_TERMINATE, notifyPeriodInSeconds: 120}  [template]` | template | job | StepScript |
+| embedded file `data` | [embedded_file_data](#embedded_file_data) | `~ steps[Render].script.embeddedFiles[Run].data: render --fast -> render --denoise  [template]` | template | job | StepScript |
+| embedded file `filename` | [embedded_file_filename](#embedded_file_filename) | `~ steps[Render].script.embeddedFiles[Run].filename: run.sh -> render.sh  [template]` | template | job | StepScript |
+| embedded file `runnable` | [embedded_file_runnable](#embedded_file_runnable) | `+ steps[Render].script.embeddedFiles[Run].runnable: true  [template]` | template | job | StepScript |
+| `embeddedFiles` order | [embedded_file_reordered](#embedded_file_reordered) | `~ steps[Render].script.embeddedFiles.order: [Run, Config] -> [Config, Run]  [template]` | template | job | StepScript |
+| step script `let` (EXPR) | [let_script](#let_script) | `~ steps[Render].script.let: [quality = 'draft'] -> [quality = 'final']  [template]` | template | job | StepScript |
+| step `let` added, read by an arg (EXPR) | [let_step_used](#let_step_used) | `+ steps[Render].let: [mode = '--denoise']  [template]` | template | job, template | StepScript, StepSymbols |
+| step `let`, read by nothing (EXPR) | [let_step_unused](#let_step_unused) | `~ steps[Render].let: [unused = 1] -> [unused = 2]  [template]` | template | template | — |
+| step environment added | [step_env_added](#step_env_added) | `+ steps[Render].stepEnvironments[Cache]: {variables: {CACHE: /tmp/a}}  [template]` | template | job | EnvAdd |
+| step environment removed | [step_env_removed](#step_env_removed) | `- steps[Render].stepEnvironments[Cache]: {variables: {CACHE: /tmp/a}}  [template]` | template | job | EnvRemove |
+| step environment order | [step_env_reordered](#step_env_reordered) | `~ steps[Render].stepEnvironments.order: [Cache, License] -> [License, Cache]  [template]` | template | job | EnvReorder |
+| step environment `variables` | [step_env_changed](#step_env_changed) | `~ steps[Render].stepEnvironments[Cache].variables.CACHE: /tmp/a -> /tmp/b  [template]` | template | job | EnvVariables |
+| task range extended | [frames_extended](#frames_extended) | `~ steps[Render].parameterSpace.taskParameterDefinitions[Frame].definition: 1-10 -> 1-20  [template]` | template | job | TaskAppend |
+| task range shrunk | [frames_shrunk](#frames_shrunk) | `~ steps[Render].parameterSpace.taskParameterDefinitions[Frame].definition: 1-20 -> 1-10  [template]` | template | job | TaskRemove |
+| task range value added to one dimension | [eye_added](#eye_added) | `~ steps[Render].parameterSpace.taskParameterDefinitions[Eye].definition: [left] -> [left, right]  [template]` | template | job | TaskAppend |
+| task parameter added (new dimension) | [new_dimension](#new_dimension) | `+ steps[Render].parameterSpace.taskParameterDefinitions[Eye]: [left, right]  [template]` | template | job | TaskReplace |
+| task parameter added, and the arg that reads it | [new_dimension_with_arg](#new_dimension_with_arg) | `+ steps[Render].parameterSpace.taskParameterDefinitions[Eye]: [left]  [template]` | template | job, runTime | StepScript, TaskReplace |
+| `parameterSpace` added | [space_added](#space_added) | `+ steps[Render].parameterSpace: {Frame: 1-10}  [template]` | template | job | TaskReplace |
+| task range rewritten, same values | [range_rewritten](#range_rewritten) | `~ steps[Render].parameterSpace.taskParameterDefinitions[Frame].definition: range expression 1,2 -> list [1, 2]  [template]` | template | job | StepParameterSpace |
+| task parameter definition order | [dimension_reordered](#dimension_reordered) | `~ steps[Render].parameterSpace.taskParameterDefinitions.order: [Frame, Eye] -> [Eye, Frame]  [template]` | template | job | TaskReplace |
+| `combination` | [combination](#combination) | `~ steps[Render].parameterSpace.combination: Frame * Eye -> (Frame, Eye)  [template]` | template | job | TaskReplace |
+| chunking (CHUNK[INT]) | [chunk_size](#chunk_size) | `~ steps[Render].parameterSpace.taskParameterDefinitions[Frame].definition: 1-20 chunks of 5 -> 1-20 chunks of 10  [template]` | template | job | TaskReplace |
+| adaptive chunking | [chunk_adaptive](#chunk_adaptive) | `~ steps[Render].parameterSpace.taskParameterDefinitions[Frame].definition: 1-20 chunks of 5 -> 1-20 chunks of 5, target 300s  [template]` | template | job | TaskReplace |
+| `{{Task.Param.X}}` reference | [runtime_task_param](#runtime_task_param) | `~ steps[Render].script.onRun.args: [frame-{{Task.Param.Frame}}] -> [--frame, {{Task.Param.Frame}}]  [template]` | template | runTime | StepScript |
+| `{{Session.WorkingDirectory}}` reference | [runtime_session_dir](#runtime_session_dir) | `~ steps[Render].script.onRun.args: [{{Session.WorkingDirectory}}/out] -> [{{Session.WorkingDirectory}}/render]  [template]` | template | runTime | StepScript |
+| origin `both` | [origin_both](#origin_both) | `~ steps[Render].parameterSpace.taskParameterDefinitions[Frame].definition: 1-10 -> 1-20,50  [both]` | both, parameters | job, parameters | ParameterValue, TaskAppend |
 | origin `both`, with a note | [origin_mid_fails](#origin_mid_fails) | `+ parameter Quality: 3, defined as {type: INT}  [both]` | both, template | parameters, template | ParameterAdd |
 | built jobs (`--jobs`) | [jobs](#jobs) | `~ parameter Frames: 1-100 -> 1-200  [job]` | job | job, parameters | ParameterValue, TaskAppend |
-| `--step` | [step_filter](#step_filter) | `~ script.onRun.command: comp -> comp2  [template]` | template | job | StepScript |
+| `--step` | [step_filter](#step_filter) | `~ steps[Composite].script.onRun.command: comp -> comp2  [template]` | template | job | StepScript |
 | `--stat` | [stat](#stat) | `~ Render  tasks 100 -> 200  (+100 -0)` | template | job | TaskAppend |
 
 Not shown:
@@ -89,8 +103,7 @@ Not shown:
 | parameter, environment or embedded file `name` | Entries are matched by name, so a rename is a remove and an add, as `step_renamed` shows. |
 | `<collection>.duplicates` | Template validation rejects repeated names; only a hand-edited built job has them. |
 | an empty list versus none (`jobEnvironments: []`) | Template validation rejects an empty list, so only a hand-edited built job has one. |
-| `hostRequirements` `amounts.order`, `attributes.order`, `dependencies.order` | Shown like `steps.order`; they only reorder entries. |
-| embedded file `type`, `endOfLine`; environment `description`; other actions (`onExit`, `onWrap*`) | Shown like the fields above: one line per field, under the same path. |
+| embedded file `type`, `endOfLine`; other actions (`onExit`, `onWrap*`) | Shown like the fields above: one line per field, under the same path. |
 
 ## Job
 
@@ -316,7 +329,19 @@ crates/openjd-cli/examples/diff/param_type_v1.yaml -> crates/openjd-cli/examples
 ~ parameter definition Count.default: "5" -> 5  [template]
 ~ parameter definition Count.type: STRING -> INT  [template]
 ~ parameter Count.type: STRING -> INT  [template]
-~ parameter Count: {"String":"5"} -> {"Int":5}  [template]
+~ parameter Count: "5" (STRING) -> 5 (INT)  [template]
+
+0 steps changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
+### param_def_description
+
+The parameter description changes; the job does not.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/param_description_v1.yaml crates/openjd-cli/examples/diff/param_description_v2.yaml
+crates/openjd-cli/examples/diff/param_description_v1.yaml -> crates/openjd-cli/examples/diff/param_description_v2.yaml
+~ parameter definition Quality.description: first cut -> final  [template]
 
 0 steps changed. Tasks: 1 kept, 0 added, 0 removed.
 ```
@@ -326,7 +351,7 @@ crates/openjd-cli/examples/diff/param_type_v1.yaml -> crates/openjd-cli/examples
 The `Frames` default changes and no value is supplied, so the job changes and the template is the cause.
 
 ```console
-$ openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml crates/openjd-model/examples/template_diff/render_default_1_200.yaml -p Scene=/s
+$ openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml crates/openjd-model/examples/template_diff/render_default_1_200.yaml -p Scene=//srv/s
 crates/openjd-model/examples/template_diff/render_v1.yaml -> crates/openjd-model/examples/template_diff/render_default_1_200.yaml
 ~ parameter definition Frames.default: 1-100 -> 1-200  [template]
 ~ parameter Frames: 1-100 -> 1-200  [template]
@@ -344,7 +369,7 @@ crates/openjd-model/examples/template_diff/render_v1.yaml -> crates/openjd-model
 The same default change with `Frames` supplied on both sides: only the definition differs.
 
 ```console
-$ openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml crates/openjd-model/examples/template_diff/render_default_1_200.yaml -p Scene=/s -p Frames=1-100
+$ openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml crates/openjd-model/examples/template_diff/render_default_1_200.yaml -p Scene=//srv/s -p Frames=1-100
 crates/openjd-model/examples/template_diff/render_v1.yaml -> crates/openjd-model/examples/template_diff/render_default_1_200.yaml
 ~ parameter definition Frames.default: 1-100 -> 1-200  [template]
 
@@ -585,11 +610,11 @@ kinds: ParameterValue, TaskAppend
 A `PATH` parameter changes; the step sees it as `RawParam.Scene` in its resolved symbol table.
 
 ```console
-$ openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml --old-param Scene=/a --new-param Scene=/b
+$ openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml --old-param Scene=//srv/a --new-param Scene=//srv/b
 crates/openjd-model/examples/template_diff/render_v1.yaml: old parameters -> new parameters
-~ parameter Scene: /a -> /b  [parameters]
+~ parameter Scene: //srv/a -> //srv/b  [parameters]
 ~ step Render
-    ~ resolvedSymTab: RawParam.Scene=/a -> RawParam.Scene=/b  [parameters]
+    ~ resolvedSymTab: RawParam.Scene=//srv/a -> RawParam.Scene=//srv/b  [parameters]
     tasks: 100 unchanged
 
 1 step changed. Tasks: 100 kept, 0 added, 0 removed.
@@ -617,7 +642,7 @@ A job environment is added.
 ```console
 $ openjd diff crates/openjd-cli/examples/diff/env_added_v1.yaml crates/openjd-cli/examples/diff/env_added_v2.yaml
 crates/openjd-cli/examples/diff/env_added_v1.yaml -> crates/openjd-cli/examples/diff/env_added_v2.yaml
-+ jobEnvironments[Tools]: {description: null, name: Tools, resolvedSymTab: [], script: null, variables: {TOOL: v1}}  [template]
++ jobEnvironments[Tools]: {variables: {TOOL: v1}}  [template]
 
 0 steps changed. Tasks: 1 kept, 0 added, 0 removed.
 ```
@@ -629,7 +654,7 @@ The job environment is removed.
 ```console
 $ openjd diff crates/openjd-cli/examples/diff/env_added_v2.yaml crates/openjd-cli/examples/diff/env_added_v1.yaml
 crates/openjd-cli/examples/diff/env_added_v2.yaml -> crates/openjd-cli/examples/diff/env_added_v1.yaml
-- jobEnvironments[Tools]: {description: null, name: Tools, resolvedSymTab: [], script: null, variables: {TOOL: v1}}  [template]
+- jobEnvironments[Tools]: {variables: {TOOL: v1}}  [template]
 
 0 steps changed. Tasks: 1 kept, 0 added, 0 removed.
 ```
@@ -642,6 +667,30 @@ Two job environments swap places, which changes the order they are entered in.
 $ openjd diff crates/openjd-cli/examples/diff/env_order_v1.yaml crates/openjd-cli/examples/diff/env_order_v2.yaml
 crates/openjd-cli/examples/diff/env_order_v1.yaml -> crates/openjd-cli/examples/diff/env_order_v2.yaml
 ~ jobEnvironments.order: [Tools, License] -> [License, Tools]  [template]
+
+0 steps changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
+### env_description
+
+The job environment's description changes.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/env_description_v1.yaml crates/openjd-cli/examples/diff/env_description_v2.yaml
+crates/openjd-cli/examples/diff/env_description_v1.yaml -> crates/openjd-cli/examples/diff/env_description_v2.yaml
+~ jobEnvironments[Tools].description: first cut -> final  [template]
+
+0 steps changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
+### env_script_added
+
+A job environment gains a script.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/env_script_added_v1.yaml crates/openjd-cli/examples/diff/env_script_added_v2.yaml
+crates/openjd-cli/examples/diff/env_script_added_v1.yaml -> crates/openjd-cli/examples/diff/env_script_added_v2.yaml
++ jobEnvironments[Tools].script: {actions: {onEnter: {command: setup}}}  [template]
 
 0 steps changed. Tasks: 1 kept, 0 added, 0 removed.
 ```
@@ -778,6 +827,34 @@ crates/openjd-cli/examples/diff/step_dependencies_v1.yaml -> crates/openjd-cli/e
 1 step changed. Tasks: 2 kept, 0 added, 0 removed.
 ```
 
+### step_dependencies_reordered
+
+`Composite` lists the same two dependencies in the other order.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/dependencies_order_v1.yaml crates/openjd-cli/examples/diff/dependencies_order_v2.yaml
+crates/openjd-cli/examples/diff/dependencies_order_v1.yaml -> crates/openjd-cli/examples/diff/dependencies_order_v2.yaml
+~ step Composite
+    ~ dependencies.order: [{dependsOn: Prep}, {dependsOn: Render}] -> [{dependsOn: Render}, {dependsOn: Prep}]  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 3 kept, 0 added, 0 removed.
+```
+
+### host_added
+
+A step that had no host requirements gets one.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/host_added_v1.yaml crates/openjd-cli/examples/diff/host_added_v2.yaml
+crates/openjd-cli/examples/diff/host_added_v1.yaml -> crates/openjd-cli/examples/diff/host_added_v2.yaml
+~ step Render
+    + hostRequirements: {amounts: [{max: null, min: 4.0, name: amount.worker.vcpu}], attributes: null}  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
 ### host_amount
 
 The minimum vCPU count changes.
@@ -801,6 +878,21 @@ $ openjd diff crates/openjd-cli/examples/diff/host_attribute_v1.yaml crates/open
 crates/openjd-cli/examples/diff/host_attribute_v1.yaml -> crates/openjd-cli/examples/diff/host_attribute_v2.yaml
 ~ step Render
     ~ hostRequirements.attributes[attr.worker.os.family]: {allOf: null, anyOf: [linux], name: attr.worker.os.family} -> {allOf: null, anyOf: [linux, windows], name: attr.worker.os.family}  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
+### host_reordered
+
+The same amounts and attributes are listed in the other order.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/host_order_v1.yaml crates/openjd-cli/examples/diff/host_order_v2.yaml
+crates/openjd-cli/examples/diff/host_order_v1.yaml -> crates/openjd-cli/examples/diff/host_order_v2.yaml
+~ step Render
+    ~ hostRequirements.amounts.order: [amount.worker.vcpu, amount.worker.memory] -> [amount.worker.memory, amount.worker.vcpu]  [template]
+    ~ hostRequirements.attributes.order: [attr.worker.os.family, attr.worker.cpu.arch] -> [attr.worker.cpu.arch, attr.worker.os.family]  [template]
     tasks: 1 unchanged
 
 1 step changed. Tasks: 1 kept, 0 added, 0 removed.
@@ -904,6 +996,20 @@ crates/openjd-cli/examples/diff/file_runnable_v1.yaml -> crates/openjd-cli/examp
 1 step changed. Tasks: 1 kept, 0 added, 0 removed.
 ```
 
+### embedded_file_reordered
+
+The step's two embedded files swap places.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/file_order_v1.yaml crates/openjd-cli/examples/diff/file_order_v2.yaml
+crates/openjd-cli/examples/diff/file_order_v1.yaml -> crates/openjd-cli/examples/diff/file_order_v2.yaml
+~ step Render
+    ~ script.embeddedFiles.order: [Run, Config] -> [Config, Run]  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
 ### let_script
 
 The step script's `let` binding, which an argument reads, changes.
@@ -984,7 +1090,7 @@ $ openjd diff crates/openjd-cli/examples/diff/let_step_used_v1.yaml crates/openj
 crates/openjd-cli/examples/diff/let_step_used_v1.yaml -> crates/openjd-cli/examples/diff/let_step_used_v2.yaml
 ~ step Render
     + let: [mode = '--denoise']  [template]
-    ~ resolvedSymTab: [] -> mode=--denoise  [template]
+    ~ resolvedSymTab: (none) -> mode=--denoise  [template]
     ~ script.onRun.args: [--fast] -> [{{mode}}]  [template]
     tasks: 1 unchanged
 
@@ -996,7 +1102,7 @@ $ openjd diff crates/openjd-cli/examples/diff/let_step_used_v1.yaml crates/openj
 crates/openjd-cli/examples/diff/let_step_used_v1.yaml -> crates/openjd-cli/examples/diff/let_step_used_v2.yaml
 ~ step Render
     + let: [mode = '--denoise']  [template]
-    ~ resolvedSymTab: [] -> mode=--denoise  [template]
+    ~ resolvedSymTab: (none) -> mode=--denoise  [template]
     ~ script.onRun.args: [--fast] -> [{{mode}}]  [template]
     tasks: 1 unchanged
 
@@ -1035,7 +1141,7 @@ kinds: StepScript, StepSymbols
       "field": "resolvedSymTab",
       "before": {
         "raw": [],
-        "text": "[]"
+        "text": "(none)"
       },
       "after": {
         "raw": [
@@ -1109,7 +1215,35 @@ A step environment is added.
 $ openjd diff crates/openjd-cli/examples/diff/step_env_added_v1.yaml crates/openjd-cli/examples/diff/step_env_added_v2.yaml
 crates/openjd-cli/examples/diff/step_env_added_v1.yaml -> crates/openjd-cli/examples/diff/step_env_added_v2.yaml
 ~ step Render
-    + stepEnvironments[Cache]: {description: null, name: Cache, script: null, variables: {CACHE: /tmp/a}}  [template]
+    + stepEnvironments[Cache]: {variables: {CACHE: /tmp/a}}  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
+### step_env_removed
+
+The step environment is removed.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/step_env_added_v2.yaml crates/openjd-cli/examples/diff/step_env_added_v1.yaml
+crates/openjd-cli/examples/diff/step_env_added_v2.yaml -> crates/openjd-cli/examples/diff/step_env_added_v1.yaml
+~ step Render
+    - stepEnvironments[Cache]: {variables: {CACHE: /tmp/a}}  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
+### step_env_reordered
+
+Two step environments swap places.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/step_env_order_v1.yaml crates/openjd-cli/examples/diff/step_env_order_v2.yaml
+crates/openjd-cli/examples/diff/step_env_order_v1.yaml -> crates/openjd-cli/examples/diff/step_env_order_v2.yaml
+~ step Render
+    ~ stepEnvironments.order: [Cache, License] -> [License, Cache]  [template]
     tasks: 1 unchanged
 
 1 step changed. Tasks: 1 kept, 0 added, 0 removed.
@@ -1168,7 +1302,7 @@ crates/openjd-cli/examples/diff/frames_shrunk_v1.yaml -> crates/openjd-cli/examp
 `Eye` gains `right` in a `Frame × Eye` product: the old tasks are kept and the right eye is added.
 
 ```console
-$ openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml crates/openjd-model/examples/template_diff/render_v2.yaml -p Scene=/s
+$ openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml crates/openjd-model/examples/template_diff/render_v2.yaml -p Scene=//srv/s
 crates/openjd-model/examples/template_diff/render_v1.yaml -> crates/openjd-model/examples/template_diff/render_v2.yaml
 ~ step Render
     ~ Eye: [left] -> [left, right]  [template]
@@ -1180,7 +1314,7 @@ crates/openjd-model/examples/template_diff/render_v1.yaml -> crates/openjd-model
 ```
 
 ```console
-$ openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml crates/openjd-model/examples/template_diff/render_v2.yaml -p Scene=/s --plan
+$ openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml crates/openjd-model/examples/template_diff/render_v2.yaml -p Scene=//srv/s --plan
 crates/openjd-model/examples/template_diff/render_v1.yaml -> crates/openjd-model/examples/template_diff/render_v2.yaml
 ~ step Render
     ~ Eye: [left] -> [left, right]  [template]
@@ -1195,7 +1329,7 @@ apply plan:
 kinds: TaskAppend
 ```
 
-`openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml crates/openjd-model/examples/template_diff/render_v2.yaml -p Scene=/s --output json`:
+`openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml crates/openjd-model/examples/template_diff/render_v2.yaml -p Scene=//srv/s --output json`:
 
 ```json
 {
@@ -1277,36 +1411,33 @@ kinds: TaskAppend
 
 ### new_dimension
 
-A step gains an `Eye` dimension, so every task is replaced.
+A step gains an `Eye` dimension that no argument reads, so only the tasks change: every task is replaced.
 
 ```console
-$ openjd diff crates/openjd-model/examples/template_diff/render_no_eye.yaml crates/openjd-model/examples/template_diff/render_v1.yaml -p Scene=/s
-crates/openjd-model/examples/template_diff/render_no_eye.yaml -> crates/openjd-model/examples/template_diff/render_v1.yaml
+$ openjd diff crates/openjd-cli/examples/diff/new_dimension_v1.yaml crates/openjd-cli/examples/diff/new_dimension_v2.yaml
+crates/openjd-cli/examples/diff/new_dimension_v1.yaml -> crates/openjd-cli/examples/diff/new_dimension_v2.yaml
 ~ step Render
-    + Eye: [left]  [template]
-    ~ script.onRun.args: [{{Param.Scene}}, {{Task.Param.Frame}}] -> [{{Param.Scene}}, {{Task.Param.Frame}}, {{Task.Param.Eye}}]  [template]
-    tasks: 100 -> 100, all replaced (task parameter added or removed)
+    + Eye: [left, right]  [template]
+    tasks: 10 -> 20, all replaced (task parameter added or removed)
 
-1 step changed. Tasks: 0 kept, 0 added, 0 removed, 100 replaced.
+1 step changed. Tasks: 0 kept, 0 added, 0 removed, 20 replaced.
 ```
 
 ```console
-$ openjd diff crates/openjd-model/examples/template_diff/render_no_eye.yaml crates/openjd-model/examples/template_diff/render_v1.yaml -p Scene=/s --plan
-crates/openjd-model/examples/template_diff/render_no_eye.yaml -> crates/openjd-model/examples/template_diff/render_v1.yaml
+$ openjd diff crates/openjd-cli/examples/diff/new_dimension_v1.yaml crates/openjd-cli/examples/diff/new_dimension_v2.yaml --plan
+crates/openjd-cli/examples/diff/new_dimension_v1.yaml -> crates/openjd-cli/examples/diff/new_dimension_v2.yaml
 ~ step Render
-    + Eye: [left]  [template]
-    ~ script.onRun.args: [{{Param.Scene}}, {{Task.Param.Frame}}] -> [{{Param.Scene}}, {{Task.Param.Frame}}, {{Task.Param.Eye}}]  [template]
-    tasks: 100 -> 100, all replaced (task parameter added or removed)
+    + Eye: [left, right]  [template]
+    tasks: 10 -> 20, all replaced (task parameter added or removed)
 
-1 step changed. Tasks: 0 kept, 0 added, 0 removed, 100 replaced.
+1 step changed. Tasks: 0 kept, 0 added, 0 removed, 20 replaced.
 
 apply plan:
-  1. step modify Render  [StepScript]
-  2. tasks of Render: replace all  [TaskReplace]
-kinds: StepScript, TaskReplace
+  1. tasks of Render: replace all  [TaskReplace]
+kinds: TaskReplace
 ```
 
-`openjd diff crates/openjd-model/examples/template_diff/render_no_eye.yaml crates/openjd-model/examples/template_diff/render_v1.yaml -p Scene=/s --output json`:
+`openjd diff crates/openjd-cli/examples/diff/new_dimension_v1.yaml crates/openjd-cli/examples/diff/new_dimension_v2.yaml --output json`:
 
 ```json
 {
@@ -1322,37 +1453,15 @@ kinds: StepScript, TaskReplace
         "raw": {
           "string": {
             "range": [
-              "left"
+              "left",
+              "right"
             ]
           }
         },
-        "text": "[left]"
+        "text": "[left, right]"
       },
       "origin": "template",
       "stage": "job"
-    },
-    {
-      "layer": "job",
-      "path": "steps[Render].script.onRun",
-      "step": "Render",
-      "field": "args",
-      "before": {
-        "raw": [
-          "{{Param.Scene}}",
-          "{{Task.Param.Frame}}"
-        ],
-        "text": "[{{Param.Scene}}, {{Task.Param.Frame}}]"
-      },
-      "after": {
-        "raw": [
-          "{{Param.Scene}}",
-          "{{Task.Param.Frame}}",
-          "{{Task.Param.Eye}}"
-        ],
-        "text": "[{{Param.Scene}}, {{Task.Param.Frame}}, {{Task.Param.Eye}}]"
-      },
-      "origin": "template",
-      "stage": "runTime"
     }
   ],
   "steps": [
@@ -1363,14 +1472,58 @@ kinds: StepScript, TaskReplace
       "newIndex": 0,
       "tasks": {
         "kind": "replaced",
-        "oldCount": 100,
-        "newCount": 100,
+        "oldCount": 10,
+        "newCount": 20,
         "reason": "task parameter added or removed"
       }
     }
   ],
   "notes": []
 }
+```
+
+### new_dimension_with_arg
+
+A step gains an `Eye` dimension and an argument that reads it, so the script changes too.
+
+```console
+$ openjd diff crates/openjd-model/examples/template_diff/render_no_eye.yaml crates/openjd-model/examples/template_diff/render_v1.yaml -p Scene=//srv/s
+crates/openjd-model/examples/template_diff/render_no_eye.yaml -> crates/openjd-model/examples/template_diff/render_v1.yaml
+~ step Render
+    + Eye: [left]  [template]
+    ~ script.onRun.args: [{{Param.Scene}}, {{Task.Param.Frame}}] -> [{{Param.Scene}}, {{Task.Param.Frame}}, {{Task.Param.Eye}}]  [template]
+    tasks: 100 -> 100, all replaced (task parameter added or removed)
+
+1 step changed. Tasks: 0 kept, 0 added, 0 removed, 100 replaced.
+```
+
+### space_added
+
+A step with one task gets a parameter space, so its task is replaced.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/space_added_v1.yaml crates/openjd-cli/examples/diff/space_added_v2.yaml
+crates/openjd-cli/examples/diff/space_added_v1.yaml -> crates/openjd-cli/examples/diff/space_added_v2.yaml
+~ step Render
+    + parameterSpace: {Frame: 1-10}  [template]
+    tasks: 1 -> 10, all replaced (parameter space added or removed)
+
+1 step changed. Tasks: 0 kept, 0 added, 0 removed, 10 replaced.
+```
+
+### range_rewritten
+
+The range `"1-2"` is written as the list `[1, 2]`: the tasks are the same, and the parameter space is rewritten in place.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/range_rewritten_v1.yaml crates/openjd-cli/examples/diff/range_rewritten_v2.yaml
+crates/openjd-cli/examples/diff/range_rewritten_v1.yaml -> crates/openjd-cli/examples/diff/range_rewritten_v2.yaml
+~ step Render
+    ~ Frame: range expression 1,2 -> list [1, 2]  [template]
+    tasks: 2 -> 2
+      keep 2     Frame 1,2
+
+1 step changed. Tasks: 2 kept, 0 added, 0 removed.
 ```
 
 ### dimension_reordered
@@ -1530,7 +1683,7 @@ crates/openjd-cli/examples/diff/two_steps_v1.yaml -> crates/openjd-cli/examples/
 The `eye_added` case, one line per step.
 
 ```console
-$ openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml crates/openjd-model/examples/template_diff/render_v2.yaml -p Scene=/s --stat
+$ openjd diff crates/openjd-model/examples/template_diff/render_v1.yaml crates/openjd-model/examples/template_diff/render_v2.yaml -p Scene=//srv/s --stat
 crates/openjd-model/examples/template_diff/render_v1.yaml -> crates/openjd-model/examples/template_diff/render_v2.yaml
 ~ Render  tasks 100 -> 200  (+100 -0)
 1 step changed. Tasks: 100 kept, 100 added, 0 removed.

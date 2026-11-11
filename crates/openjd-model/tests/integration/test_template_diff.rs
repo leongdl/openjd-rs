@@ -313,7 +313,7 @@ fn parameter_definition_changes_are_compared_field_by_field() {
 - parameter Gone: g, defined as {default: g, type: STRING}  [template]
 + parameter New: n, defined as {default: n, type: STRING}  [template]
 ~ parameter T.type: STRING -> INT  [template]
-~ parameter T: {"String":"3"} -> {"Int":3}  [template]
+~ parameter T: "3" (STRING) -> 3 (INT)  [template]
 
 0 steps changed. Tasks: 1 kept, 0 added, 0 removed."#
     );
@@ -854,12 +854,12 @@ fn whole_action_added_or_removed_carries_its_side() {
     let d = diff_templates(&text(ENV_JOB), &text(&new), &opts()).unwrap();
     assert_eq!(
         lines(&d.changes),
-        ["+ jobEnvironments[E].script.onExit: {args: null, cancelation: null, command: bye, timeout: null}  [template]"]
+        ["+ jobEnvironments[E].script.onExit: {command: bye}  [template]"]
     );
     let d = diff_templates(&text(&new), &text(ENV_JOB), &opts()).unwrap();
     assert_eq!(
         lines(&d.changes),
-        ["- jobEnvironments[E].script.onExit: {args: null, cancelation: null, command: bye, timeout: null}  [template]"]
+        ["- jobEnvironments[E].script.onExit: {command: bye}  [template]"]
     );
     // `onRun` cut off by the depth limit is reported whole, with both sides.
     let d = diff_templates(
@@ -1834,7 +1834,7 @@ const REORDER_TEXTS: [&str; 3] = [
     // the first difference.
     "…kParameterDefinitions\":[{\"definition\":{\"int\":{\"chunks\":null,\"range\":{\"rangeExpr\":{\"cumulative_lengths\":[3],\"length\":3,… | …kParameterDefinitions\":[{\"definition\":{\"string\":{\"range\":[\"p\",\"q\"]}},\"name\":\"Y\"},{\"definition\":{\"int\":{\"chunks\":null,\"…",
     "…kParameterDefinitions\":[{\"definition\":{\"int\":{\"chunks\":null,\"range\":{\"rangeExpr\":{\"cumulative_lengths\":[3],\"length\":3,… | …kParameterDefinitions\":[{\"definition\":{\"string\":{\"range\":[\"p\",\"q\"]}},\"name\":\"Y\"},{\"definition\":{\"int\":{\"chunks\":null,\"…",
-    "{combination: null, taskParameterDefinitions: [{definition: {int: {chunks: null, range: {rangeExpr: {cumulative_lengths… | {combination: null, taskParameterDefinitions: [{definition: {string: {range: [p, q]}}, name: Y}, {definition: {int: {ch…",
+    "{X: 1-3, Y: [p, q]} | {Y: [p, q], X: 1-3}",
 ];
 
 #[test]
@@ -2942,5 +2942,184 @@ fn a_text_source_joins_relative_path_defaults_to_the_cwd_override() {
     assert_eq!(
         job.parameters["P"].value.to_display_string(),
         elsewhere.join("rel").to_str().unwrap()
+    );
+}
+
+// ─── diff gallery audit round 1: rendering ──────────────────────────
+
+/// One step whose only task parameter is `def`.
+fn one_param_job(def: &str) -> String {
+    format!(
+        "\
+specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: S
+    parameterSpace:
+      taskParameterDefinitions:
+        - {def}
+    script: {{actions: {{onRun: {{command: a, args: [\"{{{{Task.Param.P}}}}\"]}}}}}}
+"
+    )
+}
+
+#[test]
+fn a_range_rewritten_with_the_same_values_shows_how_each_side_is_written() {
+    let d = diff_templates(
+        &text(&one_param_job(r#"{name: P, type: INT, range: "1-2"}"#)),
+        &text(&one_param_job("{name: P, type: INT, range: [1, 2]}")),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
+~ step S
+    ~ P: range expression 1,2 -> list [1, 2]  [template]
+    tasks: 2 -> 2
+      keep 2     P 1,2
+
+1 step changed. Tasks: 2 kept, 0 added, 0 removed."
+    );
+    assert_eq!(
+        d.plan().unwrap().kinds(),
+        std::collections::BTreeSet::from([MutationKind::StepParameterSpace])
+    );
+}
+
+#[test]
+fn a_task_parameter_whose_type_changes_but_renders_alike_shows_its_type() {
+    let d = diff_templates(
+        &text(&one_param_job("{name: P, type: FLOAT, range: [1.5, 2.5]}")),
+        &text(&one_param_job(
+            r#"{name: P, type: STRING, range: ["1.5", "2.5"]}"#,
+        )),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        lines(&d.changes),
+        ["~ steps[S].parameterSpace.taskParameterDefinitions[P].definition: FLOAT [1.5, 2.5] -> STRING [1.5, 2.5]  [template]"]
+    );
+}
+
+#[test]
+fn a_parameter_value_whose_type_changes_shows_both_types() {
+    let job = |def: &str| {
+        format!(
+            "\
+specificationVersion: jobtemplate-2023-09
+name: J
+parameterDefinitions:
+  - {def}
+steps:
+  - name: S
+    script: {{actions: {{onRun: {{command: a}}}}}}
+"
+        )
+    };
+    let d = diff_templates(
+        &text(&job("{name: P, type: STRING, default: abc}")),
+        &text(&job("{name: P, type: INT, default: 7}")),
+        &opts(),
+    )
+    .unwrap();
+    let value = d
+        .changes
+        .iter()
+        .find(|c| c.path == "parameters[P]" && c.field == "value")
+        .unwrap();
+    assert_eq!(
+        value.to_string(),
+        r#"~ parameters[P].value: "abc" (STRING) -> 7 (INT)  [template]"#
+    );
+}
+
+#[test]
+fn environment_dumps_leave_out_nulls_the_name_and_an_empty_symbol_table() {
+    let old = "\
+specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: S
+    script: {actions: {onRun: {command: a}}}
+";
+    let new = "\
+specificationVersion: jobtemplate-2023-09
+name: J
+jobEnvironments:
+  - name: Tools
+    variables: {TOOL: v1}
+steps:
+  - name: S
+    stepEnvironments:
+      - name: Cache
+        description: scratch space
+        script: {actions: {onEnter: {command: mk}}}
+    script: {actions: {onRun: {command: a}}}
+";
+    let d = diff_templates(&text(old), &text(new), &opts()).unwrap();
+    assert_eq!(
+        d.to_string(),
+        "\
++ jobEnvironments[Tools]: {variables: {TOOL: v1}}  [template]
+~ step S
+    + stepEnvironments[Cache]: {description: scratch space, script: {actions: {onEnter: {command: mk}}}}  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed."
+    );
+}
+
+#[test]
+fn an_empty_symbol_table_is_shown_as_none() {
+    let old = "\
+specificationVersion: jobtemplate-2023-09
+name: J
+extensions: [EXPR]
+steps:
+  - name: S
+    script: {actions: {onRun: {command: a}}}
+";
+    let new = old
+        .replace("  - name: S\n", "  - name: S\n    let: [\"m = 'x'\"]\n")
+        .replace("command: a}", "command: a, args: [\"{{m}}\"]}");
+    let d = diff_templates(&text(old), &text(&new), &opts()).unwrap();
+    let symtab = d
+        .changes
+        .iter()
+        .find(|c| c.field == "resolvedSymTab")
+        .unwrap();
+    assert_eq!(
+        symtab.to_string(),
+        "~ steps[S].resolvedSymTab: (none) -> m=x  [template]"
+    );
+}
+
+#[test]
+fn a_whole_parameter_space_shows_each_range_and_the_combination() {
+    let old = "\
+specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: S
+    script: {actions: {onRun: {command: a}}}
+";
+    let new = "\
+specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: S
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: F, type: INT, range: \"1-3\"}
+        - {name: E, type: STRING, range: [l, r, c]}
+      combination: \"(F, E)\"
+    script: {actions: {onRun: {command: a}}}
+";
+    let d = diff_templates(&text(old), &text(new), &opts()).unwrap();
+    assert_eq!(
+        lines(&d.changes),
+        ["+ steps[S].parameterSpace: {F: 1-3, E: [l, r, c]}, combination (F, E)  [template]"]
     );
 }

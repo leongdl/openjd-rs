@@ -100,7 +100,7 @@ Runtime library. Depends on openjd-model and openjd-expr. Provides:
 
 ### openjd-cli
 Binary crate. Depends on all three libraries.
-Commands: `check` (validate templates), `summary` (job/step summary), `run` (execute jobs locally), `build` (print the built job), `diff` (diff two templates, parameter sets, or built jobs).
+Commands: `check` (validate templates), `summary` (job/step summary), `run` (execute jobs locally), `build` (print the built job; unstable), `diff` (diff two templates, parameter sets, or built jobs; unstable).
 
 ## Key Design Decisions
 

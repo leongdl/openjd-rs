@@ -30,12 +30,12 @@ const EXAMPLES: &str = "\
 Examples, from the openjd-rs repository root with E=crates/openjd-cli/examples/diff
 and M=crates/openjd-model/examples/template_diff:
   openjd diff $E/frames.yaml --old-param Frames=1-100 --new-param Frames=1-200
-  openjd diff $M/render_v1.yaml $M/render_v2.yaml -p Scene=/s
+  openjd diff $M/render_v1.yaml $M/render_v2.yaml -p Scene=//srv/s
   openjd diff $E/let_script_v1.yaml $E/let_script_v2.yaml
   openjd diff $E/extensions_v1.yaml $E/extensions_v2.yaml --plan
   openjd build $E/frames.yaml -p Frames=1-100 > old.json
   openjd diff --jobs old.json $E/frames_1_200.json --plan
-  openjd diff $M/render_v1.yaml $M/render_v2.yaml -p Scene=/s --stat
+  openjd diff $M/render_v1.yaml $M/render_v2.yaml -p Scene=//srv/s --stat
   openjd diff old.yaml - --output json --exit-code < new.yaml
 
 Every field the diff reports, with its output: specs/cli/diff-examples.md";

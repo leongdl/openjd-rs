@@ -479,17 +479,17 @@ fn ignore_symbols_hides_resolved_symbol_tables() {
         "diff",
         "render_v1.yaml",
         "--old-param",
-        "Scene=/a",
+        "Scene=//srv/a",
         "--new-param",
-        "Scene=/b",
+        "Scene=//srv/b",
     ];
     assert_ok(
         &openjd(&args, None),
         "\
 render_v1.yaml: old parameters -> new parameters
-~ parameter Scene: /a -> /b  [parameters]
+~ parameter Scene: //srv/a -> //srv/b  [parameters]
 ~ step Render
-    ~ resolvedSymTab: RawParam.Scene=/a -> RawParam.Scene=/b  [parameters]
+    ~ resolvedSymTab: RawParam.Scene=//srv/a -> RawParam.Scene=//srv/b  [parameters]
     tasks: 100 unchanged
 
 1 step changed. Tasks: 100 kept, 0 added, 0 removed.
@@ -499,7 +499,7 @@ render_v1.yaml: old parameters -> new parameters
         &openjd(&with(&args, &["--ignore-symbols"]), None),
         "\
 render_v1.yaml: old parameters -> new parameters
-~ parameter Scene: /a -> /b  [parameters]
+~ parameter Scene: //srv/a -> //srv/b  [parameters]
 
 0 steps changed. Tasks: 100 kept, 0 added, 0 removed.
 ",
@@ -513,9 +513,9 @@ fn verbose_human_output_appends_the_job_diff_tree() {
             "diff",
             "render_v1.yaml",
             "--old-param",
-            "Scene=/a",
+            "Scene=//srv/a",
             "--new-param",
-            "Scene=/b",
+            "Scene=//srv/b",
             "--verbose",
         ],
         None,
@@ -523,9 +523,9 @@ fn verbose_human_output_appends_the_job_diff_tree() {
     assert_ok(
         &o,
         r#"render_v1.yaml: old parameters -> new parameters
-~ parameter Scene: /a -> /b  [parameters]
+~ parameter Scene: //srv/a -> //srv/b  [parameters]
 ~ step Render
-    ~ resolvedSymTab: RawParam.Scene=/a -> RawParam.Scene=/b  [parameters]
+    ~ resolvedSymTab: RawParam.Scene=//srv/a -> RawParam.Scene=//srv/b  [parameters]
     tasks: 100 unchanged
 
 1 step changed. Tasks: 100 kept, 0 added, 0 removed.
@@ -533,9 +533,9 @@ fn verbose_human_output_appends_the_job_diff_tree() {
 job diff tree:
 ~ <root>
   ~ parameters[Scene]
-      value: {"String":"/a"} -> {"String":"/b"}
+      value: {"String":"//srv/a"} -> {"String":"//srv/b"}
   ~ steps[Render]
-      resolvedSymTab: [{"name":"RawParam.Scene","type":"string","value":"/a"}] -> [{"name":"RawParam.Scene","type":"string","value":"/b"}]
+      resolvedSymTab: [{"name":"RawParam.Scene","type":"string","value":"//srv/a"}] -> [{"name":"RawParam.Scene","type":"string","value":"//srv/b"}]
 "#,
     );
     let o = openjd(
