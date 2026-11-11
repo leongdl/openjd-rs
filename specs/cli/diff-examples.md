@@ -38,6 +38,7 @@ changes, and `plan kinds` the mutation kinds of `--plan`.
 | parameter `userInterface` | [param_def_user_interface](#param_def_user_interface) | `~ parameter definition Quality.userInterface.label: Quality -> Render quality  [template]` | template | template | — |
 | parameter `objectType`, `dataFlow` | [param_def_path_kind](#param_def_path_kind) | `~ parameter definition Output.objectType: FILE -> DIRECTORY  [template]` | template | template | — |
 | parameter `item.*` (LIST) | [param_def_list_item](#param_def_list_item) | `~ parameter definition Layers.item.allowedValues: [beauty, depth] -> [beauty, depth, normal]  [template]` | template | template | — |
+| parameter `item.item.*` (LIST[LIST[INT]]) | [param_def_list_list_item](#param_def_list_list_item) | `~ parameter definition Tiles.item.item.maxValue: 8 -> 16  [template]` | template | template | — |
 | parameter value | [param_value](#param_value) | `~ parameter Frames: 1-100 -> 1-200  [parameters]` | parameters | job, parameters | ParameterValue, TaskAppend |
 | `PATH` parameter value | [param_value_path](#param_value_path) | `~ steps[Render].resolvedSymTab: RawParam.Scene=//srv/a -> RawParam.Scene=//srv/b  [parameters]` | parameters | job, parameters | ParameterValue, StepSymbols |
 | parameter read by a job environment | [param_value_env](#param_value_env) | `~ jobEnvironments[Tools].resolvedSymTab: Param.Tool=v1 -> Param.Tool=v2  [parameters]` | parameters | job, parameters | EnvSymbols, ParameterValue |
@@ -61,6 +62,7 @@ changes, and `plan kinds` the mutation kinds of `--plan`.
 | host requirement amount | [host_amount](#host_amount) | `~ steps[Render].hostRequirements.amounts[amount.worker.vcpu]: {min: 4} -> {min: 8}  [template]` | template | job | StepHostRequirements |
 | host requirement attribute | [host_attribute](#host_attribute) | `~ steps[Render].hostRequirements.attributes[attr.worker.os.family]: {anyOf: [linux]} -> {anyOf: [linux, windows]}  [template]` | template | job | StepHostRequirements |
 | host requirement `amounts`, `attributes` order | [host_reordered](#host_reordered) | `~ steps[Render].hostRequirements.amounts.order: [amount.worker.vcpu, amount.worker.memory] -> [amount.worker.memory, amount.worker.vcpu]  [template]` | template | job | StepHostRequirements |
+| host requirement `amounts: []` added | [host_amounts_empty](#host_amounts_empty) | `+ steps[Render].hostRequirements.amounts: []  [template]` | template | job | StepHostRequirements |
 | action `command` | [script_command](#script_command) | `~ steps[Render].script.onRun.command: render -> render2  [template]` | template | job | StepScript |
 | action `args` | [script_args](#script_args) | `~ steps[Render].script.onRun.args: [--fast] -> [--fast, --denoise]  [template]` | template | job | StepScript |
 | action `timeout` (FEATURE_BUNDLE_1) | [script_timeout](#script_timeout) | `~ steps[Render].script.onRun.timeout: 600 -> 1200  [template]` | template | job | StepScript |
@@ -69,6 +71,8 @@ changes, and `plan kinds` the mutation kinds of `--plan`.
 | embedded file `filename` | [embedded_file_filename](#embedded_file_filename) | `~ steps[Render].script.embeddedFiles[Run].filename: run.sh -> render.sh  [template]` | template | job | StepScript |
 | embedded file `runnable` | [embedded_file_runnable](#embedded_file_runnable) | `+ steps[Render].script.embeddedFiles[Run].runnable: true  [template]` | template | job | StepScript |
 | `embeddedFiles` order | [embedded_file_reordered](#embedded_file_reordered) | `~ steps[Render].script.embeddedFiles.order: [Run, Config] -> [Config, Run]  [template]` | template | job | StepScript |
+| embedded file added | [embedded_file_added](#embedded_file_added) | `+ steps[Render].script.embeddedFiles[Notes]: {data: fast preview, fileType: TEXT}  [template]` | template | job | StepScript |
+| embedded file removed | [embedded_file_removed](#embedded_file_removed) | `- steps[Render].script.embeddedFiles[Notes]: {data: fast preview, fileType: TEXT}  [template]` | template | job | StepScript |
 | step script `let` (EXPR) | [let_script](#let_script) | `~ steps[Render].script.let: [quality = 'draft'] -> [quality = 'final']  [template]` | template | job | StepScript |
 | step `let` added, read by an arg (EXPR) | [let_step_used](#let_step_used) | `+ steps[Render].let: [mode = '--denoise']  [template]` | template | job, template | StepScript, StepSymbols |
 | step `let`, read by nothing (EXPR) | [let_step_unused](#let_step_unused) | `~ steps[Render].let: [unused = 1] -> [unused = 2]  [template]` | template | template | — |
@@ -83,6 +87,7 @@ changes, and `plan kinds` the mutation kinds of `--plan`.
 | task parameter added, and the arg that reads it | [new_dimension_with_arg](#new_dimension_with_arg) | `+ steps[Render].parameterSpace.taskParameterDefinitions[Eye]: [left]  [template]` | template | job, runTime | StepScript, TaskReplace |
 | `parameterSpace` added | [space_added](#space_added) | `+ steps[Render].parameterSpace: {Frame: 1-10}  [template]` | template | job | TaskReplace |
 | task range rewritten, same values | [range_rewritten](#range_rewritten) | `~ steps[Render].parameterSpace.taskParameterDefinitions[Frame].definition: range expression 1,2 -> list [1, 2]  [template]` | template | job | StepParameterSpace |
+| task range rewritten, parameter space not expanded | [range_rewritten_depth_2](#range_rewritten_depth_2) | `~ steps[Render].parameterSpace: {Frame: range expression 1,2} -> {Frame: list [1, 2]}  [template]` | template | job | StepParameterSpace |
 | task parameter definition order | [dimension_reordered](#dimension_reordered) | `~ steps[Render].parameterSpace.taskParameterDefinitions.order: [Frame, Eye] -> [Eye, Frame]  [template]` | template | job | TaskReplace |
 | `combination` | [combination](#combination) | `~ steps[Render].parameterSpace.combination: Frame * Eye -> (Frame, Eye)  [template]` | template | job | TaskReplace |
 | chunking (CHUNK[INT]) | [chunk_size](#chunk_size) | `~ steps[Render].parameterSpace.taskParameterDefinitions[Frame].definition: 1-20 chunks of 5 -> 1-20 chunks of 10  [template]` | template | job | TaskReplace |
@@ -101,8 +106,8 @@ Not shown:
 |---|---|
 | `specificationVersion` | `jobtemplate-2023-09` is the only job template version, so it cannot change. |
 | parameter, environment or embedded file `name` | Entries are matched by name, so a rename is a remove and an add, as `step_renamed` shows. |
-| `<collection>.duplicates` | Template validation rejects repeated names; only a hand-edited built job has them. |
-| an empty list versus none (`jobEnvironments: []`) | Template validation rejects an empty list, so only a hand-edited built job has one. |
+| `<collection>.duplicates` | Template validation rejects repeated names; only a hand-edited built job has them, and `--plan` rejects them. |
+| an empty list versus none, other than `hostRequirements.amounts` and `attributes` | Template validation rejects an empty `parameterDefinitions`, `jobEnvironments`, `stepEnvironments`, `dependencies`, `taskParameterDefinitions`, `embeddedFiles` or `args`, so only a hand-edited built job has one. An empty `amounts` or `attributes` is accepted beside the other, as `host_amounts_empty` shows. |
 | embedded file `type` | `TEXT` is the only embedded file type, so it cannot change. |
 | embedded file `endOfLine`; other actions (`onExit`, `onWrap*`) | Shown like the fields above: one line per field, under the same path. |
 
@@ -448,6 +453,18 @@ A `LIST[STRING]` parameter allows one more item value.
 $ openjd diff crates/openjd-cli/examples/diff/list_item_v1.yaml crates/openjd-cli/examples/diff/list_item_v2.yaml
 crates/openjd-cli/examples/diff/list_item_v1.yaml -> crates/openjd-cli/examples/diff/list_item_v2.yaml
 ~ parameter definition Layers.item.allowedValues: [beauty, depth] -> [beauty, depth, normal]  [template]
+
+0 steps changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
+### param_def_list_list_item
+
+The inner lists of a `LIST[LIST[INT]]` parameter allow larger values.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/list_list_item_v1.yaml crates/openjd-cli/examples/diff/list_list_item_v2.yaml
+crates/openjd-cli/examples/diff/list_list_item_v1.yaml -> crates/openjd-cli/examples/diff/list_list_item_v2.yaml
+~ parameter definition Tiles.item.item.maxValue: 8 -> 16  [template]
 
 0 steps changed. Tasks: 1 kept, 0 added, 0 removed.
 ```
@@ -898,6 +915,20 @@ crates/openjd-cli/examples/diff/host_order_v1.yaml -> crates/openjd-cli/examples
 1 step changed. Tasks: 1 kept, 0 added, 0 removed.
 ```
 
+### host_amounts_empty
+
+An empty `amounts` list is added beside the attributes, which template validation accepts.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/host_amounts_empty_v1.yaml crates/openjd-cli/examples/diff/host_amounts_empty_v2.yaml
+crates/openjd-cli/examples/diff/host_amounts_empty_v1.yaml -> crates/openjd-cli/examples/diff/host_amounts_empty_v2.yaml
+~ step Render
+    + hostRequirements.amounts: []  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
 ### script_command
 
 The step's `onRun` command changes.
@@ -1005,6 +1036,34 @@ $ openjd diff crates/openjd-cli/examples/diff/file_order_v1.yaml crates/openjd-c
 crates/openjd-cli/examples/diff/file_order_v1.yaml -> crates/openjd-cli/examples/diff/file_order_v2.yaml
 ~ step Render
     ~ script.embeddedFiles.order: [Run, Config] -> [Config, Run]  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
+### embedded_file_added
+
+The step gains a second embedded file.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/file_added_v1.yaml crates/openjd-cli/examples/diff/file_added_v2.yaml
+crates/openjd-cli/examples/diff/file_added_v1.yaml -> crates/openjd-cli/examples/diff/file_added_v2.yaml
+~ step Render
+    + script.embeddedFiles[Notes]: {data: fast preview, fileType: TEXT}  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
+### embedded_file_removed
+
+The second embedded file is removed again.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/file_added_v2.yaml crates/openjd-cli/examples/diff/file_added_v1.yaml
+crates/openjd-cli/examples/diff/file_added_v2.yaml -> crates/openjd-cli/examples/diff/file_added_v1.yaml
+~ step Render
+    - script.embeddedFiles[Notes]: {data: fast preview, fileType: TEXT}  [template]
     tasks: 1 unchanged
 
 1 step changed. Tasks: 1 kept, 0 added, 0 removed.
@@ -1520,6 +1579,20 @@ $ openjd diff crates/openjd-cli/examples/diff/range_rewritten_v1.yaml crates/ope
 crates/openjd-cli/examples/diff/range_rewritten_v1.yaml -> crates/openjd-cli/examples/diff/range_rewritten_v2.yaml
 ~ step Render
     ~ Frame: range expression 1,2 -> list [1, 2]  [template]
+    tasks: 2 unchanged
+
+1 step changed. Tasks: 2 kept, 0 added, 0 removed.
+```
+
+### range_rewritten_depth_2
+
+The `range_rewritten` case with `--depth 2`: the parameter space is shown whole, and each definition in it as it is written.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/range_rewritten_v1.yaml crates/openjd-cli/examples/diff/range_rewritten_v2.yaml --depth 2
+crates/openjd-cli/examples/diff/range_rewritten_v1.yaml -> crates/openjd-cli/examples/diff/range_rewritten_v2.yaml
+~ step Render
+    ~ parameterSpace: {Frame: range expression 1,2} -> {Frame: list [1, 2]}  [template]
     tasks: 2 unchanged
 
 1 step changed. Tasks: 2 kept, 0 added, 0 removed.

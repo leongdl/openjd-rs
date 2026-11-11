@@ -324,7 +324,9 @@ layer](#the-job-layer)). `Shown::text` is for people:
   (PATH)`;
 - a symbol table is `name=value` pairs, and an empty one is `(none)`;
 - a whole parameter space is each task parameter's range in definition order, then the
-  `combination` when one is set: `{Frame: 1-10, Eye: [left, right]}, combination (Frame, Eye)`;
+  `combination` when one is set: `{Frame: 1-10, Eye: [left, right]}, combination (Frame, Eye)`.
+  A whole step or job shows each parameter space in it the same way
+  (`parameterSpace: {Frame: 1-10}`);
 - step dependencies are the names of the steps depended on: `[Prep, Render]`;
 - an object leaves out its `null` fields. A value whose line already names it (a whole
   step, environment or embedded file, a host requirement entry such as
@@ -336,18 +338,23 @@ layer](#the-job-layer)). `Shown::text` is for people:
   exactly an `f64`) is written without its fraction (`min: 4`, not `4.0`); a larger one
   keeps it (`9007199254740994.0`). `raw` keeps the number as the job holds it;
 - other strings are bare, lists are `[a, b]`, objects are `{key: value}`;
-- when both sides' full texts are equal but their values differ, a task parameter
-  definition shows how each side's range is written: an integer range as
-  `range expression 1,2` or `list [1, 2]`, any other type as its type and list
-  (`FLOAT [1.5, 2.5] -> STRING [1.5, 2.5]`), then its chunk settings. The built job keeps
-  only a range expression's canonical form, so `"1-2"` shows as `range expression 1,2`.
+- when both sides' full texts are equal but their values differ, every task parameter
+  definition in them, whether the change is the definition, a parameter space, a step or
+  the job, shows how its range is written: an integer range as `range expression 1,2` or
+  `list [1, 2]`, any other type as its type and list (`FLOAT [1.5, 2.5] -> STRING
+  [1.5, 2.5]`), then its chunk settings. A chunked range names its type, so a hand-made
+  `--jobs` pair with an `INT` with `chunks` against the `CHUNK[INT]` it mirrors shows
+  `CHUNK[INT] range expression 1-20 chunks of 5 -> INT range expression 1-20 chunks of 5`.
+  The built job keeps only a range expression's canonical form, so `"1-2"` shows as
+  `range expression 1,2`, and at `--depth 2` a step's parameter space shows as
+  `{Frame: range expression 1,2} -> {Frame: list [1, 2]}`.
 - text longer than 120 characters is cut to 119 and ends with `…`. The cut happens once,
   after every rule above, and a type suffix such as ` (STRING)` is never cut. **Two sides
   with different values never show the same text**: when the first difference between
-  the two full texts would be cut off, both start with `…` 40 characters before it; when
-  the full texts are equal (`"3"` and `3` as generic values, a hand-made `--jobs` pair
-  with an `INT` with `chunks` against the `CHUNK[INT]` it mirrors), both sides show as
-  their JSON, cut the same way.
+  the two full texts would be cut off, both start with `…` 40 characters before it, and a
+  list or object keeps its first 20 characters before that, so it still reads as one:
+  `[s3://bucket/projects… …/shot_010/renders/a]`. When the full texts are still equal
+  (`"3"` and `3` as generic values), both sides show as their JSON, cut the same way.
 
 `Display` is deterministic, so tests assert whole outputs:
 

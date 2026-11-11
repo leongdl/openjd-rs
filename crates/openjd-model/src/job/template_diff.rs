@@ -856,16 +856,21 @@ fn assemble(
     new_job.parameters.sort_keys();
     let tree = diff_jobs(&old_job, &new_job, options);
     let (old_doc, new_doc) = (job_value(&old_job), job_value(&new_job));
-    let mut changes = template;
+    let mut pending: Vec<(Change, Written)> = template
+        .into_iter()
+        .map(|c| (c, Written::default()))
+        .collect();
     for (id, node) in tree.changed() {
         let path = tree.path(id);
         let segments = segments(&tree, id);
         let step = owning_step(&tree, id);
-        let mut push = |field: String, before: Option<Shown>, after: Option<Shown>| {
+        let mut push = |field: String, before: Option<NodeText>, after: Option<NodeText>| {
+            let (before, written_before) = before.unzip();
+            let (after, written_after) = after.unzip();
             let whole = field.is_empty().then_some(node.status);
             let origin = rule.classify(&(path.clone(), field.clone(), whole));
             let stage = job_stage(&path, &field, before.as_ref(), after.as_ref());
-            changes.push(Change {
+            let change = Change {
                 layer: Layer::Job,
                 path: path.clone(),
                 step: step.clone(),
@@ -874,7 +879,8 @@ fn assemble(
                 after,
                 origin,
                 stage,
-            });
+            };
+            pending.push((change, (written_before, written_after)));
         };
         let side = |doc: &Value, job: &Job| {
             lookup(doc, &segments).map(|v| shown_node(node, "", v.clone(), job))
@@ -902,10 +908,15 @@ fn assemble(
             DiffStatus::Unchanged => {}
         }
     }
-    changes.sort_by(|a, b| (&a.path, &a.field, a.layer).cmp(&(&b.path, &b.field, b.layer)));
-    for c in &mut changes {
-        finish_texts(c, &old_job, &new_job);
-    }
+    pending
+        .sort_by(|(a, _), (b, _)| (&a.path, &a.field, a.layer).cmp(&(&b.path, &b.field, b.layer)));
+    let changes = pending
+        .into_iter()
+        .map(|(mut c, written)| {
+            finish_texts(&mut c, &written, &old_job, &new_job);
+            c
+        })
+        .collect();
     let steps = step_summaries(&old_job, &new_job, options, &mut notes);
     TemplateDiff {
         changes,
@@ -917,21 +928,31 @@ fn assemble(
     }
 }
 
+/// A job-layer side: its [`Shown`], and its text with every task parameter
+/// definition in it in its written form ([`written_text`]).
+type NodeText = (Shown, String);
+
+/// Each side's written-form text; `None` for a template-layer change or a
+/// side that does not exist.
+type Written = (Option<String>, Option<String>);
+
 /// Cut each side's text to [`MAX_TEXT_CHARS`], once, after every rendering
 /// rule has run. Two sides with different values never show the same text:
 /// both sides are cut around their first difference, and when their full
 /// texts are equal the cut is over their JSON instead.
-fn finish_texts(c: &mut Change, old_job: &Job, new_job: &Job) {
-    match (&mut c.before, &mut c.after) {
-        (Some(b), Some(a)) => {
-            let (bf, af) = full_texts(c.layer, &c.path, &c.field, b, a, old_job, new_job);
-            (b.text, a.text) = cut_pair(&bf, &af);
+fn finish_texts(c: &mut Change, written: &Written, old_job: &Job, new_job: &Job) {
+    if let Some((bf, af)) = full_texts(c, written, old_job, new_job) {
+        let (bt, at) = cut_pair(&bf, &af);
+        if let (Some(b), Some(a)) = (&mut c.before, &mut c.after) {
+            (b.text, a.text) = (bt, at);
             if b.raw != a.raw && b.text == a.text {
                 (b.text, a.text) = around_difference(&b.raw.to_string(), &a.raw.to_string());
             }
         }
-        (Some(s), None) | (None, Some(s)) => s.text = truncate(std::mem::take(&mut s.text)),
-        (None, None) => {}
+        return;
+    }
+    if let Some(s) = c.before.as_mut().or(c.after.as_mut()) {
+        s.text = truncate(std::mem::take(&mut s.text));
     }
 }
 
@@ -951,51 +972,42 @@ impl FullText {
 }
 
 /// Both sides' full texts. A job parameter value whose type changes shows
-/// its type (`"5" (STRING) -> 5 (INT)`); a task parameter definition whose
-/// sides render alike but differ shows how each range is written
-/// (`range expression 1,2 -> list [1, 2]`); anything else keeps its text.
+/// its type (`"5" (STRING) -> 5 (INT)`); a pair whose texts are equal but
+/// whose values differ shows each task parameter definition in it as it is
+/// written (`range expression 1,2 -> list [1, 2]`), at any depth; anything
+/// else keeps its text.
 fn full_texts(
-    layer: Layer,
-    path: &str,
-    field: &str,
-    b: &Shown,
-    a: &Shown,
+    c: &Change,
+    written: &Written,
     old_job: &Job,
     new_job: &Job,
-) -> (FullText, FullText) {
+) -> Option<(FullText, FullText)> {
+    let (Some(b), Some(a)) = (&c.before, &c.after) else {
+        return None;
+    };
     let plain = || {
-        (
+        Some((
             FullText::plain(b.text.clone()),
             FullText::plain(a.text.clone()),
-        )
+        ))
     };
-    if layer != Layer::Job || !matches!(field, "" | "value" | "definition") {
+    if c.layer != Layer::Job {
         return plain();
     }
-    if field != "definition" {
-        let name = path
+    if matches!(c.field.as_str(), "" | "value") {
+        let name = c
+            .path
             .strip_prefix("parameters[")
             .and_then(|r| r.strip_suffix(']'));
         let types = name.map(|n| (old_job.parameters.get(n), new_job.parameters.get(n)));
         if let Some((Some(o), Some(n))) = types {
             if o.param_type != n.param_type {
-                return (typed_text(b, o.param_type), typed_text(a, n.param_type));
+                return Some((typed_text(b, o.param_type), typed_text(a, n.param_type)));
             }
         }
     }
-    if path.contains(".parameterSpace.taskParameterDefinitions[")
-        && b.text == a.text
-        && b.raw != a.raw
-    {
-        if let (Ok(op), Ok(np)) = (
-            TaskParameter::deserialize(&b.raw),
-            TaskParameter::deserialize(&a.raw),
-        ) {
-            return (
-                FullText::plain(written_text(&op)),
-                FullText::plain(written_text(&np)),
-            );
-        }
+    if let (true, (Some(wb), Some(wa))) = (b.text == a.text && b.raw != a.raw, written) {
+        return Some((FullText::plain(wb.clone()), FullText::plain(wa.clone())));
     }
     plain()
 }
@@ -1025,7 +1037,9 @@ fn cut_pair(b: &FullText, a: &FullText) -> (String, String) {
 
 /// A task parameter definition by how its range is written: an integer
 /// range as `range expression 1,2` or `list [1, 2]`, any other type as its
-/// type and list (`STRING [1, 2]`), then any chunk settings.
+/// type and list (`STRING [1, 2]`), then any chunk settings. A chunked
+/// range names its type, `INT` or `CHUNK[INT]`, since both hold the same
+/// range and chunks.
 fn written_text(p: &TaskParameter) -> String {
     let int = |range: &TaskParamRange<i64>| match range {
         TaskParamRange::RangeExpr(e) => format!("range expression {e}"),
@@ -1033,10 +1047,12 @@ fn written_text(p: &TaskParameter) -> String {
     };
     match p {
         TaskParameter::Int { range, chunks } => match chunks {
-            Some(c) => chunk_suffix(int(range), c),
+            Some(c) => chunk_suffix(format!("INT {}", int(range)), c),
             None => int(range),
         },
-        TaskParameter::ChunkInt { range, chunks } => chunk_suffix(int(range), chunks),
+        TaskParameter::ChunkInt { range, chunks } => {
+            chunk_suffix(format!("CHUNK[INT] {}", int(range)), chunks)
+        }
         TaskParameter::Float { .. } => format!("FLOAT {}", range_text(p)),
         TaskParameter::String { .. } => format!("STRING {}", range_text(p)),
         TaskParameter::Path { .. } => format!("PATH {}", range_text(p)),
@@ -1044,15 +1060,20 @@ fn written_text(p: &TaskParameter) -> String {
 }
 
 /// Both texts cut at [`MAX_TEXT_CHARS`]; when the first difference would
-/// be cut off, both start with `…` a few characters before it.
+/// be cut off, both start a few characters before it (see
+/// [`cut_around_difference`]).
 fn around_difference(x: &str, y: &str) -> (String, String) {
     cut_around_difference(x, y, MAX_TEXT_CHARS)
 }
 
 /// [`around_difference`] with `max` characters in place of
-/// [`MAX_TEXT_CHARS`]. `max` must exceed the 40 characters of context.
+/// [`MAX_TEXT_CHARS`]. `max` must be at least 64: the head, `…` and 40
+/// characters of context before the difference. A list or object keeps its
+/// first 20 characters, so a cut one still reads as a list or object:
+/// `[s3://bucket/projects… …/renders/b]`.
 fn cut_around_difference(x: &str, y: &str, max: usize) -> (String, String) {
     const CONTEXT: usize = 40;
+    const HEAD: usize = 20;
     let first_diff = x.chars().zip(y.chars()).take_while(|(p, q)| p == q).count();
     if first_diff < max - 1 {
         return (
@@ -1060,9 +1081,17 @@ fn cut_around_difference(x: &str, y: &str, max: usize) -> (String, String) {
             truncate_to(y.to_string(), max),
         );
     }
+    // Both sides share their first `first_diff` characters, so one test
+    // decides the head for both.
+    let head: String = if x.starts_with(['[', '{']) {
+        x.chars().take(HEAD).collect::<String>() + "… "
+    } else {
+        String::new()
+    };
     let from = |s: &str| {
         let tail: String = s.chars().skip(first_diff - CONTEXT).collect();
-        truncate_to(format!("…{tail}"), max)
+        let room = max - head.chars().count();
+        head.clone() + &truncate_to(format!("…{tail}"), room)
     };
     (from(x), from(y))
 }
@@ -1228,29 +1257,59 @@ fn truncate_to(s: String, max: usize) -> String {
     out
 }
 
-/// A job-layer value, rendered by what the node holds.
-fn shown_node(node: &DiffNode, field: &str, raw: Value, job: &Job) -> Shown {
+/// How a text writes a task parameter definition: [`range_text`], or
+/// [`written_text`] when two sides' compact texts are equal.
+type DefinitionText = fn(&TaskParameter) -> String;
+
+/// A job-layer value and its written-form text ([`NodeText`]).
+fn shown_node(node: &DiffNode, field: &str, raw: Value, job: &Job) -> NodeText {
+    let text = node_text(node, field, &raw, job, range_text);
+    let written = node_text(node, field, &raw, job, written_text);
+    (Shown::new(raw, text), written)
+}
+
+/// A job-layer value, rendered by what the node holds. Every task parameter
+/// definition in it, at any depth, is written by `def`.
+fn node_text(node: &DiffNode, field: &str, raw: &Value, job: &Job, def: DefinitionText) -> String {
     use crate::job::diff::DiffNodeKind;
-    let text = match (node.kind, field) {
+    match (node.kind, field) {
         (DiffNodeKind::TaskParameter, "definition" | "") => {
-            TaskParameter::deserialize(&raw).map_or_else(|_| render(&raw), |p| range_text(&p))
+            TaskParameter::deserialize(raw).map_or_else(|_| render(raw), |p| def(&p))
         }
         (DiffNodeKind::JobParameter, "value" | "") => node
             .key
             .as_ref()
             .and_then(|k| job.parameters.get(k))
-            .map_or_else(|| render(&raw), |p| p.value.to_display_string()),
+            .map_or_else(|| render(raw), |p| p.value.to_display_string()),
         (DiffNodeKind::JobParameter, "type") => node
             .key
             .as_ref()
             .and_then(|k| job.parameters.get(k))
-            .map_or_else(|| render(&raw), |p| p.param_type.as_spec_str().to_string()),
-        (DiffNodeKind::ParameterSpace, "") => space_text(&raw),
+            .map_or_else(|| render(raw), |p| p.param_type.as_spec_str().to_string()),
         (_, "resolvedSymTab") if raw.as_array().is_some_and(Vec::is_empty) => NO_SYMBOLS.into(),
-        (_, "") => render(&without_label(&raw, node.key.as_deref())),
-        _ => render(&without_label(&raw, field_key(field))),
-    };
-    Shown::new(raw, text)
+        (_, "") => render(&with_spaces(&without_label(raw, node.key.as_deref()), def)),
+        _ => render(&with_spaces(&without_label(raw, field_key(field)), def)),
+    }
+}
+
+/// `v` with every parameter space in it, `v` itself included, replaced by
+/// its [`space_text`].
+fn with_spaces(v: &Value, def: DefinitionText) -> Value {
+    match v {
+        Value::Object(m)
+            if m.get("taskParameterDefinitions")
+                .is_some_and(Value::is_array) =>
+        {
+            Value::String(space_text(v, def))
+        }
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .map(|(k, e)| (k.clone(), with_spaces(e, def)))
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(a.iter().map(|e| with_spaces(e, def)).collect()),
+        _ => v.clone(),
+    }
 }
 
 /// The key of a keyed field, `vcpu` in `amounts[vcpu]`.
@@ -1281,8 +1340,8 @@ const NO_SYMBOLS: &str = "(none)";
 
 /// A whole parameter space: each task parameter's range in definition
 /// order, `{Frame: 1-10, Eye: [left]}`, then `, combination Frame * Eye`
-/// when one is set.
-fn space_text(raw: &Value) -> String {
+/// when one is set. Each definition is written by `def`.
+fn space_text(raw: &Value, def: DefinitionText) -> String {
     let Some(defs) = raw
         .get("taskParameterDefinitions")
         .and_then(Value::as_array)
@@ -1298,7 +1357,7 @@ fn space_text(raw: &Value) -> String {
                 .and_then(|v| TaskParameter::deserialize(v).ok())
                 .map_or_else(
                     || d.get("definition").map_or_else(String::new, render),
-                    |p| range_text(&p),
+                    |p| def(&p),
                 );
             format!("{name}: {range}")
         })
@@ -3096,6 +3155,29 @@ mod tests {
         assert_eq!(text(MAX_EXACT_INTEGER), "9007199254740992");
         assert_eq!(text(-MAX_EXACT_INTEGER), "-9007199254740992");
         assert_eq!(text(MAX_EXACT_INTEGER + 2.0), "9007199254740994.0");
+        assert_eq!(text(-(MAX_EXACT_INTEGER + 2.0)), "-9007199254740994.0");
         assert_eq!(number_text(&4.into()), "4");
+    }
+
+    #[test]
+    fn a_list_of_single_key_objects_is_not_a_dependency_list() {
+        assert_eq!(render(&json!([{"ListInt": [1]}])), "[{ListInt: [1]}]");
+        assert_eq!(render(&json!([{"dependsOn": "A"}])), "[A]");
+    }
+
+    #[test]
+    fn a_cut_list_or_object_keeps_its_head() {
+        let (x, y) = (
+            format!("[{}a]", "y".repeat(150)),
+            format!("[{}b]", "y".repeat(150)),
+        );
+        let want = |c: char| format!("[{}… …{}{c}]", "y".repeat(19), "y".repeat(40));
+        assert_eq!(around_difference(&x, &y), (want('a'), want('b')));
+        let (x, y) = (
+            format!("{}a", "y".repeat(150)),
+            format!("{}b", "y".repeat(150)),
+        );
+        let want = |c: char| format!("…{}{c}", "y".repeat(40));
+        assert_eq!(around_difference(&x, &y), (want('a'), want('b')));
     }
 }

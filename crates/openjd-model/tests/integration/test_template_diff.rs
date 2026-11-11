@@ -1031,8 +1031,10 @@ fn long_values_that_truncate_alike_show_where_they_differ() {
     let c = &d.changes[0];
     let (b, a) = (c.before.as_ref().unwrap(), c.after.as_ref().unwrap());
     assert_ne!(b.text, a.text);
-    assert_eq!(b.text, format!("…{}a]", "x".repeat(40)));
-    assert_eq!(a.text, format!("…{}b]", "x".repeat(40)));
+    // A cut list keeps its first 20 characters, so it still reads as one.
+    let (head, tail) = ("x".repeat(19), "x".repeat(40));
+    assert_eq!(b.text, format!("[{head}… …{tail}a]"));
+    assert_eq!(a.text, format!("[{head}… …{tail}b]"));
 }
 
 #[test]
@@ -1829,8 +1831,8 @@ fn task_parameter_reorder_shows_in_whole_node_values_at_every_depth() {
 }
 
 const REORDER_TEXTS: [&str; 3] = [
-    "{name: J, parameters: {}, steps: [{name: S, parameterSpace: {taskParameterDefinitions: [{definition: {int: {range: {ran… | {name: J, parameters: {}, steps: [{name: S, parameterSpace: {taskParameterDefinitions: [{definition: {string: {range: […",
-    "{parameterSpace: {taskParameterDefinitions: [{definition: {int: {range: {rangeExpr: {cumulative_lengths: [3], length: 3… | {parameterSpace: {taskParameterDefinitions: [{definition: {string: {range: [p, q]}}, name: Y}, {definition: {int: {rang…",
+    "{name: J, parameters: {}, steps: [{name: S, parameterSpace: {X: 1-3, Y: [p, q]}, resolvedSymTab: [], script: {actions: … | {name: J, parameters: {}, steps: [{name: S, parameterSpace: {Y: [p, q], X: 1-3}, resolvedSymTab: [], script: {actions: …",
+    "{parameterSpace: {X: 1-3, Y: [p, q]}, script: {actions: {onRun: {command: c}}}} | {parameterSpace: {Y: [p, q], X: 1-3}, script: {actions: {onRun: {command: c}}}}",
     "{X: 1-3, Y: [p, q]} | {Y: [p, q], X: 1-3}",
 ];
 
@@ -2193,7 +2195,10 @@ fn job_from_str_rejects_a_value_that_is_not_of_the_parameter_type() {
 
 #[test]
 fn extensions_print_once_when_the_job_layer_origin_is_both() {
-    let old = std::fs::read_to_string(sample_path("render_v1.yaml")).unwrap();
+    // A CRLF checkout must still match the LF patterns below.
+    let old = std::fs::read_to_string(sample_path("render_v1.yaml"))
+        .unwrap()
+        .replace("\r\n", "\n");
     let new = old
         .replace(
             "name: Render\nparameterDefinitions",
@@ -3312,15 +3317,15 @@ fn a_chunked_range_rewritten_with_the_same_values_shows_its_chunk_settings() {
     .unwrap();
     assert_eq!(
         lines(&d.changes),
-        ["~ steps[S].parameterSpace.taskParameterDefinitions[P].definition: range expression 1,2 chunks of 1 -> list [1, 2] chunks of 1  [template]"]
+        ["~ steps[S].parameterSpace.taskParameterDefinitions[P].definition: CHUNK[INT] range expression 1,2 chunks of 1 -> CHUNK[INT] list [1, 2] chunks of 1  [template]"]
     );
 }
 
 #[test]
-fn a_definition_pair_written_alike_shows_as_json() {
+fn an_int_with_chunks_and_the_chunk_int_it_mirrors_name_their_types() {
     // `create_job` never builds an `INT` with `chunks`, but `job_from_str`
-    // reads one, and it is written exactly as the `CHUNK[INT]` it mirrors.
-    let old = TemplateInput::new(TemplateSource::Text(chunked_job("\"1-2\"")))
+    // reads one, and its range and chunks are the `CHUNK[INT]`'s.
+    let old = TemplateInput::new(TemplateSource::Text(chunked_job("\"1-20\"")))
         .build()
         .unwrap();
     let doc = serde_json::to_string(&JobDocument(&old)).unwrap();
@@ -3332,13 +3337,10 @@ fn a_definition_pair_written_alike_shows_as_json() {
         .iter()
         .find(|c| c.path.ends_with("taskParameterDefinitions[P]"))
         .unwrap();
-    let (b, a) = (c.before.as_ref().unwrap(), c.after.as_ref().unwrap());
-    assert!(
-        b.text.starts_with("{\"chunkInt\":{\"chunks\":"),
-        "{}",
-        b.text
+    assert_eq!(
+        c.to_string(),
+        "~ steps[S].parameterSpace.taskParameterDefinitions[P].definition: CHUNK[INT] range expression 1-20 chunks of 1 -> INT range expression 1-20 chunks of 1  [job]"
     );
-    assert!(a.text.starts_with("{\"int\":{\"chunks\":"), "{}", a.text);
 }
 
 // ─── diff gallery audit round 3: rendering ──────────────────────────
@@ -3372,11 +3374,11 @@ fn a_task_parameter_differing_past_the_cut_shows_where_it_differs() {
         &opts(),
     )
     .unwrap();
-    let tail = "q".repeat(40);
+    let (head, tail) = ("q".repeat(19), "q".repeat(40));
     assert_eq!(
         lines(&d.changes),
         [format!(
-            "~ steps[S].parameterSpace.taskParameterDefinitions[P].definition: …{tail}1] -> …{tail}2]  [template]"
+            "~ steps[S].parameterSpace.taskParameterDefinitions[P].definition: [{head}… …{tail}1] -> [{head}… …{tail}2]  [template]"
         )]
     );
 }
@@ -3558,4 +3560,158 @@ fn a_type_change_with_the_same_value_keeps_its_type_line() {
 
 0 steps changed. Tasks: 1 kept, 0 added, 0 removed."
     );
+}
+
+// ─── diff gallery audit round 4 ─────────────────────────────────────
+
+/// A template with a job parameter, a job environment, and a step with
+/// host requirements, a parameter space and an embedded file. Each `@NAME@`
+/// is filled from one side of a [`SWEEP_PAIRS`] entry or its default.
+const SWEEP_TEMPLATE: &str = "\
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, TASK_CHUNKING]
+name: J
+parameterDefinitions:
+  - {name: Count, type: @COUNT_TYPE@, default: @COUNT@}
+  - {name: Tiles, type: \"LIST[LIST[INT]]\", default: @TILES@}
+jobEnvironments:
+  - name: Tools
+    variables: {TOOL: \"@TOOL@\"}
+steps:
+  - name: S
+    hostRequirements:
+      attributes: [{name: attr.worker.os.family, anyOf: [linux]}]
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: F, type: INT, range: @F@}
+        - {name: C, type: \"CHUNK[INT]\", range: @C@, chunks: {defaultTaskCount: 1, rangeConstraint: CONTIGUOUS}}
+        - {name: E, type: @E_TYPE@, range: @E@}
+    script:
+      actions: {onRun: {command: a, args: [\"{{Task.File.Run}}\", \"{{Task.Param.F}}\", \"{{Task.Param.C}}\", \"{{Task.Param.E}}\"]}}
+      embeddedFiles:
+        - {name: Run, type: TEXT, data: \"@DATA@\"}
+";
+
+/// The placeholders of [`SWEEP_TEMPLATE`] and their unchanged values.
+const SWEEP_DEFAULTS: &[(&str, &str)] = &[
+    ("@COUNT_TYPE@", "STRING"),
+    ("@COUNT@", "\"5\""),
+    ("@TILES@", "[[1, 2]]"),
+    ("@TOOL@", "t"),
+    ("@F@", "\"1-2\""),
+    ("@C@", "\"1-2\""),
+    ("@E_TYPE@", "STRING"),
+    ("@E@", "[a, b]"),
+    ("@DATA@", "d"),
+];
+
+/// One placeholder of [`SWEEP_TEMPLATE`], with its old and new value.
+type SweepEdit = (&'static str, String, String);
+
+/// Change pairs, each named and made of one or more edits.
+fn sweep_pairs() -> Vec<(&'static str, Vec<SweepEdit>)> {
+    let long = |end: &str| format!("{}{end}", "p".repeat(150));
+    let s = |v: &str| v.to_string();
+    vec![
+        ("range rewrite", vec![("@F@", s("\"1-2\""), s("[1, 2]"))]),
+        ("chunk rewrite", vec![("@C@", s("\"1-2\""), s("[1, 2]"))]),
+        (
+            "type change",
+            vec![
+                ("@E_TYPE@", s("STRING"), s("PATH")),
+                ("@COUNT_TYPE@", s("STRING"), s("INT")),
+                ("@COUNT@", s("\"5\""), s("5")),
+            ],
+        ),
+        (
+            "long-prefix string",
+            vec![
+                ("@TOOL@", long("1"), long("2")),
+                ("@DATA@", long("1"), long("2")),
+                (
+                    "@E@",
+                    format!("[{}]", long("1")),
+                    format!("[{}]", long("2")),
+                ),
+            ],
+        ),
+        (
+            "list element",
+            vec![
+                ("@E@", s("[a, b]"), s("[a, c]")),
+                ("@TILES@", s("[[1, 2]]"), s("[[1, 3]]")),
+            ],
+        ),
+    ]
+}
+
+fn sweep_template(edits: &[(&str, &str)]) -> String {
+    SWEEP_DEFAULTS
+        .iter()
+        .fold(SWEEP_TEMPLATE.to_string(), |t, (k, default)| {
+            let v = edits
+                .iter()
+                .find(|(e, _)| e == k)
+                .map_or(*default, |(_, v)| v);
+            t.replace(k, v)
+        })
+}
+
+#[test]
+fn whole_nodes_at_every_depth_show_no_serde_internals() {
+    const INTERNALS: [&str; 4] = [
+        "cumulative_lengths",
+        "\"rangeExpr\"",
+        "\"chunkInt\"",
+        "{\"String\"",
+    ];
+    let mut checked = 0;
+    for (what, pair) in sweep_pairs() {
+        let old: Vec<(&str, &str)> = pair.iter().map(|(k, o, _)| (*k, o.as_str())).collect();
+        let new: Vec<(&str, &str)> = pair.iter().map(|(k, _, n)| (*k, n.as_str())).collect();
+        for depth in [None, Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)] {
+            let options = depth.map_or_else(opts, |d| opts().with_max_depth(d));
+            let d = diff_templates(
+                &text(&sweep_template(&old)),
+                &text(&sweep_template(&new)),
+                &options,
+            )
+            .unwrap_or_else(|e| panic!("{what}, depth {depth:?}: {e}"));
+            assert!(d.is_changed(), "{what}, depth {depth:?}");
+            for c in &d.changes {
+                let sides = [c.before.as_ref(), c.after.as_ref()];
+                for s in sides.into_iter().flatten() {
+                    for bad in INTERNALS {
+                        assert!(!s.text.contains(bad), "{what}, depth {depth:?}: {c}");
+                    }
+                    checked += 1;
+                }
+                if let [Some(b), Some(a)] = sides {
+                    if b.raw != a.raw {
+                        assert_ne!(b.text, a.text, "{what}, depth {depth:?}: {c}");
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 100, "{checked}");
+}
+
+#[test]
+fn a_list_list_int_change_at_depth_0_shows_its_values() {
+    let pair = |tiles: &str| text(&sweep_template(&[("@TILES@", tiles)]));
+    let d = diff_templates(
+        &pair("[[1, 2]]"),
+        &pair("[[1, 3]]"),
+        &opts().with_max_depth(0),
+    )
+    .unwrap();
+    let root = d
+        .changes
+        .iter()
+        .find(|c| c.path.is_empty() && c.layer == Layer::Job)
+        .unwrap();
+    let (b, a) = (root.before.as_ref().unwrap(), root.after.as_ref().unwrap());
+    assert!(b.text.contains("{ListInt: [1, 2]}"), "{}", b.text);
+    assert!(a.text.contains("{ListInt: [1, 3]}"), "{}", a.text);
 }

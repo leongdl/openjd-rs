@@ -827,8 +827,10 @@ fn human_output_prints_the_notes() {
 
 #[test]
 fn task_parameter_reorder_at_depth_1() {
+    // A CRLF checkout must still match the LF patterns below.
     let swapped = std::fs::read_to_string(samples().join("render_v1.yaml"))
         .unwrap()
+        .replace("\r\n", "\n")
         .replace(
             "        - {name: Frame, type: INT, range: \"{{Param.Frames}}\"}\n        - {name: Eye, type: STRING, range: [left]}",
             "        - {name: Eye, type: STRING, range: [left]}\n        - {name: Frame, type: INT, range: \"{{Param.Frames}}\"}",
@@ -1297,4 +1299,31 @@ fn diff_applies_the_cli_caller_limits() {
         format!("{DIFF_WARNING}ERROR: Validation error: new template: {LONG_ARG_ERROR}")
     );
     assert_eq!(o.status.code(), Some(1));
+}
+
+#[test]
+fn an_unexpanded_parameter_space_shows_each_definition_as_written() {
+    let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/diff");
+    let o = openjd_in(
+        &examples,
+        &[
+            "diff",
+            "range_rewritten_v1.yaml",
+            "range_rewritten_v2.yaml",
+            "--depth",
+            "2",
+        ],
+        None,
+    );
+    assert_ok(
+        &o,
+        "\
+range_rewritten_v1.yaml -> range_rewritten_v2.yaml
+~ step Render
+    ~ parameterSpace: {Frame: range expression 1,2} -> {Frame: list [1, 2]}  [template]
+    tasks: 2 unchanged
+
+1 step changed. Tasks: 2 kept, 0 added, 0 removed.
+",
+    );
 }
