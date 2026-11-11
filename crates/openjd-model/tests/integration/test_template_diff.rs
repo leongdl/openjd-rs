@@ -255,11 +255,14 @@ fn template_default_change_with_parameter_unsupplied_is_template_origin() {
 
 const PARAMS_OLD: &str = r#"
 specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
 name: P
 parameterDefinitions:
   - {name: S, type: STRING, description: a, default: x, allowedValues: [x, y], minLength: 1, maxLength: 5, userInterface: {control: DROPDOWN_LIST, label: L}}
   - {name: I, type: INT, default: 5, minValue: 1, maxValue: 10}
-  - {name: F, type: FLOAT, default: 1.5, minValue: 0}
+  - {name: F, type: FLOAT, default: 1.5, minValue: 0, userInterface: {label: old}}
+  - {name: LI, type: "LIST[INT]", default: [1], userInterface: {label: old}}
+  - {name: LF, type: "LIST[FLOAT]", default: [1.5], userInterface: {label: old}}
   - {name: T, type: STRING, default: "3"}
   - {name: Gone, type: STRING, default: g}
 steps:
@@ -271,11 +274,14 @@ steps:
 
 const PARAMS_NEW: &str = r#"
 specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
 name: P
 parameterDefinitions:
   - {name: S, type: STRING, description: b, default: x, allowedValues: [x, y, z], minLength: 0, maxLength: 9, userInterface: {control: DROPDOWN_LIST, label: M}}
   - {name: I, type: INT, default: 5, minValue: 2, maxValue: 20}
-  - {name: F, type: FLOAT, default: 1.5, maxValue: 9.5}
+  - {name: F, type: FLOAT, default: 1.5, maxValue: 9.5, userInterface: {label: new}}
+  - {name: LI, type: "LIST[INT]", default: [1], userInterface: {label: new}}
+  - {name: LF, type: "LIST[FLOAT]", default: [1.5], userInterface: {label: new}}
   - {name: T, type: INT, default: 3}
   - {name: New, type: STRING, default: n}
 steps:
@@ -292,8 +298,11 @@ fn parameter_definition_changes_are_compared_field_by_field() {
         d.to_string(),
         r#"+ parameter definition F.maxValue: 9.5  [template]
 - parameter definition F.minValue: 0.0  [template]
+~ parameter definition F.userInterface.label: old -> new  [template]
 ~ parameter definition I.maxValue: 10 -> 20  [template]
 ~ parameter definition I.minValue: 1 -> 2  [template]
+~ parameter definition LF.userInterface.label: old -> new  [template]
+~ parameter definition LI.userInterface.label: old -> new  [template]
 ~ parameter definition S.allowedValues: [x, y] -> [x, y, z]  [template]
 ~ parameter definition S.description: a -> b  [template]
 ~ parameter definition S.maxLength: 5 -> 9  [template]
@@ -308,6 +317,20 @@ fn parameter_definition_changes_are_compared_field_by_field() {
 
 0 steps changed. Tasks: 1 kept, 0 added, 0 removed."#
     );
+    let all = lines(&d.changes);
+    for p in ["F", "LI", "LF"] {
+        let ui: Vec<String> = all
+            .iter()
+            .filter(|l| l.contains(&format!("[{p}].userInterface")))
+            .cloned()
+            .collect();
+        assert_eq!(
+            ui,
+            [format!(
+                "~ parameterDefinitions[{p}].userInterface.label: old -> new  [template]"
+            )]
+        );
+    }
     let defs: Vec<&Change> = d.changes_at("parameterDefinitions[S]").collect();
     assert_eq!(defs.len(), 5);
     assert!(defs
@@ -2893,5 +2916,20 @@ fn a_step_whose_space_does_not_iterate_has_an_unknown_task_count() {
             step: Some("S".into()),
             text: "cannot count tasks: Validation error: Unknown parameter 'Bogus' in combination expression".into()
         }]
+    );
+}
+
+// ─── audit round 7 ──────────────────────────────────────────────────
+
+#[test]
+fn a_text_source_joins_relative_path_defaults_to_the_cwd_override() {
+    let t = "specificationVersion: jobtemplate-2023-09\nname: J\nparameterDefinitions:\n  - {name: P, type: PATH, default: rel}\nsteps:\n  - name: S\n    script: {actions: {onRun: {command: c}}}\n";
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = dir.path().join("somewhere").join("else");
+    assert_ne!(std::env::current_dir().unwrap(), elsewhere);
+    let job = text(t).cwd(&elsewhere).build().unwrap();
+    assert_eq!(
+        job.parameters["P"].value.to_display_string(),
+        elsewhere.join("rel").to_str().unwrap()
     );
 }

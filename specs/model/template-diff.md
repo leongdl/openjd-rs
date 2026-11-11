@@ -23,8 +23,8 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError>;
   layer, and every change has origin `Parameters`.
 - `diff_built_jobs` is for callers that already hold two jobs. It has no template layer,
   and every change has origin `Job`, because the cause is not known.
-- `job_from_str` reads a job back from its serde form (JSON when the text starts with `{`,
-  YAML otherwise), as `openjd build` prints it. It takes text rather than a
+- `job_from_str` reads a job back from its serde form (JSON when the first
+  non-whitespace character is `{`, YAML otherwise), as `openjd build` prints it. It takes text rather than a
   `serde_json::Value` because a `Value` object sorts its keys, which would reorder task
   parameter definitions and so change task order. Unknown fields are rejected at every
   level: after parsing, every key of the input must appear in the parsed job's
@@ -54,15 +54,18 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError>;
 
 `TemplateSource` is owned: `Path(PathBuf)`, `Text(String)`, `Value(serde_json::Value)`,
 or `Decoded(Box<JobTemplate>)`. A path is JSON when its extension is `.json` and YAML
-otherwise, as in the CLI. Text is JSON when it starts with `{`. Both go through
+otherwise, as in the CLI. Text is JSON when its first non-whitespace character
+is `{`; the leading whitespace is skipped only for this check. Both go through
 `document_string_to_object`. `TemplateSource::guess(s)` is `Path` when `s` names an
 existing file and `Text` otherwise; the library never guesses on its own.
 
 `TemplateInput` is one side: the source, its parameter values, environment templates, the
 extension allowlist, `CallerLimits`, and the two directories for PATH parameters. Its
 defaults match `openjd check`: every extension in `ModelExtension::ALL`, default limits,
-the template file's directory for relative PATH defaults (the process working directory
-for other sources), and the process working directory for relative PATH values.
+the template file's directory for relative PATH defaults, and the process working
+directory for relative PATH values. For a source other than `Path`, relative PATH
+defaults use the PATH-value directory: the `cwd` override when one is set, else the
+process working directory.
 
 Each side is built exactly as `openjd summary` and `openjd run` build a job:
 

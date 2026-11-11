@@ -56,7 +56,8 @@ const MAX_TEXT_CHARS: usize = 120;
 pub enum TemplateSource {
     /// A file. JSON when the extension is `.json`, YAML otherwise.
     Path(PathBuf),
-    /// Template text. JSON when it starts with `{`, YAML otherwise.
+    /// Template text. JSON when its first non-whitespace character is `{`,
+    /// YAML otherwise.
     Text(String),
     /// An already parsed document.
     Value(serde_json::Value),
@@ -83,8 +84,9 @@ impl TemplateSource {
 /// Built with [`TemplateInput::new`] and the builder methods. The defaults
 /// are the ones `openjd check` uses: every supported extension, default
 /// [`CallerLimits`], the template file's directory for relative PATH
-/// defaults (the process working directory for other sources), and the
-/// process working directory for relative PATH values.
+/// defaults, and the process working directory for relative PATH values.
+/// For a source other than a path, relative PATH defaults use the
+/// [`cwd`](Self::cwd) directory when set, else the process working directory.
 #[derive(Debug, Clone)]
 pub struct TemplateInput {
     source: TemplateSource,
@@ -1755,8 +1757,8 @@ struct BuiltJob {
 }
 
 /// Read a [`Job`] back from the JSON or YAML that `openjd build` prints
-/// (the job's serde form). JSON when the text starts with `{`, YAML
-/// otherwise. Unknown fields are rejected at every level, and so are a
+/// (the job's serde form). JSON when the first non-whitespace character is
+/// `{`, YAML otherwise. Unknown fields are rejected at every level, and so are a
 /// parameter whose value's type is not its `paramType`'s and a
 /// `resolvedSymTab` entry that is not the `{name, type, value}` a
 /// `SymbolTable` serializes to.

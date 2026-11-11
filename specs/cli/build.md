@@ -15,7 +15,7 @@ openjd build <PATH> [-p <PARAM>]... [--environment <FILE>]... [--extensions <EXT
 | Argument | Description |
 |----------|-------------|
 | `PATH` | Job template file |
-| `-p`, `--job-param` | Job parameters, as for `run` ([parameter-parsing.md](parameter-parsing.md)) |
+| `-p`, `--job-param`, `--parameter` | Job parameters, as for `run` ([parameter-parsing.md](parameter-parsing.md)) |
 | `--environment`, `--env` | Environment template files; their parameter definitions are merged |
 | `--extensions` | Extension allowlist, as for `check`; default every supported extension |
 | `--output` | `json` (default) or `yaml` |
@@ -40,4 +40,6 @@ Errors print `ERROR: …` and exit 1, as for every command.
 
 Tests: `crates/openjd-cli/tests/diff_tests.rs` (`jobs_round_trip_through_build`,
 `build_errors_and_bad_jobs`, `build_defaults_to_json_and_sorts_environment_variables`,
-`build_prints_the_same_job_on_every_run`).
+`build_prints_the_same_job_on_every_run`,
+`build_merges_environment_parameters_under_both_spellings`,
+`build_accepts_parameter_as_an_alias_for_job_param`, `build_applies_the_cli_caller_limits`).

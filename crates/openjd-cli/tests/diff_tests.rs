@@ -1219,3 +1219,66 @@ fn an_empty_plan_says_nothing_to_apply() {
         "render_v1.yaml -> render_v1.yaml\nno changes\n\napply plan:\n  nothing to apply\nkinds: none\n",
     );
 }
+
+// ─── audit round 7 ──────────────────────────────────────────────────
+
+const PLAIN: &str = "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n  - name: S\n    script: {actions: {onRun: {command: c}}}\n";
+
+#[test]
+fn build_merges_environment_parameters_under_both_spellings() {
+    let env = "specificationVersion: environment-2023-09\nparameterDefinitions:\n  - {name: E, type: STRING, default: fromenv}\nenvironment:\n  name: Env\n  variables: {X: x}\n";
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.yaml"), PLAIN).unwrap();
+    std::fs::write(dir.path().join("env.yaml"), env).unwrap();
+    let expected = "  \"parameters\": {\n    \"E\": {\n      \"name\": \"E\",\n      \"paramType\": \"String\",\n      \"value\": {\n        \"String\": \"fromenv\"\n      }\n    }\n  },\n";
+    for flag in ["--environment", "--env"] {
+        let o = openjd_in(dir.path(), &["build", "a.yaml", flag, "env.yaml"], None);
+        assert_eq!(o.status.code(), Some(0), "{flag}: {}", stderr(&o));
+        assert_eq!(stderr(&o), "");
+        assert!(stdout(&o).contains(expected), "{flag}: {}", stdout(&o));
+    }
+}
+
+#[test]
+fn build_accepts_parameter_as_an_alias_for_job_param() {
+    let t = "specificationVersion: jobtemplate-2023-09\nname: J\nparameterDefinitions:\n  - {name: P, type: STRING}\nsteps:\n  - name: S\n    script: {actions: {onRun: {command: c}}}\n";
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("p.yaml"), t).unwrap();
+    let o = openjd_in(dir.path(), &["build", "p.yaml", "--parameter", "P=v"], None);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(
+        stdout(&o).contains("\"value\": {\n        \"String\": \"v\"\n      }"),
+        "{}",
+        stdout(&o)
+    );
+}
+
+/// A template whose only arg resolves to 40000 characters: within the
+/// library's defaults, past the CLI's `max_resolved_arg_len` of 32768.
+const LONG_ARG: &str = "specificationVersion: jobtemplate-2023-09\nextensions: [EXPR]\nname: J\nparameterDefinitions:\n  - {name: N, type: INT, default: 40000}\nsteps:\n  - name: S\n    script: {actions: {onRun: {command: c, args: [\"{{ 'a' * Param.N }}\"]}}}\n";
+
+const LONG_ARG_ERROR: &str = "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> script -> actions -> onRun -> args[0]:\n\tresolves to at least 40000 characters, exceeding the maximum of 32768.\n";
+
+#[test]
+fn build_applies_the_cli_caller_limits() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("long.yaml"), LONG_ARG).unwrap();
+    let o = openjd_in(dir.path(), &["build", "long.yaml"], None);
+    assert_eq!(stdout(&o), "");
+    assert_eq!(stderr(&o), format!("ERROR: {LONG_ARG_ERROR}"));
+    assert_eq!(o.status.code(), Some(1));
+}
+
+#[test]
+fn diff_applies_the_cli_caller_limits() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.yaml"), PLAIN).unwrap();
+    std::fs::write(dir.path().join("long.yaml"), LONG_ARG).unwrap();
+    let o = openjd_in(dir.path(), &["diff", "a.yaml", "long.yaml"], None);
+    assert_eq!(stdout(&o), "");
+    assert_eq!(
+        stderr(&o),
+        format!("ERROR: Validation error: new template: {LONG_ARG_ERROR}")
+    );
+    assert_eq!(o.status.code(), Some(1));
+}

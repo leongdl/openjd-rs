@@ -45,8 +45,8 @@ Which library call runs:
 
 Each template side gets the CLI's caller limits (`common::caller_limits`), as `summary`
 and `run` do. A template is read as a file (the format from its extension) and its
-directory sets relative PATH defaults. Stdin text is JSON when it starts with `{` and YAML
-otherwise, with the working directory as its template directory. Inline template text is
+directory sets relative PATH defaults. Stdin text is JSON when its first non-whitespace
+character is `{` and YAML otherwise, with the working directory as its template directory. Inline template text is
 not accepted on the command line, because YAML is hard to quote in a shell argument.
 
 `--help` prints an example of each form.
