@@ -83,6 +83,10 @@ Each side is built exactly as `openjd summary` and `openjd run` build a job:
    URI path values allowed;
 3. `create_job` with `default_validation_context().with_caller_limits(limits)`.
 
+`TemplateInput::preprocessed(values)` skips step 2 and passes stored, already
+preprocessed values to `create_job`; see [host-support.md](host-support.md#building-from-stored-values),
+which also covers the other host support functions in this module.
+
 `TemplateInput::build` runs these for one side. A failure names the input that failed. In
 `diff_templates` it is `old template: …` or `new template: …`. In
 `diff_job_template_with_parameter_sets` the template is shared, so a build failure is `old parameters: …` or `new parameters: …`,

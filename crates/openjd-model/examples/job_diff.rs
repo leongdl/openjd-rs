@@ -225,19 +225,16 @@ fn print_plan(old: &Job, new: &Job) -> Result<(), String> {
             Action::Job(_) => "job        MODIFY".to_string(),
             Action::Parameter(o) => format!("param      {}", name_of(o, |p| &p.name)),
             Action::Environment(i, o) => format!("jobEnv#{i:<2}  {}", name_of(o, |e| &e.name)),
-            Action::Step(i, o) => {
-                let s = match o {
-                    Op::Remove { .. } => &old.steps[*i],
-                    _ => &new.steps[*i],
-                };
-                format!("step#{i:<2}    {} {}", verb(o), s.name)
+            Action::Step(s, o) => {
+                format!("step#{:<2}    {} {}", s.index, verb(o), s.name)
             }
             Action::Tasks {
                 step,
                 change,
                 space,
             } => format!(
-                "step#{step:<2}    TASKS  {}",
+                "step#{:<2}    TASKS  {}",
+                step.index,
                 describe_change(change, *space)
             ),
             _ => "?".into(),

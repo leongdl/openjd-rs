@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use crate::error::ModelError;
 use crate::job::apply::{
     apply, execute, plan, validate, Action, AllowList, ApplyError, JobApplier, MutationKind, Op,
-    TaskChange,
+    StepRef, TaskChange,
 };
 use crate::job::{Environment, Job, JobParameter, Step, StepParameterSpace};
 use crate::step_param_space::StepParameterSpaceIterator;
@@ -253,7 +253,15 @@ impl JobApplier for JobRebuilder {
         }
         Ok(())
     }
-    fn step(&mut self, j: usize, op: Op<'_, Step>) -> Result<(), String> {
+    fn step(&mut self, at: StepRef<'_>, op: Op<'_, Step>) -> Result<(), String> {
+        let j = at.index;
+        let named = match op {
+            Op::Add { new } | Op::Modify { new, .. } => &new.name,
+            Op::Remove { old } => &old.name,
+        };
+        if at.name != named {
+            return Err(format!("step ref {} names {named}", at.name));
+        }
         match op {
             Op::Add { new } | Op::Modify { new, .. } => {
                 if self.new_names.get(j) != Some(&new.name) {
@@ -293,11 +301,21 @@ impl JobApplier for JobRebuilder {
     }
     fn tasks(
         &mut self,
-        j: usize,
+        at: StepRef<'_>,
         space: Option<&StepParameterSpace>,
         change: &TaskChange,
     ) -> Result<(), String> {
-        let name = self.new_names.get(j).ok_or("bad step index")?.clone();
+        let name = self
+            .new_names
+            .get(at.index)
+            .ok_or("bad step index")?
+            .clone();
+        if name != at.name {
+            return Err(format!(
+                "step index {} is {name}, not {}",
+                at.index, at.name
+            ));
+        }
         let step = self.steps.get_mut(&name).ok_or("tasks before their step")?;
         step.parameter_space = space.cloned();
         if matches!(change, TaskChange::Boxes(_)) {
@@ -378,17 +396,13 @@ fn summary(p: &crate::job::apply::ApplyPlan<'_>, old: &Job, new: &Job) -> Vec<St
             Action::Job(_) => "job".to_string(),
             Action::Parameter(op) => format!("param {}", name_of(op, |p| &p.name)),
             Action::Environment(_, op) => format!("env {}", name_of(op, |e| &e.name)),
-            Action::Step(i, op) => {
-                let verb = match op {
-                    Op::Add { .. } => "add",
-                    Op::Modify { .. } => "modify",
-                    Op::Remove { .. } => "remove",
-                };
+            Action::Step(at, op) => {
                 let n = match op {
-                    Op::Remove { .. } => &old.steps[*i].name,
-                    _ => &new.steps[*i].name,
+                    Op::Remove { .. } => &old.steps[at.index].name,
+                    _ => &new.steps[at.index].name,
                 };
-                format!("step {verb} {n}")
+                assert_eq!(at.name, n);
+                format!("step {} {n}", op.verb())
             }
             Action::Tasks { step, change, .. } => {
                 let c = match change {
@@ -400,7 +414,8 @@ fn summary(p: &crate::job::apply::ApplyPlan<'_>, old: &Job, new: &Job) -> Vec<St
                     TaskChange::All => "all".into(),
                     TaskChange::Replace => "replace".into(),
                 };
-                format!("tasks {} {c}", new.steps[*step].name)
+                assert_eq!(step.name, new.steps[step.index].name);
+                format!("tasks {} {c}", step.name)
             }
         })
         .collect()
@@ -493,12 +508,12 @@ impl JobApplier for Recorder {
     fn environment(&mut self, _: usize, _: Op<'_, Environment>) -> Result<(), String> {
         self.write()
     }
-    fn step(&mut self, _: usize, _: Op<'_, Step>) -> Result<(), String> {
+    fn step(&mut self, _: StepRef<'_>, _: Op<'_, Step>) -> Result<(), String> {
         self.write()
     }
     fn tasks(
         &mut self,
-        _: usize,
+        _: StepRef<'_>,
         _: Option<&StepParameterSpace>,
         _: &TaskChange,
     ) -> Result<(), String> {
@@ -546,7 +561,7 @@ fn a_store_veto_writes_nothing() {
     };
     assert!(matches!(
         validate(&p, &AllowList::of(p.kinds()), &mut r),
-        Err(ApplyError::Store { op: 0, .. })
+        Err(ApplyError::Vetoed { op: 0, .. })
     ));
     assert_eq!(r.writes, 0);
 }
@@ -1032,7 +1047,7 @@ fn step_adds_carry_their_final_index() {
         .ops
         .iter()
         .filter_map(|o| match o.action {
-            Action::Step(j, Op::Add { .. }) => Some(j),
+            Action::Step(at, Op::Add { .. }) => Some(at.index),
             _ => None,
         })
         .collect();
@@ -1134,4 +1149,357 @@ fn every_kind_is_refused_on_its_own() {
         }
     }
     assert!(seen.len() >= 11, "{seen:?}");
+}
+
+// ─── host adaptor ───────────────────────────────────────────────────
+
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// The reference adaptor: a store reached through
+/// `&mut dyn JobApplier<Error = BoxError>` that converts every call to plain
+/// data and logs it, as a PyO3 adaptor would hand dicts to Python, then
+/// forwards the call to an inner store.
+struct DynStore<S> {
+    inner: S,
+    log: Vec<serde_json::Value>,
+    /// Fail the write with this number (0-based, `begin`/`commit` excluded)
+    /// once, before it reaches the inner store.
+    fail_at: Option<usize>,
+    writes: usize,
+}
+
+impl<S> DynStore<S> {
+    fn new(inner: S) -> Self {
+        Self {
+            inner,
+            log: Vec::new(),
+            fail_at: None,
+            writes: 0,
+        }
+    }
+
+    fn record(&mut self, entry: serde_json::Value, write: bool) -> Result<(), BoxError> {
+        if write {
+            if self.fail_at == Some(self.writes) {
+                self.fail_at = None;
+                return Err("transient".into());
+            }
+            self.writes += 1;
+        }
+        self.log.push(entry);
+        Ok(())
+    }
+}
+
+impl<S: JobApplier<Error = String>> JobApplier for DynStore<S> {
+    type Error = BoxError;
+
+    fn check(&mut self, op: &crate::job::apply::PlannedOp<'_>) -> Result<(), BoxError> {
+        self.record(
+            serde_json::json!({"call": "check", "op": op.to_value()?}),
+            false,
+        )?;
+        Ok(self.inner.check(op)?)
+    }
+    fn begin(&mut self) -> Result<(), BoxError> {
+        self.record(serde_json::json!({"call": "begin"}), false)?;
+        Ok(self.inner.begin()?)
+    }
+    fn job(&mut self, op: Op<'_, Job>) -> Result<(), BoxError> {
+        self.record(
+            serde_json::json!({"call": "job", "op": op.to_value()?}),
+            true,
+        )?;
+        Ok(self.inner.job(op)?)
+    }
+    fn parameter(&mut self, op: Op<'_, JobParameter>) -> Result<(), BoxError> {
+        self.record(
+            serde_json::json!({"call": "parameter", "op": op.to_value()?}),
+            true,
+        )?;
+        Ok(self.inner.parameter(op)?)
+    }
+    fn environment(&mut self, index: usize, op: Op<'_, Environment>) -> Result<(), BoxError> {
+        self.record(
+            serde_json::json!({"call": "environment", "index": index, "op": op.to_value()?}),
+            true,
+        )?;
+        Ok(self.inner.environment(index, op)?)
+    }
+    fn step(&mut self, step: StepRef<'_>, op: Op<'_, Step>) -> Result<(), BoxError> {
+        self.record(
+            serde_json::json!({"call": "step", "step": step, "op": op.to_value()?}),
+            true,
+        )?;
+        Ok(self.inner.step(step, op)?)
+    }
+    fn tasks(
+        &mut self,
+        step: StepRef<'_>,
+        space: Option<&StepParameterSpace>,
+        change: &TaskChange,
+    ) -> Result<(), BoxError> {
+        self.record(
+            serde_json::json!({
+                "call": "tasks", "step": step, "space": space, "change": change.to_value()?,
+            }),
+            true,
+        )?;
+        Ok(self.inner.tasks(step, space, change)?)
+    }
+    fn commit(&mut self) -> Result<(), BoxError> {
+        self.record(serde_json::json!({"call": "commit"}), false)?;
+        Ok(self.inner.commit()?)
+    }
+}
+
+/// `roundtrip`, through the reference adaptor behind a `dyn`.
+fn roundtrip_dyn(a: &Job, b: &Job) -> Vec<serde_json::Value> {
+    let mut s = DynStore::new(JobRebuilder::holding(
+        a,
+        b.steps.iter().map(|s| s.name.clone()).collect(),
+    ));
+    let all = AllowList::of(plan(a, b).unwrap().kinds());
+    let store: &mut dyn JobApplier<Error = BoxError> = &mut s;
+    apply(a, b, &all, store).unwrap();
+    s.inner.assert_holds(b);
+    s.log
+}
+
+#[test]
+fn the_dyn_adaptor_replays_the_oracle_cases() {
+    let mut pairs = vec![
+        (job(V1, &[]), job(V2, &[])),
+        (job(V1, &[]), job(V1, &[("Frames", "0-10")])),
+        (job(V1, &[]), job(V1, &[("Frames", "1-5")])),
+        (job(V1, &[]), job(V1, &[("Scene", "shot020.blend")])),
+        (job(CAMS1, &[]), job(CAMS2, &[])),
+        (job(ENVS, &[]), job(&envs("E3,E9"), &[("S", "z")])),
+    ];
+    for (from, to) in [("E1,E2,E3", "E4,E2,E5"), ("E1,E2", "E2,E1,E3")] {
+        pairs.push((job(&envs(from), &[]), job(&envs(to), &[])));
+    }
+    for (from, to) in [("C", "A>B,B,C"), ("A", "B>C,A,C"), ("A,B>A,C", "C")] {
+        pairs.push((job(&graph(from, ""), &[]), job(&graph(to, ""), &[])));
+    }
+    for (a, b) in &pairs {
+        for (x, y) in [(a, b), (b, a)] {
+            let log = roundtrip_dyn(x, y);
+            let checks = log.iter().filter(|e| e["call"] == "check").count();
+            assert_eq!(checks, plan(x, y).unwrap().ops.len(), "one check per op");
+        }
+    }
+}
+
+const MORE_FRAMES: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: Frames
+parameterDefinitions:
+  - {name: Frames, type: STRING, default: "1-2"}
+steps:
+  - name: Render
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: Frame, type: INT, range: "{{Param.Frames}}"}
+    script:
+      actions:
+        onRun: {command: render, args: ["{{Task.Param.Frame}}"]}
+"#;
+
+#[test]
+fn the_dyn_adaptor_logs_plain_data() {
+    let (a, b) = (
+        job(MORE_FRAMES, &[]),
+        job(MORE_FRAMES, &[("Frames", "1-4")]),
+    );
+    let log: Vec<String> = roundtrip_dyn(&a, &b)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let space = r#"{"combination":null,"taskParameterDefinitions":{"Frame":{"int":{"chunks":null,"range":{"rangeExpr":{"cumulative_lengths":[4],"length":4,"ranges":[{"end":4,"start":1,"step":1}]}}}}}}"#;
+    let change = r#"{"appended":[{"Frame":{"type":"INT","value":"3"}},{"Frame":{"type":"INT","value":"4"}}],"appendedCount":2,"change":"boxes","keptCount":2,"oldCount":2,"removed":[],"removedCount":0}"#;
+    let param = r#"{"change":"modify","new":{"name":"Frames","paramType":"String","value":{"String":"1-4"}},"old":{"name":"Frames","paramType":"String","value":{"String":"1-2"}}}"#;
+    let step = r#"{"index":0,"name":"Render"}"#;
+    assert_eq!(
+        log,
+        vec![
+            format!(
+                r#"{{"call":"check","op":{{"action":"parameter","kinds":["ParameterValue"],"op":{param}}}}}"#
+            ),
+            format!(
+                r#"{{"call":"check","op":{{"action":"tasks","kinds":["TaskAppend"],"space":{space},"step":{step},"tasks":{change}}}}}"#
+            ),
+            r#"{"call":"begin"}"#.to_string(),
+            format!(r#"{{"call":"parameter","op":{param}}}"#),
+            format!(r#"{{"call":"tasks","change":{change},"space":{space},"step":{step}}}"#),
+            r#"{"call":"commit"}"#.to_string(),
+        ]
+    );
+}
+
+#[test]
+fn the_dyn_adaptor_resumes_after_a_failed_write() {
+    let (a, b) = (job(V1, &[]), job(V2, &[]));
+    let p = plan(&a, &b).unwrap();
+    let mut s = DynStore::new(JobRebuilder::holding(
+        &a,
+        b.steps.iter().map(|s| s.name.clone()).collect(),
+    ));
+    s.fail_at = Some(3);
+    let store: &mut dyn JobApplier<Error = BoxError> = &mut s;
+    validate(&p, &AllowList::of(p.kinds()), store).unwrap();
+    let err = execute(&p, store, 0).unwrap_err();
+    assert_eq!(err.to_string(), "write 3 failed: transient");
+    let ApplyError::Store { op, .. } = err else {
+        panic!("expected a store error, got {err:?}");
+    };
+    assert_eq!(op, 3);
+    let report = execute(&p, store, op).unwrap();
+    assert_eq!(report.applied, p.ops.len());
+    assert_eq!(s.writes, p.ops.len());
+    s.inner.assert_holds(&b);
+}
+
+#[test]
+fn op_documents_match_the_job_document() {
+    let (a, b) = (job(V1, &[]), job(V2, &[]));
+    let doc = |j: &Job| serde_json::to_value(crate::job::template_diff::JobDocument(j)).unwrap();
+    let (da, db) = (doc(&a), doc(&b));
+    let p = plan(&a, &b).unwrap();
+    let mut seen = 0;
+    for o in &p.ops {
+        match &o.action {
+            Action::Step(at, op) => {
+                let v = op.to_value().unwrap();
+                match op {
+                    Op::Add { .. } => assert_eq!(v["new"], db["steps"][at.index]),
+                    Op::Modify { node, .. } => {
+                        let (Some(i), Some(j)) = (
+                            p.diff.nodes()[*node].old_index,
+                            p.diff.nodes()[*node].new_index,
+                        ) else {
+                            panic!("a modify has both indices");
+                        };
+                        assert_eq!(v["old"], da["steps"][i]);
+                        assert_eq!(v["new"], db["steps"][j]);
+                    }
+                    Op::Remove { .. } => assert_eq!(v["old"], da["steps"][at.index]),
+                }
+                seen += 1;
+            }
+            Action::Environment(i, Op::Modify { new, .. }) => {
+                let v = o.to_value().unwrap();
+                assert_eq!(v["op"]["new"], db["jobEnvironments"][*i]);
+                assert_eq!(new.name, "Conda");
+                seen += 1;
+            }
+            Action::Parameter(op) => {
+                let v = op.to_value().unwrap();
+                assert_eq!(v["new"], db["parameters"]["Frames"]);
+                assert_eq!(v["old"], da["parameters"]["Frames"]);
+                seen += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(seen, 5);
+}
+
+// ─── refusals, kinds and errors as a host sees them ─────────────────
+
+#[test]
+fn refusals_name_the_target_and_the_kind() {
+    let swapped = ENVS.replace(
+        "        - {name: F, type: INT, range: \"1-2\"}\n        - {name: C, type: STRING, range: [l, r]}\n",
+        "        - {name: C, type: STRING, range: [l, r]}\n        - {name: F, type: INT, range: \"1-2\"}\n",
+    );
+    let cases: Vec<(Job, Job, &str)> = vec![
+        (
+            job(ENVS, &[]),
+            job(&swapped, &[]),
+            "step R: TaskReplace is not allowed",
+        ),
+        (
+            job(V1, &[]),
+            job(V1, &[("Frames", "1-12")]),
+            "parameter Frames: ParameterValue is not allowed",
+        ),
+        (
+            job(&envs("E1=1"), &[]),
+            job(&envs("E1=2"), &[]),
+            "job environment E1: EnvVariables is not allowed",
+        ),
+        (
+            job(KINDS, &[]),
+            job(&KINDS.replace("name: Kinds", "name: Kinds2"), &[]),
+            "job: JobMetadata is not allowed",
+        ),
+    ];
+    for (a, b, want) in cases {
+        let err = apply(&a, &b, &AllowList::default(), &mut Recorder::default()).unwrap_err();
+        assert_eq!(err.to_string(), want);
+        let ApplyError::Refused { refusal, .. } = &err else {
+            panic!("expected Refused, got {err:?}");
+        };
+        assert_eq!(refusal.to_string(), want);
+        let source = std::error::Error::source(&err).map(ToString::to_string);
+        assert_eq!(source.as_deref(), Some(want));
+    }
+}
+
+#[test]
+fn a_store_veto_names_the_target() {
+    let (a, b) = (job(V1, &[]), job(V2, &[]));
+    let p = plan(&a, &b).unwrap();
+    let mut r = Recorder {
+        veto: true,
+        ..Recorder::default()
+    };
+    let err = validate(&p, &AllowList::of(p.kinds()), &mut r).unwrap_err();
+    assert_eq!(err.to_string(), "parameter Frames: vetoed");
+    assert!(std::error::Error::source(&err).is_none());
+}
+
+#[test]
+fn a_model_error_displays_as_itself() {
+    let a = job(&graph("A,B", ""), &[]);
+    let mut dup = a.clone();
+    dup.steps.push(a.steps[0].clone());
+    let err = apply(&a, &dup, &AllowList::default(), &mut Recorder::default()).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Model validation error: 1 validation error for Job\nsteps[2] -> name:\n\trepeated name 'A': job::apply needs unique names"
+    );
+    assert!(std::error::Error::source(&err).is_some());
+}
+
+#[test]
+fn every_kind_round_trips_through_its_name() {
+    assert_eq!(MutationKind::ALL.len(), 24);
+    let names: std::collections::BTreeSet<&str> =
+        MutationKind::ALL.iter().map(|k| k.name()).collect();
+    assert_eq!(names.len(), MutationKind::ALL.len(), "names are unique");
+    for &k in MutationKind::ALL {
+        assert_eq!(
+            k.to_string(),
+            format!("{k:?}"),
+            "the name is the variant name"
+        );
+        assert_eq!(k.name().parse::<MutationKind>(), Ok(k));
+    }
+}
+
+#[test]
+fn an_allow_list_reads_kind_names() {
+    let list = AllowList::from_names(["TaskAppend", "ParameterValue"]).unwrap();
+    assert_eq!(
+        list,
+        AllowList::of([MutationKind::TaskAppend, MutationKind::ParameterValue])
+    );
+    for bad in ["Nope", "taskappend", ""] {
+        let err = AllowList::from_names(["TaskAppend", bad]).unwrap_err();
+        assert_eq!(err.to_string(), format!("unknown mutation kind '{bad}'"));
+    }
+    let err = "TaskAppend ".parse::<MutationKind>().unwrap_err();
+    assert_eq!(err.to_string(), "unknown mutation kind 'TaskAppend '");
 }

@@ -198,9 +198,7 @@ pub fn execute(args: DiffArgs) -> Result<i32, Box<dyn std::error::Error>> {
         keep_step(&mut diff, step)?;
     }
     let plan = if args.plan { Some(diff.plan()?) } else { None };
-    let plan = plan
-        .as_ref()
-        .map(|p| plan_doc(&diff, p, args.step.as_deref()));
+    let plan = plan.as_ref().map(|p| plan_doc(p, args.step.as_deref()));
     match args.output.as_str() {
         "json" | "yaml" => print_document(&diff, plan, &args)?,
         _ => print_human(&header, &diff, plan.as_ref(), &args),
@@ -337,39 +335,25 @@ struct PlanDoc {
 /// The plan's ops, for printing. With `--step`, only that step's ops and
 /// the job-level ones (job fields, parameters, job environments); `kinds`
 /// is the union over the ops kept.
-fn plan_doc(diff: &TemplateDiff, plan: &ApplyPlan<'_>, step: Option<&str>) -> PlanDoc {
-    let step_name = |i: usize, removed: bool| {
-        let job = if removed {
-            &diff.old_job
-        } else {
-            &diff.new_job
-        };
-        job.steps.get(i).map_or("?", |s| s.name.as_str())
-    };
+fn plan_doc(plan: &ApplyPlan<'_>, step: Option<&str>) -> PlanDoc {
     let mut kinds = BTreeSet::new();
     let mut ops = Vec::new();
     for op in &plan.ops {
         let (action, of_step) = match &op.action {
             Action::Job(_) => ("job modify".to_string(), None),
             Action::Parameter(o) => (
-                format!("parameter {} {}", verb(o), op_name(o, |p| &p.name)),
+                format!("parameter {} {}", o.verb(), op_name(o, |p| &p.name)),
                 None,
             ),
             Action::Environment(_, o) => (
-                format!("job environment {} {}", verb(o), op_name(o, |e| &e.name)),
+                format!("job environment {} {}", o.verb(), op_name(o, |e| &e.name)),
                 None,
             ),
-            Action::Step(i, o) => {
-                let name = step_name(*i, matches!(o, Op::Remove { .. }));
-                (format!("step {} {name}", verb(o)), Some(name))
-            }
-            Action::Tasks { step, change, .. } => {
-                let name = step_name(*step, false);
-                (
-                    format!("tasks of {name}: {}", task_change(change)),
-                    Some(name),
-                )
-            }
+            Action::Step(s, o) => (format!("step {} {}", o.verb(), s.name), Some(s.name)),
+            Action::Tasks { step, change, .. } => (
+                format!("tasks of {}: {}", step.name, task_change(change)),
+                Some(step.name),
+            ),
             _ => ("other".to_string(), None),
         };
         if step.is_some() && of_step.is_some() && of_step != step {
@@ -378,20 +362,12 @@ fn plan_doc(diff: &TemplateDiff, plan: &ApplyPlan<'_>, step: Option<&str>) -> Pl
         kinds.extend(op.kinds.iter().copied());
         ops.push(PlanOp {
             action,
-            kinds: op.kinds.iter().map(|k| format!("{k:?}")).collect(),
+            kinds: op.kinds.iter().map(ToString::to_string).collect(),
         });
     }
     PlanDoc {
         ops,
-        kinds: kinds.iter().map(|k| format!("{k:?}")).collect(),
-    }
-}
-
-fn verb<T>(op: &Op<'_, T>) -> &'static str {
-    match op {
-        Op::Add { .. } => "add",
-        Op::Modify { .. } => "modify",
-        Op::Remove { .. } => "remove",
+        kinds: kinds.iter().map(ToString::to_string).collect(),
     }
 }
 

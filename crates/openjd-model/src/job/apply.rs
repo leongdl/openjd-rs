@@ -22,20 +22,118 @@
 //! 3. [`execute`] hands the ops, in order, to a [`JobApplier`].
 //!
 //! [`apply`] runs all three. See `specs/model/job-apply.md`.
+//!
+//! A host store plugs in by implementing [`JobApplier`], directly in Rust or
+//! through an adaptor that forwards each call to another language. The
+//! trait is object safe, every call names its step ([`StepRef`]), and every
+//! payload has a plain-data form ([`Op::as_document`],
+//! [`TaskChange::as_document`], [`PlannedOp::as_document`]).
 
 use std::collections::{BTreeSet, HashSet};
+use std::fmt;
+use std::str::FromStr;
+
+use serde::ser::{Error as _, SerializeMap};
+use serde::{Serialize, Serializer};
 
 use crate::error::ModelError;
 use crate::job::diff::{
     diff_environments, diff_jobs, diff_steps, DiffNode, DiffNodeId, DiffNodeKind, DiffOptions,
     DiffStatus, DiffTree,
 };
-use crate::job::task_delta::{task_delta, ProductDelta, TaskDelta};
+use crate::job::task_delta::{task_delta, task_parameter_set_document, ProductDelta, TaskDelta};
+use crate::job::template_diff::{DocEnvironment, DocStep, JobDocument};
 use crate::job::{Environment, Job, JobParameter, Step, StepParameterSpace};
 use crate::step_dependency_graph::StepDependencyGraph;
 
 /// Index of a step: into `new.steps`, or into `old.steps` for a removal.
 pub type StepIndex = usize;
+
+/// A step as an op names it: its name, and its index in `new.steps` (or
+/// `old.steps` for a removal). A store keyed by name never needs the job to
+/// resolve the index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub struct StepRef<'a> {
+    /// The step's name.
+    pub name: &'a str,
+    /// The step's index, as [`StepIndex`].
+    pub index: StepIndex,
+}
+
+/// The object an op writes, owned, for messages and errors.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum OpTarget {
+    /// The job's own fields.
+    Job,
+    /// A job parameter, by name.
+    Parameter(String),
+    /// A job environment, by name.
+    Environment(String),
+    /// A step (its own fields or its tasks).
+    Step {
+        /// The step's name.
+        name: String,
+        /// The step's index, as in [`StepRef`].
+        index: StepIndex,
+    },
+}
+
+impl fmt::Display for OpTarget {
+    /// `job`, `parameter Frames`, `job environment Conda`, `step Render`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Job => f.write_str("job"),
+            Self::Parameter(n) => write!(f, "parameter {n}"),
+            Self::Environment(n) => write!(f, "job environment {n}"),
+            Self::Step { name, .. } => write!(f, "step {name}"),
+        }
+    }
+}
+
+/// A model type with a plain-data form: the form [`JobDocument`] writes it
+/// in, so `parameters` and environment `variables` are sorted by name and
+/// task parameter definitions keep their order (which is task order).
+///
+/// Serialize the document straight into the host's own value type when it
+/// keeps key order (a PyO3 adaptor building a `dict`). A `serde_json::Value`
+/// sorts object keys, so there `taskParameterDefinitions` comes back in name
+/// order, not definition order.
+pub trait ToDocument {
+    /// The document view. It borrows `self` and serializes on demand.
+    fn as_document(&self) -> impl Serialize + '_;
+}
+
+impl ToDocument for Job {
+    fn as_document(&self) -> impl Serialize + '_ {
+        JobDocument(self)
+    }
+}
+
+impl ToDocument for Step {
+    fn as_document(&self) -> impl Serialize + '_ {
+        DocStep::new(self)
+    }
+}
+
+impl ToDocument for Environment {
+    fn as_document(&self) -> impl Serialize + '_ {
+        DocEnvironment::new(self)
+    }
+}
+
+impl ToDocument for JobParameter {
+    fn as_document(&self) -> impl Serialize + '_ {
+        self
+    }
+}
+
+/// A document as a `serde_json::Value`; a serialization failure becomes a
+/// `DecodeValidation` error naming what was being written.
+fn to_json_value(doc: impl Serialize, what: &str) -> Result<serde_json::Value, ModelError> {
+    serde_json::to_value(doc)
+        .map_err(|e| ModelError::DecodeValidation(format!("cannot write the {what} as data: {e}")))
+}
 
 /// A change to one object at one level. `T` is the model type at that level.
 #[derive(Debug, PartialEq)]
@@ -70,16 +168,122 @@ impl<T> Clone for Op<'_, T> {
 }
 impl<T> Copy for Op<'_, T> {}
 
+impl<T> Op<'_, T> {
+    /// `"add"`, `"modify"` or `"remove"`.
+    #[must_use]
+    pub fn verb(&self) -> &'static str {
+        match self {
+            Op::Add { .. } => "add",
+            Op::Modify { .. } => "modify",
+            Op::Remove { .. } => "remove",
+        }
+    }
+}
+
+impl<T: ToDocument> Op<'_, T> {
+    /// The op as plain data: `{"change": "add", "new": …}`,
+    /// `{"change": "modify", "old": …, "new": …}` or
+    /// `{"change": "remove", "old": …}`, each object in its
+    /// [`ToDocument`] form. `Modify::node` is left out: it indexes the
+    /// plan's diff, which the host does not hold.
+    pub fn as_document(&self) -> impl Serialize + '_ {
+        OpDocument(*self)
+    }
+
+    /// [`as_document`](Self::as_document) as a `serde_json::Value`.
+    pub fn to_value(&self) -> Result<serde_json::Value, ModelError> {
+        to_json_value(self.as_document(), "op")
+    }
+}
+
+struct OpDocument<'a, T>(Op<'a, T>);
+
+impl<T: ToDocument> Serialize for OpDocument<'_, T> {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        let mut m = ser.serialize_map(None)?;
+        m.serialize_entry("change", self.0.verb())?;
+        match self.0 {
+            Op::Add { new } => m.serialize_entry("new", &new.as_document())?,
+            Op::Modify { old, new, .. } => {
+                m.serialize_entry("old", &old.as_document())?;
+                m.serialize_entry("new", &new.as_document())?;
+            }
+            Op::Remove { old } => m.serialize_entry("old", &old.as_document())?,
+        }
+        m.end()
+    }
+}
+
 /// How a step's tasks change.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskChange {
-    /// Product space: keep `kept`, append `added`, delete `removed`.
+    /// Product space: keep `kept`, append `added`, delete `removed`. The
+    /// host's order for both is [`ProductDelta::appended`] and
+    /// [`ProductDelta::removed`].
     Boxes(Box<ProductDelta>),
     /// A newly added step: all tasks of its space, store indices from 0.
     All,
     /// No per-task mapping (association, chunking, a parameter added or
     /// removed, ...): replace every task.
     Replace,
+}
+
+impl TaskChange {
+    /// The change as plain data. `All` is `{"change": "all"}` and `Replace`
+    /// is `{"change": "replace"}`: the host enumerates the new space for
+    /// those, as at job creation. `Boxes` is
+    ///
+    /// ```text
+    /// {"change": "boxes", "oldCount": n, "keptCount": n,
+    ///  "appendedCount": n, "appended": [<task parameter set>, …],
+    ///  "removedCount": n, "removed": [<old index>, …]}
+    /// ```
+    ///
+    /// with `appended` in [`ProductDelta::appended`] order, so the i-th
+    /// entry takes index `oldCount + i`, and `removed` ascending. A task
+    /// parameter set is written as
+    /// [`task_parameter_set_document`]. Every task is written, so the
+    /// document's size is linear in the number of tasks that change.
+    pub fn as_document(&self) -> impl Serialize + '_ {
+        TaskChangeDocument(self)
+    }
+
+    /// [`as_document`](Self::as_document) as a `serde_json::Value`.
+    pub fn to_value(&self) -> Result<serde_json::Value, ModelError> {
+        to_json_value(self.as_document(), "task change")
+    }
+}
+
+struct TaskChangeDocument<'a>(&'a TaskChange);
+
+impl Serialize for TaskChangeDocument<'_> {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        let mut m = ser.serialize_map(None)?;
+        match self.0 {
+            TaskChange::All => m.serialize_entry("change", "all")?,
+            TaskChange::Replace => m.serialize_entry("change", "replace")?,
+            TaskChange::Boxes(d) => {
+                m.serialize_entry("change", "boxes")?;
+                m.serialize_entry("oldCount", &d.old.len())?;
+                m.serialize_entry("keptCount", &d.kept.len())?;
+                m.serialize_entry("appendedCount", &d.appended_count())?;
+                let appended: Vec<serde_json::Value> = d
+                    .appended()
+                    .map_err(S::Error::custom)?
+                    .map(|t| task_parameter_set_document(&t))
+                    .collect();
+                m.serialize_entry("appended", &appended)?;
+                m.serialize_entry("removedCount", &d.removed_count())?;
+                let removed: Vec<u64> = d
+                    .removed()
+                    .map_err(S::Error::custom)?
+                    .map(|(i, _)| i)
+                    .collect();
+                m.serialize_entry("removed", &removed)?;
+            }
+        }
+        m.end()
+    }
 }
 
 /// A kind of mutation, the unit a [`MutationPolicy`] allows or refuses.
@@ -137,6 +341,100 @@ pub enum MutationKind {
     TaskReplace,
 }
 
+impl MutationKind {
+    /// Every kind, in declaration order.
+    pub const ALL: &'static [MutationKind] = &[
+        Self::JobMetadata,
+        Self::JobExtensions,
+        Self::ParameterValue,
+        Self::ParameterAdd,
+        Self::ParameterRemove,
+        Self::EnvVariables,
+        Self::EnvScript,
+        Self::EnvMetadata,
+        Self::EnvSymbols,
+        Self::EnvAdd,
+        Self::EnvRemove,
+        Self::EnvReorder,
+        Self::StepMetadata,
+        Self::StepScript,
+        Self::StepHostRequirements,
+        Self::StepDependencies,
+        Self::StepSymbols,
+        Self::StepParameterSpace,
+        Self::StepAdd,
+        Self::StepRemove,
+        Self::StepReorder,
+        Self::TaskAppend,
+        Self::TaskRemove,
+        Self::TaskReplace,
+    ];
+
+    /// The kind's stable name: its variant name, such as `TaskAppend`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::JobMetadata => "JobMetadata",
+            Self::JobExtensions => "JobExtensions",
+            Self::ParameterValue => "ParameterValue",
+            Self::ParameterAdd => "ParameterAdd",
+            Self::ParameterRemove => "ParameterRemove",
+            Self::EnvVariables => "EnvVariables",
+            Self::EnvScript => "EnvScript",
+            Self::EnvMetadata => "EnvMetadata",
+            Self::EnvSymbols => "EnvSymbols",
+            Self::EnvAdd => "EnvAdd",
+            Self::EnvRemove => "EnvRemove",
+            Self::EnvReorder => "EnvReorder",
+            Self::StepMetadata => "StepMetadata",
+            Self::StepScript => "StepScript",
+            Self::StepHostRequirements => "StepHostRequirements",
+            Self::StepDependencies => "StepDependencies",
+            Self::StepSymbols => "StepSymbols",
+            Self::StepParameterSpace => "StepParameterSpace",
+            Self::StepAdd => "StepAdd",
+            Self::StepRemove => "StepRemove",
+            Self::StepReorder => "StepReorder",
+            Self::TaskAppend => "TaskAppend",
+            Self::TaskRemove => "TaskRemove",
+            Self::TaskReplace => "TaskReplace",
+        }
+    }
+}
+
+impl fmt::Display for MutationKind {
+    /// The [`name`](Self::name).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl FromStr for MutationKind {
+    type Err = UnknownMutationKind;
+
+    /// The kind with this exact [`name`](Self::name); case-sensitive.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|k| k.name() == s)
+            .ok_or_else(|| UnknownMutationKind(s.to_string()))
+    }
+}
+
+/// A name that is not a [`MutationKind`]. Holds the name as given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownMutationKind(pub String);
+
+impl fmt::Display for UnknownMutationKind {
+    /// `unknown mutation kind 'Foo'`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown mutation kind '{}'", self.0)
+    }
+}
+
+impl std::error::Error for UnknownMutationKind {}
+
 /// What an op does.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -153,11 +451,11 @@ pub enum Action<'a> {
     /// Step environments travel with their step.
     Environment(usize, Op<'a, Environment>),
     /// A step, including its step environments.
-    Step(StepIndex, Op<'a, Step>),
+    Step(StepRef<'a>, Op<'a, Step>),
     /// A step's tasks. `space` is the step's new parameter space.
     Tasks {
         /// The step, in `new.steps`.
-        step: StepIndex,
+        step: StepRef<'a>,
         /// The new parameter space; `None` is one task with no parameters.
         space: Option<&'a StepParameterSpace>,
         /// The change.
@@ -172,6 +470,86 @@ pub struct PlannedOp<'a> {
     pub kinds: BTreeSet<MutationKind>,
     /// What to do.
     pub action: Action<'a>,
+}
+
+fn op_name<'a, T>(op: &Op<'a, T>, name: impl Fn(&'a T) -> &'a String) -> String {
+    match *op {
+        Op::Add { new } | Op::Modify { new, .. } => name(new).clone(),
+        Op::Remove { old } => name(old).clone(),
+    }
+}
+
+impl PlannedOp<'_> {
+    /// The object this op writes.
+    #[must_use]
+    pub fn target(&self) -> OpTarget {
+        match &self.action {
+            Action::Job(_) => OpTarget::Job,
+            Action::Parameter(o) => OpTarget::Parameter(op_name(o, |p| &p.name)),
+            Action::Environment(_, o) => OpTarget::Environment(op_name(o, |e| &e.name)),
+            Action::Step(s, _) | Action::Tasks { step: s, .. } => OpTarget::Step {
+                name: s.name.to_string(),
+                index: s.index,
+            },
+        }
+    }
+
+    /// The op as plain data, as [`JobApplier::check`] might hand it to a
+    /// host: `{"kinds": [<kind name>, …], "action": "job" | "parameter" |
+    /// "environment" | "step" | "tasks", …}`. `environment` adds `"index"`
+    /// and `"op"`; `step` adds `"step"` (a [`StepRef`]) and `"op"`; `tasks`
+    /// adds `"step"`, `"space"` (the step's new parameter space) and
+    /// `"tasks"` ([`TaskChange::as_document`]). `"op"` is
+    /// [`Op::as_document`].
+    pub fn as_document(&self) -> impl Serialize + '_ {
+        PlannedOpDocument(self)
+    }
+
+    /// [`as_document`](Self::as_document) as a `serde_json::Value`.
+    pub fn to_value(&self) -> Result<serde_json::Value, ModelError> {
+        to_json_value(self.as_document(), "planned op")
+    }
+}
+
+struct PlannedOpDocument<'a, 'b>(&'a PlannedOp<'b>);
+
+impl Serialize for PlannedOpDocument<'_, '_> {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        let mut m = ser.serialize_map(None)?;
+        let kinds: Vec<&str> = self.0.kinds.iter().map(|k| k.name()).collect();
+        m.serialize_entry("kinds", &kinds)?;
+        match &self.0.action {
+            Action::Job(o) => {
+                m.serialize_entry("action", "job")?;
+                m.serialize_entry("op", &o.as_document())?;
+            }
+            Action::Parameter(o) => {
+                m.serialize_entry("action", "parameter")?;
+                m.serialize_entry("op", &o.as_document())?;
+            }
+            Action::Environment(i, o) => {
+                m.serialize_entry("action", "environment")?;
+                m.serialize_entry("index", i)?;
+                m.serialize_entry("op", &o.as_document())?;
+            }
+            Action::Step(s, o) => {
+                m.serialize_entry("action", "step")?;
+                m.serialize_entry("step", s)?;
+                m.serialize_entry("op", &o.as_document())?;
+            }
+            Action::Tasks {
+                step,
+                space,
+                change,
+            } => {
+                m.serialize_entry("action", "tasks")?;
+                m.serialize_entry("step", step)?;
+                m.serialize_entry("space", space)?;
+                m.serialize_entry("tasks", &change.as_document())?;
+            }
+        }
+        m.end()
+    }
 }
 
 /// An ordered list of ops. Plain data: log it, dry-run it, or resume it.
@@ -194,14 +572,39 @@ impl ApplyPlan<'_> {
     }
 }
 
-/// Why a [`MutationPolicy`] refused an op.
+/// Why a [`MutationPolicy`] refused an op: a kind that is not allowed yet,
+/// whatever the store holds. A store's own veto, a kind that is not allowed
+/// in the store's current state, is [`ApplyError::Vetoed`] instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
     /// The refused kind.
     pub kind: MutationKind,
-    /// Why.
+    /// What the refused op writes.
+    pub target: OpTarget,
+    /// Why, as a sentence a host can show after the target.
     pub reason: String,
 }
+
+impl Refusal {
+    /// A refusal of `kind` on `op`'s target.
+    #[must_use]
+    pub fn new(op: &PlannedOp<'_>, kind: MutationKind, reason: impl Into<String>) -> Self {
+        Self {
+            kind,
+            target: op.target(),
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for Refusal {
+    /// `{target}: {reason}`, e.g. `step Render: TaskReplace is not allowed`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.target, self.reason)
+    }
+}
+
+impl std::error::Error for Refusal {}
 
 /// Decides which kinds of mutation may run.
 pub trait MutationPolicy {
@@ -218,23 +621,40 @@ impl AllowList {
     pub fn of(kinds: impl IntoIterator<Item = MutationKind>) -> Self {
         Self(kinds.into_iter().collect())
     }
+
+    /// Allow the kinds with these [names](MutationKind::name), such as a
+    /// host's configuration lists. The first name that is not a kind is the
+    /// error.
+    pub fn from_names<'a>(
+        names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Self, UnknownMutationKind> {
+        names
+            .into_iter()
+            .map(MutationKind::from_str)
+            .collect::<Result<_, _>>()
+            .map(Self)
+    }
 }
 
 impl MutationPolicy for AllowList {
+    /// Refuses the first of the op's kinds, in [`MutationKind`] order, that
+    /// is not in the list, with the reason `{kind} is not allowed`.
     fn allows(&self, op: &PlannedOp<'_>) -> Result<(), Refusal> {
         match op.kinds.iter().find(|k| !self.0.contains(k)) {
-            Some(&kind) => Err(Refusal {
-                kind,
-                reason: format!("{kind:?} is not allowed"),
-            }),
+            Some(&kind) => Err(Refusal::new(op, kind, format!("{kind} is not allowed"))),
             None => Ok(()),
         }
     }
 }
 
 /// A store that applies ops. Every method receives ops in plan order.
+///
+/// The trait is object safe: `&mut dyn JobApplier<Error = E>` works with
+/// [`validate`], [`execute`] and [`apply`], so an adaptor that forwards each
+/// call to another language can be one concrete type behind a `dyn`.
 pub trait JobApplier {
-    /// The store's error.
+    /// The store's error. [`ApplyError`] needs only `Debug` and `Display`
+    /// from it, so `Box<dyn std::error::Error + Send + Sync>` works.
     type Error;
 
     /// Store-side veto, called for every op before any write. Default: accept.
@@ -249,11 +669,11 @@ pub trait JobApplier {
     fn environment(&mut self, index: usize, op: Op<'_, Environment>) -> Result<(), Self::Error>;
     /// A step, including its step environments. `Modify` carries the whole
     /// new step; a step whose only change is its tasks gets no step op.
-    fn step(&mut self, step: StepIndex, op: Op<'_, Step>) -> Result<(), Self::Error>;
+    fn step(&mut self, step: StepRef<'_>, op: Op<'_, Step>) -> Result<(), Self::Error>;
     /// A step's tasks.
     fn tasks(
         &mut self,
-        step: StepIndex,
+        step: StepRef<'_>,
         space: Option<&StepParameterSpace>,
         change: &TaskChange,
     ) -> Result<(), Self::Error>;
@@ -277,8 +697,19 @@ pub enum ApplyError<E> {
         /// The refusal.
         refusal: Refusal,
     },
-    /// The store vetoed in `check` (nothing written) or failed a write at op
-    /// `op` (ops before it were applied).
+    /// The store vetoed op `op` in [`JobApplier::check`]. Nothing was
+    /// written.
+    Vetoed {
+        /// Index of the op in the plan.
+        op: usize,
+        /// What the op writes.
+        target: OpTarget,
+        /// The store's error.
+        error: E,
+    },
+    /// A write failed at op `op` (or in `begin`, reported at `resume_from`,
+    /// or in `commit`, reported at the plan's length). Ops before `op` were
+    /// applied.
     Store {
         /// Index of the op.
         op: usize,
@@ -287,6 +718,32 @@ pub enum ApplyError<E> {
     },
     /// Planning failed, e.g. a step graph has a cycle.
     Model(ModelError),
+}
+
+impl<E: fmt::Display> fmt::Display for ApplyError<E> {
+    /// `Refused` is the [`Refusal`]; `Vetoed` is `{target}: {error}`;
+    /// `Store` is `write {op} failed: {error}`; `Model` is the model error.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused { refusal, .. } => refusal.fmt(f),
+            Self::Vetoed { target, error, .. } => write!(f, "{target}: {error}"),
+            Self::Store { op, error } => write!(f, "write {op} failed: {error}"),
+            Self::Model(e) => e.fmt(f),
+        }
+    }
+}
+
+/// `source` is the [`Refusal`] or the [`ModelError`]. A store error is in
+/// the message only: `E` need not implement `Error` (a boxed
+/// `dyn Error` does not), so it cannot be returned as a source.
+impl<E: fmt::Debug + fmt::Display> std::error::Error for ApplyError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Refused { refusal, .. } => Some(refusal),
+            Self::Model(e) => Some(e),
+            Self::Vetoed { .. } | Self::Store { .. } => None,
+        }
+    }
 }
 
 /// How far execution got.
@@ -298,7 +755,7 @@ pub struct ApplyReport {
 }
 
 /// Plan, validate and execute.
-pub fn apply<A: JobApplier>(
+pub fn apply<A: JobApplier + ?Sized>(
     old: &Job,
     new: &Job,
     policy: &dyn MutationPolicy,
@@ -310,7 +767,7 @@ pub fn apply<A: JobApplier>(
 }
 
 /// Check every op against the policy, then the store, before any write.
-pub fn validate<A: JobApplier>(
+pub fn validate<A: JobApplier + ?Sized>(
     plan: &ApplyPlan<'_>,
     policy: &dyn MutationPolicy,
     store: &mut A,
@@ -321,15 +778,17 @@ pub fn validate<A: JobApplier>(
             .map_err(|refusal| ApplyError::Refused { op: i, refusal })?;
     }
     for (i, op) in plan.ops.iter().enumerate() {
-        store
-            .check(op)
-            .map_err(|error| ApplyError::Store { op: i, error })?;
+        store.check(op).map_err(|error| ApplyError::Vetoed {
+            op: i,
+            target: op.target(),
+            error,
+        })?;
     }
     Ok(())
 }
 
 /// Run the ops from `resume_from` on, in order. Does not validate.
-pub fn execute<A: JobApplier>(
+pub fn execute<A: JobApplier + ?Sized>(
     plan: &ApplyPlan<'_>,
     store: &mut A,
     resume_from: usize,
@@ -341,7 +800,7 @@ pub fn execute<A: JobApplier>(
             Action::Job(o) => store.job(*o),
             Action::Parameter(o) => store.parameter(*o),
             Action::Environment(i, o) => store.environment(*i, *o),
-            Action::Step(j, o) => store.step(*j, *o),
+            Action::Step(s, o) => store.step(*s, *o),
             Action::Tasks {
                 step,
                 space,
@@ -639,6 +1098,10 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
         };
         let n = &diff.nodes()[id];
         let s = &new.steps[j];
+        let at = StepRef {
+            name: &s.name,
+            index: j,
+        };
         match n.status {
             DiffStatus::Added => {
                 let mut k = kinds([MutationKind::StepAdd]);
@@ -647,12 +1110,12 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
                 }
                 ops.push(PlannedOp {
                     kinds: k,
-                    action: Action::Step(j, Op::Add { new: s }),
+                    action: Action::Step(at, Op::Add { new: s }),
                 });
                 ops.push(PlannedOp {
                     kinds: task_kinds(&TaskChange::All),
                     action: Action::Tasks {
-                        step: j,
+                        step: at,
                         space: s.parameter_space.as_ref(),
                         change: TaskChange::All,
                     },
@@ -682,7 +1145,7 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
                     ops.push(PlannedOp {
                         kinds: k,
                         action: Action::Step(
-                            j,
+                            at,
                             Op::Modify {
                                 old: o,
                                 new: s,
@@ -695,7 +1158,7 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
                     ops.push(PlannedOp {
                         kinds: task_kinds(&change),
                         action: Action::Tasks {
-                            step: j,
+                            step: at,
                             space: s.parameter_space.as_ref(),
                             change,
                         },
@@ -721,9 +1184,16 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
             {
                 k.insert(MutationKind::EnvRemove);
             }
+            let gone = &old.steps[i];
             ops.push(PlannedOp {
                 kinds: k,
-                action: Action::Step(i, Op::Remove { old: &old.steps[i] }),
+                action: Action::Step(
+                    StepRef {
+                        name: &gone.name,
+                        index: i,
+                    },
+                    Op::Remove { old: gone },
+                ),
             });
         }
     }

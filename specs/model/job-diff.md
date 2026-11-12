@@ -130,8 +130,10 @@ hashed, so a 10^6-frame range takes seconds in a release build. Interval arithme
 `RangeExpr` would remove that and is left for later. `old` is the whole old space, and
 `old.index_of(task)` is the row-major (rightmost fastest) position of a task at job
 creation. Equal spaces are `Unchanged`. A different dimension order (a definition reorder with no `combination` or with `*`, or a `combination` that orders the dimensions differently), or a different relative order of the values both sides share in any range, is `Fallback`, because kept tasks move; anything else is `Fallback { reason }`, where
-the caller enumerates and diffs by value. Tests: `src/test_task_delta.rs`, which checks
-each decomposition against brute-force enumeration.
+the caller enumerates and diffs by value. `ProductDelta::appended` and `removed` give the
+new and removed tasks in the order a store assigns or deletes them (see
+[job-apply.md](job-apply.md#task-order)). Tests: `src/test_task_delta.rs`, which checks
+each decomposition, and both orders, against brute-force enumeration.
 
 Each `expand_*` destructures its model type exhaustively, so adding a model field fails
 to compile until the diff handles it.

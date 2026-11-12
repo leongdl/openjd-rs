@@ -18,6 +18,11 @@
 //! at). Every step gets a [`StepSummary`] of its task change, from
 //! [`task_delta`].
 //!
+//! The module also holds the host support functions a job store needs
+//! beside a plan ([`template_step_fragment`], [`build_job_symbol_table`],
+//! [`job_digest`], [`merge_parameters`], [`TemplateInput::preprocessed`]);
+//! see `specs/model/host-support.md`.
+//!
 //! See `specs/model/template-diff.md`.
 
 use std::collections::HashSet;
@@ -44,8 +49,16 @@ use crate::template::parse::{
     decode_environment_template, decode_job_template, document_string_to_object, DocumentType,
 };
 use crate::template::{EnvironmentTemplate, JobParameterDefinition, JobTemplate};
-use crate::types::{CallerLimits, JobParameterInputValues, JobParameterType, ModelExtension};
+use crate::types::{
+    CallerLimits, JobParameterInputValues, JobParameterType, JobParameterValues, ModelExtension,
+};
 use crate::{create_job, preprocess_job_parameters, PathParameterOptions};
+
+mod host;
+pub use host::{
+    build_job_symbol_table, job_digest, merge_parameters, template_job_environment_fragment,
+    template_step_fragment, TemplateStepFragment,
+};
 
 /// Longest [`Shown::text`] in characters before it is cut with `…`.
 const MAX_TEXT_CHARS: usize = 120;
@@ -92,6 +105,7 @@ impl TemplateSource {
 pub struct TemplateInput {
     source: TemplateSource,
     parameters: JobParameterInputValues,
+    preprocessed: Option<JobParameterValues>,
     environments: Vec<TemplateSource>,
     extensions: Vec<String>,
     limits: CallerLimits,
@@ -106,6 +120,7 @@ impl TemplateInput {
         Self {
             source,
             parameters: JobParameterInputValues::new(),
+            preprocessed: None,
             environments: Vec::new(),
             extensions: ModelExtension::ALL
                 .iter()
@@ -177,7 +192,27 @@ impl TemplateInput {
         self
     }
 
-    /// The job parameter values set so far.
+    /// Build from parameter values that were already preprocessed, such as
+    /// the values a host stored when it created the job, without
+    /// preprocessing them again. A second pass resolves PATH values against
+    /// this side's directories and the host's path format, so it can change
+    /// a stored value; these values reach `create_job` as given, which still
+    /// checks them against the template's constraints.
+    ///
+    /// They replace the values set with [`param`](Self::param) and
+    /// [`params`](Self::params), which the build then ignores. They include
+    /// any environment templates' parameters, so the side's
+    /// [`environment`](Self::environment)s are decoded but not used for
+    /// parameters. Unstable.
+    #[must_use]
+    pub fn preprocessed(mut self, values: JobParameterValues) -> Self {
+        self.preprocessed = Some(values);
+        self
+    }
+
+    /// The job parameter values set so far with [`param`](Self::param) and
+    /// [`params`](Self::params). Values given with
+    /// [`preprocessed`](Self::preprocessed) are not included.
     #[must_use]
     pub fn parameters(&self) -> &JobParameterInputValues {
         &self.parameters
@@ -186,8 +221,36 @@ impl TemplateInput {
     /// Decode the template and build its job with this side's parameters.
     pub fn build(&self) -> Result<Job, ModelError> {
         let loaded = load(self)?;
-        build(&loaded, &self.parameters, &self.limits)
+        build(&loaded, self.values(), &self.limits)
     }
+
+    fn values(&self) -> Values<'_> {
+        match &self.preprocessed {
+            Some(v) => Values::Preprocessed(v),
+            None => Values::Input(&self.parameters),
+        }
+    }
+
+    /// The side's values as inputs: the preprocessed values as their typed
+    /// values when given, else the input values.
+    fn inputs(&self) -> JobParameterInputValues {
+        match &self.preprocessed {
+            Some(v) => v
+                .iter()
+                .map(|(k, pv)| (k.clone(), pv.value.clone()))
+                .collect(),
+            None => self.parameters.clone(),
+        }
+    }
+}
+
+/// The parameter values a side builds with.
+#[derive(Clone, Copy)]
+enum Values<'a> {
+    /// To be preprocessed against the side's template.
+    Input(&'a JobParameterInputValues),
+    /// Already preprocessed: passed to `create_job` as they are.
+    Preprocessed(&'a JobParameterValues),
 }
 
 /// A side after decoding: the templates and the resolved directories.
@@ -309,28 +372,31 @@ fn load(input: &TemplateInput) -> Result<Loaded, ModelError> {
     })
 }
 
-fn build(
-    loaded: &Loaded,
-    params: &JobParameterInputValues,
-    limits: &CallerLimits,
-) -> Result<Job, ModelError> {
-    let values = preprocess_job_parameters(
-        &loaded.template,
-        params,
-        &loaded.environments,
-        &PathParameterOptions {
-            job_template_dir: &loaded.template_dir,
-            current_working_dir: &loaded.cwd,
-            path_format: PathFormat::host(),
-            allow_template_dir_walk_up: false,
-            allow_uri_path_values: true,
-        },
-    )?;
+fn build(loaded: &Loaded, values: Values<'_>, limits: &CallerLimits) -> Result<Job, ModelError> {
+    let preprocessed;
+    let values = match values {
+        Values::Preprocessed(v) => v,
+        Values::Input(params) => {
+            preprocessed = preprocess_job_parameters(
+                &loaded.template,
+                params,
+                &loaded.environments,
+                &PathParameterOptions {
+                    job_template_dir: &loaded.template_dir,
+                    current_working_dir: &loaded.cwd,
+                    path_format: PathFormat::host(),
+                    allow_template_dir_walk_up: false,
+                    allow_uri_path_values: true,
+                },
+            )?;
+            &preprocessed
+        }
+    };
     let ctx = loaded
         .template
         .default_validation_context()
         .with_caller_limits(limits.clone());
-    create_job(&loaded.template, &values, &ctx)
+    create_job(&loaded.template, values, &ctx)
 }
 
 /// Prefix an error with the input that failed (`old template`, `new
@@ -709,33 +775,35 @@ pub fn diff_templates(
 ) -> Result<TemplateDiff, ModelError> {
     let lo = load(old).map_err(|e| on_side("old template", e))?;
     let ln = load(new).map_err(|e| on_side("new template", e))?;
-    let old_job =
-        build(&lo, &old.parameters, &old.limits).map_err(|e| on_side("old template", e))?;
-    let new_job =
-        build(&ln, &new.parameters, &new.limits).map_err(|e| on_side("new template", e))?;
+    let old_job = build(&lo, old.values(), &old.limits).map_err(|e| on_side("old template", e))?;
+    let new_job = build(&ln, new.values(), &new.limits).map_err(|e| on_side("new template", e))?;
     let template = template_layer(&lo.template, &ln.template);
     let same_template = matches!((&lo.fingerprint, &ln.fingerprint), (Some(a), Some(b)) if a == b);
     let mut notes = Vec::new();
-    let rule = if old.parameters == new.parameters {
-        OriginRule::All(Origin::Template)
-    } else if same_template {
-        OriginRule::All(Origin::Parameters)
-    } else {
-        // `mid` is the new template with the old parameters.
-        match build(&ln, &old.parameters, &new.limits) {
-            Ok(mid) => OriginRule::Split {
-                template: change_keys(&diff_jobs(&old_job, &mid, options)),
-                parameters: change_keys(&diff_jobs(&mid, &new_job, options)),
-            },
-            Err(e) => {
-                notes.push(Note::job(format!(
-                    "origin: the new template does not build with the old parameters, so \
+    let old_inputs = old.inputs();
+    let rule =
+        if old.preprocessed.is_none() == new.preprocessed.is_none() && old_inputs == new.inputs() {
+            OriginRule::All(Origin::Template)
+        } else if same_template {
+            OriginRule::All(Origin::Parameters)
+        } else {
+            // `mid` is the new template with the old parameters.
+            // Old preprocessed values are preprocessed again here: they were
+            // resolved for the old template, and `mid` uses the new one.
+            match build(&ln, Values::Input(&old_inputs), &new.limits) {
+                Ok(mid) => OriginRule::Split {
+                    template: change_keys(&diff_jobs(&old_job, &mid, options)),
+                    parameters: change_keys(&diff_jobs(&mid, &new_job, options)),
+                },
+                Err(e) => {
+                    notes.push(Note::job(format!(
+                        "origin: the new template does not build with the old parameters, so \
                      job-layer changes are marked both: {e}"
-                )));
-                OriginRule::All(Origin::Both)
+                    )));
+                    OriginRule::All(Origin::Both)
+                }
             }
-        }
-    };
+        };
     Ok(assemble(old_job, new_job, template, &rule, notes, options))
 }
 
@@ -755,15 +823,15 @@ pub fn diff_job_template_with_parameter_sets(
 ) -> Result<TemplateDiff, ModelError> {
     let loaded = load(template).map_err(|e| on_side("the template", e))?;
     let overlay = |side: &JobParameterInputValues| {
-        let mut p = template.parameters.clone();
+        let mut p = template.inputs();
         p.extend(side.iter().map(|(k, v)| (k.clone(), v.clone())));
         p
     };
     let (old_params, new_params) = (overlay(old), overlay(new));
-    let old_job =
-        build(&loaded, &old_params, &template.limits).map_err(|e| on_side("old parameters", e))?;
-    let new_job =
-        build(&loaded, &new_params, &template.limits).map_err(|e| on_side("new parameters", e))?;
+    let old_job = build(&loaded, Values::Input(&old_params), &template.limits)
+        .map_err(|e| on_side("old parameters", e))?;
+    let new_job = build(&loaded, Values::Input(&new_params), &template.limits)
+        .map_err(|e| on_side("new parameters", e))?;
     let rule = OriginRule::All(Origin::Parameters);
     Ok(assemble(
         old_job,
@@ -2608,7 +2676,7 @@ struct DocJob<'a> {
 /// Field names and attributes mirror [`Step`].
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DocStep<'a> {
+pub(crate) struct DocStep<'a> {
     name: &'a String,
     description: &'a Option<String>,
     script: &'a crate::job::StepScript,
@@ -2621,7 +2689,7 @@ struct DocStep<'a> {
 }
 
 impl<'a> DocStep<'a> {
-    fn new(step: &'a Step) -> Self {
+    pub(crate) fn new(step: &'a Step) -> Self {
         let Step {
             name,
             description,
@@ -2651,7 +2719,7 @@ impl<'a> DocStep<'a> {
 /// sorted.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DocEnvironment<'a> {
+pub(crate) struct DocEnvironment<'a> {
     name: &'a String,
     description: &'a Option<String>,
     script: &'a Option<crate::job::EnvironmentScript>,
@@ -2661,7 +2729,7 @@ struct DocEnvironment<'a> {
 }
 
 impl<'a> DocEnvironment<'a> {
-    fn new(env: &'a Environment) -> Self {
+    pub(crate) fn new(env: &'a Environment) -> Self {
         let Environment {
             name,
             description,
