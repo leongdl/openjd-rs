@@ -1,6 +1,8 @@
-# Job Diff (experimental)
+# Job Diff (unstable)
 
-**Status: experimental prototype.** `job::diff` may change without notice.
+**Unstable.** This API may change or be removed in any release without notice. Don't
+depend on it outside openjd-rs. Applies to `job::diff` and
+`job::task_delta`.
 
 `job::diff` compares two instantiated jobs, steps, or environments and returns a
 `DiffTree`: an arena of `DiffNode`s in breadth-first order, node 0 the root.
@@ -145,4 +147,5 @@ Tests: `crates/openjd-model/src/test_job_diff.rs`.
 Example CLI: `cargo run -p openjd-model --example job_diff -- OLD NEW [--max-depth N]
 [--no-symtab] [--param K=V] [--old-param K=V] [--new-param K=V] [--plan]`, with sample
 templates in `crates/openjd-model/examples/job_diff/`. `--plan` previews a step and task
-apply order; it is example code, not part of the API.
+apply order; it is example code, not part of the API. `openjd diff` ([cli/diff.md](../cli/diff.md))
+is the supported command, built on [template-diff.md](template-diff.md).

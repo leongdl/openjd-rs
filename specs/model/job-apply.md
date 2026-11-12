@@ -1,6 +1,7 @@
-# Job Apply (experimental)
+# Job Apply (unstable)
 
-**Status: experimental prototype.** `job::apply` may change without notice.
+**Unstable.** This API may change or be removed in any release without notice. Don't
+depend on it outside openjd-rs. Applies to `job::apply`.
 
 `job::apply` turns a [job diff](job-diff.md) into an ordered, gated list of writes against
 a store that it knows only through a trait.

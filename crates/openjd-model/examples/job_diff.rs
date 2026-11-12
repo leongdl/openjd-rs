@@ -18,6 +18,10 @@
 //!
 //! Both files must be job templates, or both environment templates.
 //! Sample inputs are in `examples/job_diff/`.
+//!
+//! For job templates, use `openjd diff` instead (`specs/cli/diff.md`): it
+//! takes the CLI's parameter forms and extension allowlist, and prints
+//! origins, task summaries and JSON.
 
 use std::path::Path;
 use std::process::ExitCode;

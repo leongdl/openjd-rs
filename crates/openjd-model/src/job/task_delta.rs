@@ -4,7 +4,8 @@
 
 //! Task delta between two step parameter spaces, without enumerating tasks.
 //!
-//! **Status: experimental prototype.** The API may change without notice.
+//! **Unstable.** This API may change or be removed in any release without
+//! notice. Don't depend on it outside openjd-rs.
 //!
 //! When both spaces are a plain Cartesian product over the same parameters
 //! (no association, no chunking), the change is exact box algebra. With

@@ -39,10 +39,11 @@ openjd_model              — crate root re-exports, the main public surface
 ├── error                 — ModelError + structured validation errors
 ├── format_string         — re-exported from openjd_expr
 ├── job                   — instantiated (resolved) job types
-│   ├── apply             — experimental: plan/validate/execute a DiffTree through JobApplier
+│   ├── apply             — unstable: plan/validate/execute a DiffTree through JobApplier
 │   ├── create_job        — pipeline functions + MergedParameterDefinition
-│   ├── diff              — experimental: diff_jobs/diff_steps/diff_environments → DiffTree
-│   ├── task_delta        — experimental: task_delta → TaskDelta (product box algebra)
+│   ├── diff              — unstable: diff_jobs/diff_steps/diff_environments → DiffTree
+│   ├── task_delta        — unstable: task_delta → TaskDelta (product box algebra)
+│   ├── template_diff     — unstable: diff_templates/diff_job_template_with_parameter_sets → TemplateDiff
 │   ├── step_param_space  — StepParameterSpaceIterator
 │   └── step_dependency_graph — StepDependencyGraph + friends
 ├── symbol_table          — re-exported from openjd_expr
@@ -709,7 +710,7 @@ pub struct job::StepDependency {
 }
 ```
 
-### Job Diff (experimental)
+### Job Diff (unstable)
 
 Breadth-first structural diff; see [job-diff.md](job-diff.md).
 
@@ -763,7 +764,7 @@ pub enum job::diff::DiffNodeKind { Job, JobParameter, Environment, Step, StepScr
     Action, EmbeddedFile, ParameterSpace, TaskParameter, HostRequirements }
 ```
 
-### Task Delta (experimental)
+### Task Delta (unstable)
 
 Product decomposition of a step's task change; see [job-diff.md](job-diff.md#task-delta-jobtask_delta).
 
@@ -787,7 +788,77 @@ impl TaskBox {
 }
 ```
 
-### Job Apply (experimental)
+### Template Diff (unstable)
+
+Diff two templates or two parameter sets, with origins and stages; see
+[template-diff.md](template-diff.md).
+
+```rust
+pub fn job::template_diff::diff_templates(old: &TemplateInput, new: &TemplateInput, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
+pub fn job::template_diff::diff_job_template_with_parameter_sets(template: &TemplateInput, old: &JobParameterInputValues, new: &JobParameterInputValues, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
+pub fn job::template_diff::diff_built_jobs(old: Job, new: Job, options: &DiffOptions) -> TemplateDiff;   // origin Job, no template layer
+pub fn job::template_diff::job_from_str(text: &str) -> Result<Job, ModelError>;   // JSON or YAML serde form of a Job
+pub struct job::template_diff::JobDocument<'a>(pub &'a Job);   // Serialize: the Job serde form, parameters and environment variables sorted; Debug, Clone, Copy
+
+pub enum job::template_diff::TemplateSource { Path(PathBuf), Text(String), Value(serde_json::Value), Decoded(Box<JobTemplate>) }
+impl TemplateSource { pub fn guess(s: &str) -> Self; }   // Path if s names an existing file, else Text
+
+pub struct job::template_diff::TemplateInput { /* private */ }   // Debug, Clone
+impl TemplateInput {
+    pub fn new(source: TemplateSource) -> Self;          // every extension, default limits
+    pub fn param(self, name: impl Into<String>, value: impl Into<String>) -> Self;
+    pub fn params(self, values: impl IntoIterator<Item = (String, ExprValue)>) -> Self;
+    pub fn environment(self, source: TemplateSource) -> Self;
+    pub fn extensions(self, names: &[&str]) -> Self;
+    pub fn no_extensions(self) -> Self;
+    pub fn limits(self, limits: CallerLimits) -> Self;
+    pub fn template_dir(self, dir: impl Into<PathBuf>) -> Self;   // relative PATH defaults
+    pub fn cwd(self, dir: impl Into<PathBuf>) -> Self;            // relative PATH values
+    pub fn parameters(&self) -> &JobParameterInputValues;
+    pub fn build(&self) -> Result<Job, ModelError>;
+}
+
+pub struct job::template_diff::TemplateDiff { pub changes: Vec<Change>, pub steps: Vec<StepSummary>, pub job: DiffTree,
+    pub old_job: Job, pub new_job: Job, pub notes: Vec<Note> }
+impl TemplateDiff {
+    pub fn is_changed(&self) -> bool;
+    pub fn changes_at<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a Change> + 'a;   // path prefix; ambiguous for names with ] or .
+    pub fn changes_in_step<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Change> + 'a;   // Change::step == name, exact
+    pub fn step(&self, name: &str) -> Option<&StepSummary>;
+    pub fn plan(&self) -> Result<ApplyPlan<'_>, ModelError>;   // job::apply::plan(old_job, new_job)
+    pub fn stat(&self) -> DiffStat;
+}
+pub struct job::template_diff::Change { pub layer: Layer, pub path: String,
+    pub step: Option<String>,   // the owning step's name, from the diff tree; None at job level
+    pub field: String, pub before: Option<Shown>, pub after: Option<Shown>, pub origin: Origin, pub stage: Stage }
+pub struct job::template_diff::Note { pub step: Option<String>, pub text: String }   // Display and Serialize: "steps[S]: text" or "text"
+pub struct job::template_diff::Shown { pub raw: serde_json::Value, pub text: String }
+pub enum job::template_diff::Layer { Template, Job }
+pub enum job::template_diff::Origin { Template, Parameters, Both, Job }
+pub enum job::template_diff::Stage { Template, Parameters, Job, RunTime }
+pub struct job::template_diff::StepSummary { pub name: String, pub status: DiffStatus,
+    pub old_index: Option<usize>, pub new_index: Option<usize>, pub tasks: TaskSummary,
+    pub tasks_unknown: Option<String> }   // why the counts are 0: "adaptive chunking" or "cannot count tasks"
+impl StepSummary { pub fn stat_line(&self) -> String; }
+pub enum job::template_diff::TaskSummary { Unchanged { count: u64 }, Product { kept: BoxSummary, added: Vec<BoxSummary>, removed: Vec<BoxSummary> },
+    Replaced { old_count: u64, new_count: u64, reason: String }, Added { count: u64 }, Removed { count: u64 } }
+pub struct job::template_diff::BoxSummary { pub count: u64, pub dims: Vec<(String, String)> }
+pub struct job::template_diff::DiffStat { pub steps_changed: u64, pub steps_added: u64, pub steps_removed: u64,
+    pub tasks_kept: u64, pub tasks_added: u64, pub tasks_removed: u64, pub tasks_replaced: u64 }   // also Copy, Default
+```
+
+The result types derive `Debug`, `Clone`, `PartialEq` (`Eq` except `TemplateDiff`) and
+`Serialize` (camelCase), and implement `Display`: `TemplateDiff` the grouped listing,
+`Change` one line, `StepSummary` the step's task block, `TaskSummary` and `BoxSummary`
+their parts, `DiffStat` the totals line, and `Layer`, `Origin`, `Stage` and `Shown` their
+text. `TemplateDiff`'s listing ends with one `note: …` line per note. `Layer`, `Origin`
+and `Stage` are also `Copy`, `Eq` and `Hash`, and `Layer` is `Ord`
+(changes sort by it). Inputs that fail to build return `ModelError` naming the input
+(`old template`, `new parameters`, `the template`). `TemplateDiff` serializes `oldJob`
+and `newJob` as `JobDocument`s, so its serde form is deterministic; `openjd build` prints
+the same form, and `job_from_str` reads it back. Task counts saturate at `u64::MAX`.
+
+### Job Apply (unstable)
 
 Ordered, gated application of a job diff to a store; see [job-apply.md](job-apply.md).
 

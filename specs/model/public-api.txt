@@ -564,6 +564,271 @@ impl core::fmt::Debug for openjd_model::job::task_delta::TaskBox
 pub fn openjd_model::job::task_delta::TaskBox::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for openjd_model::job::task_delta::TaskBox
 pub fn openjd_model::job::task_delta::task_delta(core::option::Option<&openjd_model::job::StepParameterSpace>, core::option::Option<&openjd_model::job::StepParameterSpace>) -> openjd_model::job::task_delta::TaskDelta
+pub mod openjd_model::job::template_diff
+pub enum openjd_model::job::template_diff::Layer
+pub openjd_model::job::template_diff::Layer::Job
+pub openjd_model::job::template_diff::Layer::Template
+impl core::clone::Clone for openjd_model::job::template_diff::Layer
+pub fn openjd_model::job::template_diff::Layer::clone(&self) -> openjd_model::job::template_diff::Layer
+impl core::cmp::Eq for openjd_model::job::template_diff::Layer
+impl core::cmp::Ord for openjd_model::job::template_diff::Layer
+pub fn openjd_model::job::template_diff::Layer::cmp(&self, &openjd_model::job::template_diff::Layer) -> core::cmp::Ordering
+impl core::cmp::PartialEq for openjd_model::job::template_diff::Layer
+pub fn openjd_model::job::template_diff::Layer::eq(&self, &openjd_model::job::template_diff::Layer) -> bool
+impl core::cmp::PartialOrd for openjd_model::job::template_diff::Layer
+pub fn openjd_model::job::template_diff::Layer::partial_cmp(&self, &openjd_model::job::template_diff::Layer) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for openjd_model::job::template_diff::Layer
+pub fn openjd_model::job::template_diff::Layer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::Layer
+pub fn openjd_model::job::template_diff::Layer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::template_diff::Layer
+pub fn openjd_model::job::template_diff::Layer::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::job::template_diff::Layer
+impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::Layer
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::Layer
+pub fn openjd_model::job::template_diff::Layer::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub enum openjd_model::job::template_diff::Origin
+pub openjd_model::job::template_diff::Origin::Both
+pub openjd_model::job::template_diff::Origin::Job
+pub openjd_model::job::template_diff::Origin::Parameters
+pub openjd_model::job::template_diff::Origin::Template
+impl core::clone::Clone for openjd_model::job::template_diff::Origin
+pub fn openjd_model::job::template_diff::Origin::clone(&self) -> openjd_model::job::template_diff::Origin
+impl core::cmp::Eq for openjd_model::job::template_diff::Origin
+impl core::cmp::PartialEq for openjd_model::job::template_diff::Origin
+pub fn openjd_model::job::template_diff::Origin::eq(&self, &openjd_model::job::template_diff::Origin) -> bool
+impl core::fmt::Debug for openjd_model::job::template_diff::Origin
+pub fn openjd_model::job::template_diff::Origin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::Origin
+pub fn openjd_model::job::template_diff::Origin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::template_diff::Origin
+pub fn openjd_model::job::template_diff::Origin::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::job::template_diff::Origin
+impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::Origin
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::Origin
+pub fn openjd_model::job::template_diff::Origin::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub enum openjd_model::job::template_diff::Stage
+pub openjd_model::job::template_diff::Stage::Job
+pub openjd_model::job::template_diff::Stage::Parameters
+pub openjd_model::job::template_diff::Stage::RunTime
+pub openjd_model::job::template_diff::Stage::Template
+impl core::clone::Clone for openjd_model::job::template_diff::Stage
+pub fn openjd_model::job::template_diff::Stage::clone(&self) -> openjd_model::job::template_diff::Stage
+impl core::cmp::Eq for openjd_model::job::template_diff::Stage
+impl core::cmp::PartialEq for openjd_model::job::template_diff::Stage
+pub fn openjd_model::job::template_diff::Stage::eq(&self, &openjd_model::job::template_diff::Stage) -> bool
+impl core::fmt::Debug for openjd_model::job::template_diff::Stage
+pub fn openjd_model::job::template_diff::Stage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::Stage
+pub fn openjd_model::job::template_diff::Stage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::template_diff::Stage
+pub fn openjd_model::job::template_diff::Stage::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::job::template_diff::Stage
+impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::Stage
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::Stage
+pub fn openjd_model::job::template_diff::Stage::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub enum openjd_model::job::template_diff::TaskSummary
+pub openjd_model::job::template_diff::TaskSummary::Added
+pub openjd_model::job::template_diff::TaskSummary::Added::count: u64
+pub openjd_model::job::template_diff::TaskSummary::Product
+pub openjd_model::job::template_diff::TaskSummary::Product::added: alloc::vec::Vec<openjd_model::job::template_diff::BoxSummary>
+pub openjd_model::job::template_diff::TaskSummary::Product::kept: openjd_model::job::template_diff::BoxSummary
+pub openjd_model::job::template_diff::TaskSummary::Product::removed: alloc::vec::Vec<openjd_model::job::template_diff::BoxSummary>
+pub openjd_model::job::template_diff::TaskSummary::Removed
+pub openjd_model::job::template_diff::TaskSummary::Removed::count: u64
+pub openjd_model::job::template_diff::TaskSummary::Replaced
+pub openjd_model::job::template_diff::TaskSummary::Replaced::new_count: u64
+pub openjd_model::job::template_diff::TaskSummary::Replaced::old_count: u64
+pub openjd_model::job::template_diff::TaskSummary::Replaced::reason: alloc::string::String
+pub openjd_model::job::template_diff::TaskSummary::Unchanged
+pub openjd_model::job::template_diff::TaskSummary::Unchanged::count: u64
+impl core::clone::Clone for openjd_model::job::template_diff::TaskSummary
+pub fn openjd_model::job::template_diff::TaskSummary::clone(&self) -> openjd_model::job::template_diff::TaskSummary
+impl core::cmp::Eq for openjd_model::job::template_diff::TaskSummary
+impl core::cmp::PartialEq for openjd_model::job::template_diff::TaskSummary
+pub fn openjd_model::job::template_diff::TaskSummary::eq(&self, &openjd_model::job::template_diff::TaskSummary) -> bool
+impl core::fmt::Debug for openjd_model::job::template_diff::TaskSummary
+pub fn openjd_model::job::template_diff::TaskSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::TaskSummary
+pub fn openjd_model::job::template_diff::TaskSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::TaskSummary
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::TaskSummary
+pub fn openjd_model::job::template_diff::TaskSummary::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub enum openjd_model::job::template_diff::TemplateSource
+pub openjd_model::job::template_diff::TemplateSource::Decoded(alloc::boxed::Box<openjd_model::template::JobTemplate>)
+pub openjd_model::job::template_diff::TemplateSource::Path(std::path::PathBuf)
+pub openjd_model::job::template_diff::TemplateSource::Text(alloc::string::String)
+pub openjd_model::job::template_diff::TemplateSource::Value(serde_json::value::Value)
+impl openjd_model::job::template_diff::TemplateSource
+pub fn openjd_model::job::template_diff::TemplateSource::guess(&str) -> Self
+impl core::clone::Clone for openjd_model::job::template_diff::TemplateSource
+pub fn openjd_model::job::template_diff::TemplateSource::clone(&self) -> openjd_model::job::template_diff::TemplateSource
+impl core::fmt::Debug for openjd_model::job::template_diff::TemplateSource
+pub fn openjd_model::job::template_diff::TemplateSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct openjd_model::job::template_diff::BoxSummary
+pub openjd_model::job::template_diff::BoxSummary::count: u64
+pub openjd_model::job::template_diff::BoxSummary::dims: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+impl core::clone::Clone for openjd_model::job::template_diff::BoxSummary
+pub fn openjd_model::job::template_diff::BoxSummary::clone(&self) -> openjd_model::job::template_diff::BoxSummary
+impl core::cmp::Eq for openjd_model::job::template_diff::BoxSummary
+impl core::cmp::PartialEq for openjd_model::job::template_diff::BoxSummary
+pub fn openjd_model::job::template_diff::BoxSummary::eq(&self, &openjd_model::job::template_diff::BoxSummary) -> bool
+impl core::fmt::Debug for openjd_model::job::template_diff::BoxSummary
+pub fn openjd_model::job::template_diff::BoxSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::BoxSummary
+pub fn openjd_model::job::template_diff::BoxSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::BoxSummary
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::BoxSummary
+pub fn openjd_model::job::template_diff::BoxSummary::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct openjd_model::job::template_diff::Change
+pub openjd_model::job::template_diff::Change::after: core::option::Option<openjd_model::job::template_diff::Shown>
+pub openjd_model::job::template_diff::Change::before: core::option::Option<openjd_model::job::template_diff::Shown>
+pub openjd_model::job::template_diff::Change::field: alloc::string::String
+pub openjd_model::job::template_diff::Change::layer: openjd_model::job::template_diff::Layer
+pub openjd_model::job::template_diff::Change::origin: openjd_model::job::template_diff::Origin
+pub openjd_model::job::template_diff::Change::path: alloc::string::String
+pub openjd_model::job::template_diff::Change::stage: openjd_model::job::template_diff::Stage
+pub openjd_model::job::template_diff::Change::step: core::option::Option<alloc::string::String>
+impl core::clone::Clone for openjd_model::job::template_diff::Change
+pub fn openjd_model::job::template_diff::Change::clone(&self) -> openjd_model::job::template_diff::Change
+impl core::cmp::Eq for openjd_model::job::template_diff::Change
+impl core::cmp::PartialEq for openjd_model::job::template_diff::Change
+pub fn openjd_model::job::template_diff::Change::eq(&self, &openjd_model::job::template_diff::Change) -> bool
+impl core::fmt::Debug for openjd_model::job::template_diff::Change
+pub fn openjd_model::job::template_diff::Change::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::Change
+pub fn openjd_model::job::template_diff::Change::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::Change
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::Change
+pub fn openjd_model::job::template_diff::Change::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct openjd_model::job::template_diff::DiffStat
+pub openjd_model::job::template_diff::DiffStat::steps_added: u64
+pub openjd_model::job::template_diff::DiffStat::steps_changed: u64
+pub openjd_model::job::template_diff::DiffStat::steps_removed: u64
+pub openjd_model::job::template_diff::DiffStat::tasks_added: u64
+pub openjd_model::job::template_diff::DiffStat::tasks_kept: u64
+pub openjd_model::job::template_diff::DiffStat::tasks_removed: u64
+pub openjd_model::job::template_diff::DiffStat::tasks_replaced: u64
+impl core::clone::Clone for openjd_model::job::template_diff::DiffStat
+pub fn openjd_model::job::template_diff::DiffStat::clone(&self) -> openjd_model::job::template_diff::DiffStat
+impl core::cmp::Eq for openjd_model::job::template_diff::DiffStat
+impl core::cmp::PartialEq for openjd_model::job::template_diff::DiffStat
+pub fn openjd_model::job::template_diff::DiffStat::eq(&self, &openjd_model::job::template_diff::DiffStat) -> bool
+impl core::default::Default for openjd_model::job::template_diff::DiffStat
+pub fn openjd_model::job::template_diff::DiffStat::default() -> openjd_model::job::template_diff::DiffStat
+impl core::fmt::Debug for openjd_model::job::template_diff::DiffStat
+pub fn openjd_model::job::template_diff::DiffStat::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::DiffStat
+pub fn openjd_model::job::template_diff::DiffStat::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for openjd_model::job::template_diff::DiffStat
+impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::DiffStat
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::DiffStat
+pub fn openjd_model::job::template_diff::DiffStat::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct openjd_model::job::template_diff::JobDocument<'a>(pub &'a openjd_model::job::Job)
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::JobDocument<'_>
+pub fn openjd_model::job::template_diff::JobDocument<'_>::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'a> core::clone::Clone for openjd_model::job::template_diff::JobDocument<'a>
+pub fn openjd_model::job::template_diff::JobDocument<'a>::clone(&self) -> openjd_model::job::template_diff::JobDocument<'a>
+impl<'a> core::fmt::Debug for openjd_model::job::template_diff::JobDocument<'a>
+pub fn openjd_model::job::template_diff::JobDocument<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for openjd_model::job::template_diff::JobDocument<'a>
+pub struct openjd_model::job::template_diff::Note
+pub openjd_model::job::template_diff::Note::step: core::option::Option<alloc::string::String>
+pub openjd_model::job::template_diff::Note::text: alloc::string::String
+impl core::clone::Clone for openjd_model::job::template_diff::Note
+pub fn openjd_model::job::template_diff::Note::clone(&self) -> openjd_model::job::template_diff::Note
+impl core::cmp::Eq for openjd_model::job::template_diff::Note
+impl core::cmp::PartialEq for openjd_model::job::template_diff::Note
+pub fn openjd_model::job::template_diff::Note::eq(&self, &openjd_model::job::template_diff::Note) -> bool
+impl core::fmt::Debug for openjd_model::job::template_diff::Note
+pub fn openjd_model::job::template_diff::Note::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::Note
+pub fn openjd_model::job::template_diff::Note::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::Note
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::Note
+pub fn openjd_model::job::template_diff::Note::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+pub struct openjd_model::job::template_diff::Shown
+pub openjd_model::job::template_diff::Shown::raw: serde_json::value::Value
+pub openjd_model::job::template_diff::Shown::text: alloc::string::String
+impl core::clone::Clone for openjd_model::job::template_diff::Shown
+pub fn openjd_model::job::template_diff::Shown::clone(&self) -> openjd_model::job::template_diff::Shown
+impl core::cmp::Eq for openjd_model::job::template_diff::Shown
+impl core::cmp::PartialEq for openjd_model::job::template_diff::Shown
+pub fn openjd_model::job::template_diff::Shown::eq(&self, &openjd_model::job::template_diff::Shown) -> bool
+impl core::fmt::Debug for openjd_model::job::template_diff::Shown
+pub fn openjd_model::job::template_diff::Shown::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::Shown
+pub fn openjd_model::job::template_diff::Shown::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::Shown
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::Shown
+pub fn openjd_model::job::template_diff::Shown::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct openjd_model::job::template_diff::StepSummary
+pub openjd_model::job::template_diff::StepSummary::name: alloc::string::String
+pub openjd_model::job::template_diff::StepSummary::new_index: core::option::Option<usize>
+pub openjd_model::job::template_diff::StepSummary::old_index: core::option::Option<usize>
+pub openjd_model::job::template_diff::StepSummary::status: openjd_model::job::diff::DiffStatus
+pub openjd_model::job::template_diff::StepSummary::tasks: openjd_model::job::template_diff::TaskSummary
+pub openjd_model::job::template_diff::StepSummary::tasks_unknown: core::option::Option<alloc::string::String>
+impl openjd_model::job::template_diff::StepSummary
+pub fn openjd_model::job::template_diff::StepSummary::stat_line(&self) -> alloc::string::String
+impl core::clone::Clone for openjd_model::job::template_diff::StepSummary
+pub fn openjd_model::job::template_diff::StepSummary::clone(&self) -> openjd_model::job::template_diff::StepSummary
+impl core::cmp::Eq for openjd_model::job::template_diff::StepSummary
+impl core::cmp::PartialEq for openjd_model::job::template_diff::StepSummary
+pub fn openjd_model::job::template_diff::StepSummary::eq(&self, &openjd_model::job::template_diff::StepSummary) -> bool
+impl core::fmt::Debug for openjd_model::job::template_diff::StepSummary
+pub fn openjd_model::job::template_diff::StepSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::StepSummary
+pub fn openjd_model::job::template_diff::StepSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::StepSummary
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::StepSummary
+pub fn openjd_model::job::template_diff::StepSummary::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct openjd_model::job::template_diff::TemplateDiff
+pub openjd_model::job::template_diff::TemplateDiff::changes: alloc::vec::Vec<openjd_model::job::template_diff::Change>
+pub openjd_model::job::template_diff::TemplateDiff::job: openjd_model::job::diff::DiffTree
+pub openjd_model::job::template_diff::TemplateDiff::new_job: openjd_model::job::Job
+pub openjd_model::job::template_diff::TemplateDiff::notes: alloc::vec::Vec<openjd_model::job::template_diff::Note>
+pub openjd_model::job::template_diff::TemplateDiff::old_job: openjd_model::job::Job
+pub openjd_model::job::template_diff::TemplateDiff::steps: alloc::vec::Vec<openjd_model::job::template_diff::StepSummary>
+impl openjd_model::job::template_diff::TemplateDiff
+pub fn openjd_model::job::template_diff::TemplateDiff::changes_at<'a>(&'a self, &'a str) -> impl core::iter::traits::iterator::Iterator<Item = &'a openjd_model::job::template_diff::Change> + 'a
+pub fn openjd_model::job::template_diff::TemplateDiff::changes_in_step<'a>(&'a self, &'a str) -> impl core::iter::traits::iterator::Iterator<Item = &'a openjd_model::job::template_diff::Change> + 'a
+pub fn openjd_model::job::template_diff::TemplateDiff::is_changed(&self) -> bool
+pub fn openjd_model::job::template_diff::TemplateDiff::plan(&self) -> core::result::Result<openjd_model::job::apply::ApplyPlan<'_>, openjd_model::error::ModelError>
+pub fn openjd_model::job::template_diff::TemplateDiff::stat(&self) -> openjd_model::job::template_diff::DiffStat
+pub fn openjd_model::job::template_diff::TemplateDiff::step(&self, &str) -> core::option::Option<&openjd_model::job::template_diff::StepSummary>
+impl core::clone::Clone for openjd_model::job::template_diff::TemplateDiff
+pub fn openjd_model::job::template_diff::TemplateDiff::clone(&self) -> openjd_model::job::template_diff::TemplateDiff
+impl core::cmp::PartialEq for openjd_model::job::template_diff::TemplateDiff
+pub fn openjd_model::job::template_diff::TemplateDiff::eq(&self, &openjd_model::job::template_diff::TemplateDiff) -> bool
+impl core::fmt::Debug for openjd_model::job::template_diff::TemplateDiff
+pub fn openjd_model::job::template_diff::TemplateDiff::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::TemplateDiff
+pub fn openjd_model::job::template_diff::TemplateDiff::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::TemplateDiff
+impl serde_core::ser::Serialize for openjd_model::job::template_diff::TemplateDiff
+pub fn openjd_model::job::template_diff::TemplateDiff::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct openjd_model::job::template_diff::TemplateInput
+impl openjd_model::job::template_diff::TemplateInput
+pub fn openjd_model::job::template_diff::TemplateInput::build(&self) -> core::result::Result<openjd_model::job::Job, openjd_model::error::ModelError>
+pub fn openjd_model::job::template_diff::TemplateInput::cwd(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn openjd_model::job::template_diff::TemplateInput::environment(self, openjd_model::job::template_diff::TemplateSource) -> Self
+pub fn openjd_model::job::template_diff::TemplateInput::extensions(self, &[&str]) -> Self
+pub fn openjd_model::job::template_diff::TemplateInput::limits(self, openjd_model::types::CallerLimits) -> Self
+pub fn openjd_model::job::template_diff::TemplateInput::new(openjd_model::job::template_diff::TemplateSource) -> Self
+pub fn openjd_model::job::template_diff::TemplateInput::no_extensions(self) -> Self
+pub fn openjd_model::job::template_diff::TemplateInput::param(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn openjd_model::job::template_diff::TemplateInput::parameters(&self) -> &openjd_model::types::JobParameterInputValues
+pub fn openjd_model::job::template_diff::TemplateInput::params(self, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, openjd_expr::value::ExprValue)>) -> Self
+pub fn openjd_model::job::template_diff::TemplateInput::template_dir(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+impl core::clone::Clone for openjd_model::job::template_diff::TemplateInput
+pub fn openjd_model::job::template_diff::TemplateInput::clone(&self) -> openjd_model::job::template_diff::TemplateInput
+impl core::fmt::Debug for openjd_model::job::template_diff::TemplateInput
+pub fn openjd_model::job::template_diff::TemplateInput::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn openjd_model::job::template_diff::diff_built_jobs(openjd_model::job::Job, openjd_model::job::Job, &openjd_model::job::diff::DiffOptions) -> openjd_model::job::template_diff::TemplateDiff
+pub fn openjd_model::job::template_diff::diff_job_template_with_parameter_sets(&openjd_model::job::template_diff::TemplateInput, &openjd_model::types::JobParameterInputValues, &openjd_model::types::JobParameterInputValues, &openjd_model::job::diff::DiffOptions) -> core::result::Result<openjd_model::job::template_diff::TemplateDiff, openjd_model::error::ModelError>
+pub fn openjd_model::job::template_diff::diff_templates(&openjd_model::job::template_diff::TemplateInput, &openjd_model::job::template_diff::TemplateInput, &openjd_model::job::diff::DiffOptions) -> core::result::Result<openjd_model::job::template_diff::TemplateDiff, openjd_model::error::ModelError>
+pub fn openjd_model::job::template_diff::job_from_str(&str) -> core::result::Result<openjd_model::job::Job, openjd_model::error::ModelError>
 pub enum openjd_model::job::CancelationMode
 pub openjd_model::job::CancelationMode::DeferredMode
 pub openjd_model::job::CancelationMode::DeferredMode::mode: openjd_expr::format_string::FormatString
