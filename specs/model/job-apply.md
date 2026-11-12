@@ -3,8 +3,7 @@
 **Status: experimental prototype.** `job::apply` may change without notice.
 
 `job::apply` turns a [job diff](job-diff.md) into an ordered, gated list of writes against
-a store that it knows only through a trait. Design: SuperDaveDocs
-`docs/dag-diff/02-apply-dag-diff.md`.
+a store that it knows only through a trait.
 
 ## Stages
 
