@@ -458,8 +458,8 @@ fn serde_shape_is_pinned() {
                 "path": "steps[Render].parameterSpace.taskParameterDefinitions[Eye]",
                 "step": "Render",
                 "field": "definition",
-                "before": {"raw": {"string": {"range": ["left"]}}, "text": "[left]"},
-                "after": {"raw": {"string": {"range": ["left", "right"]}}, "text": "[left, right]"},
+                "before": {"raw": {"type": "STRING", "list": ["left"]}, "text": "[left]"},
+                "after": {"raw": {"type": "STRING", "list": ["left", "right"]}, "text": "[left, right]"},
                 "origin": "template",
                 "stage": "job",
             }],
@@ -482,8 +482,8 @@ fn serde_shape_is_pinned() {
                 {"path": "steps[Render].parameterSpace.taskParameterDefinitions[Eye]", "status": "modified",
                  "expanded": true, "fieldChanges": [{
                     "field": "definition",
-                    "before": {"string": {"range": ["left"]}},
-                    "after": {"string": {"range": ["left", "right"]}},
+                    "before": {"type": "STRING", "list": ["left"]},
+                    "after": {"type": "STRING", "list": ["left", "right"]},
                  }]},
             ],
             "notes": [],
@@ -650,7 +650,7 @@ fn built_jobs_round_trip_and_diff_with_job_origin() {
         .param("Frames", "1-200")
         .build()
         .unwrap();
-    let back = job_from_str(&serde_json::to_string(&old).unwrap()).unwrap();
+    let back = job_from_str(&serde_json::to_string(&JobDocument(&old)).unwrap()).unwrap();
     // `==` ignores task parameter definition order; the diff does not.
     assert!(!openjd_model::job::diff::diff_jobs(&back, &old, &opts()).is_changed());
     let d = diff_built_jobs(back, new, &opts());
@@ -691,8 +691,8 @@ steps:
 "#;
     let job = text(t).build().unwrap();
     for text in [
-        serde_json::to_string(&job).unwrap(),
-        serde_saphyr::to_string(&job).unwrap(),
+        serde_json::to_string(&JobDocument(&job)).unwrap(),
+        serde_saphyr::to_string(&JobDocument(&job)).unwrap(),
     ] {
         let back = job_from_str(&text).unwrap();
         assert_eq!(back, job);
@@ -1441,8 +1441,8 @@ steps:
 "#;
     let job = text(t).build().unwrap();
     for text in [
-        serde_json::to_string(&job).unwrap(),
-        serde_saphyr::to_string(&job).unwrap(),
+        serde_json::to_string(&JobDocument(&job)).unwrap(),
+        serde_saphyr::to_string(&JobDocument(&job)).unwrap(),
     ] {
         let back = job_from_str(&text).unwrap();
         assert_eq!(back, job);
@@ -1644,7 +1644,8 @@ fn every_whole_node_change_carries_the_sides_that_exist() {
 }
 
 #[test]
-fn job_document_matches_the_job_serde_form_up_to_map_order() {
+fn job_document_is_the_serde_form_with_the_host_encoding() {
+    use openjd_model::job::apply::ToDocument;
     let job = input("render_v2.yaml")
         .environment(TemplateSource::Text(
             "specificationVersion: environment-2023-09\nenvironment:\n  name: Env\n  variables: {A: a}\n  script: {actions: {onEnter: {command: x}}}\n".into(),
@@ -1654,15 +1655,29 @@ fn job_document_matches_the_job_serde_form_up_to_map_order() {
     let mut job = job;
     // A step environment, so every DocEnvironment path is written.
     job.steps[0].step_environments = job.job_environments.clone();
-    // The document writes parameters sorted; one variable has one order.
-    job.parameters.sort_keys();
+    // The serde form, with the parameters and parameter spaces replaced by
+    // their host documents, is the document.
+    let mut want = serde_json::to_value(&job).unwrap();
+    for (k, p) in &job.parameters {
+        want["parameters"][k] = serde_json::to_value(p.as_document()).unwrap();
+    }
+    for (i, step) in job.steps.iter().enumerate() {
+        if let Some(space) = &step.parameter_space {
+            want["steps"][i]["parameterSpace"] = serde_json::to_value(space.as_document()).unwrap();
+        }
+    }
+    let doc = serde_json::to_value(JobDocument(&job)).unwrap();
+    assert_eq!(doc, want);
+    let yaml: serde_json::Value =
+        serde_saphyr::from_str(&serde_saphyr::to_string(&JobDocument(&job)).unwrap()).unwrap();
+    assert_eq!(yaml, want);
     assert_eq!(
-        serde_json::to_string(&JobDocument(&job)).unwrap(),
-        serde_json::to_string(&job).unwrap()
+        doc["steps"][0]["parameterSpace"].to_string(),
+        r#"{"combination":null,"taskParameterDefinitions":[{"name":"Frame","range":"1-100","type":"INT"},{"list":["left","right"],"name":"Eye","type":"STRING"}]}"#
     );
     assert_eq!(
-        serde_saphyr::to_string(&JobDocument(&job)).unwrap(),
-        serde_saphyr::to_string(&job).unwrap()
+        doc["parameters"]["Frames"].to_string(),
+        r#"{"name":"Frames","type":"STRING","value":"1-100"}"#
     );
 }
 
@@ -1718,7 +1733,7 @@ fn job_document_sorts_parameters_so_every_build_serializes_the_same() {
     assert_eq!(yaml.len(), 1);
     let doc = json.into_iter().next().unwrap();
     let names: Vec<String> = doc
-        .match_indices("\"paramType\"")
+        .match_indices("\"type\":\"STRING\"")
         .map(|(i, _)| {
             let name_at = doc[..i].rfind("\"name\":\"").unwrap() + 8;
             doc[name_at..].split('"').next().unwrap().to_string()
@@ -1980,12 +1995,25 @@ fn built_job_path_and_list_path_parameters_read_back() {
         serde_saphyr::to_string(&JobDocument(&job)).unwrap(),
     ] {
         let back = job_from_str(&doc).unwrap();
-        assert_eq!(back, job);
         assert_eq!(
             back.parameters["Scene"].value,
-            job.parameters["Scene"].value
+            ExprValue::String("/a".into())
         );
-        assert_eq!(back.parameters["LP"].value, job.parameters["LP"].value);
+        assert_eq!(
+            back.parameters["LP"].value,
+            ExprValue::make_list(
+                vec![
+                    ExprValue::String("/x".into()),
+                    ExprValue::String("/y".into())
+                ],
+                openjd_expr::ExprType::STRING,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            serde_json::to_string(&JobDocument(&back)).unwrap(),
+            serde_json::to_string(&JobDocument(&job)).unwrap()
+        );
     }
 }
 
@@ -2120,48 +2148,66 @@ fn job_from_str_names_each_malformed_parameter() {
     let job =
         |param: &str| format!(r#"{{"name": "x", "steps": [], "parameters": {{"LI": {param}}}}}"#);
     let cases = [
+        (r#"3"#, ": expected an object"),
         (
-            r#"{"paramType": "ListInt", "value": {"ListInt": []}}"#,
-            "'name' must be a string",
+            r#"{"type": "LIST[INT]", "value": []}"#,
+            ": missing field 'name'",
+        ),
+        (r#"{"name": "LI", "value": []}"#, ": missing field 'type'"),
+        (
+            r#"{"name": "LI", "type": "LIST[INT]"}"#,
+            ": missing field 'value'",
         ),
         (
-            r#"{"name": "LI", "value": {"ListInt": []}}"#,
-            "'paramType' must be a string",
+            r#"{"name": 1, "type": "LIST[INT]", "value": []}"#,
+            ".name: expected a string",
         ),
         (
-            r#"{"name": "LI", "paramType": "Matrix", "value": {"ListInt": []}}"#,
-            "unknown paramType 'Matrix'",
+            r#"{"name": "LI", "type": "MATRIX", "value": []}"#,
+            ".type: unknown parameter type 'MATRIX'",
         ),
         (
-            r#"{"name": "LI", "paramType": "ListInt"}"#,
-            "missing 'value'",
+            r#"{"name": "LI", "type": "list[int]", "value": []}"#,
+            ".type: unknown parameter type 'list[int]'",
         ),
         (
-            r#"{"name": "LI", "paramType": "ListInt", "value": {"ListInt": [[1, 2]]}}"#,
-            r#"unrecognized value {"ListInt":[[1,2]]}"#,
+            r#"{"name": "LI", "type": "ListInt", "value": []}"#,
+            ".type: unknown parameter type 'ListInt'",
         ),
         (
-            r#"{"name": "LI", "paramType": "ListBool", "value": {"ListBool": [[true]]}}"#,
-            r#"unrecognized value {"ListBool":[[true]]}"#,
+            r#"{"name": "LI", "type": "LIST[INT]", "value": [["1"]]}"#,
+            ".value: Expected string value for int",
         ),
         (
-            r#"{"name": "LI", "paramType": "ListFloat", "value": {"ListFloat": [["1.5"]]}}"#,
-            "Expected a float or a float string",
+            r#"{"name": "LI", "type": "LIST[INT]", "value": [1]}"#,
+            ".value: Expected string value for int",
         ),
         (
-            r#"{"name": "LI", "paramType": "Int", "value": {"Int": "3"}}"#,
-            r#"unrecognized value {"Int":"3"}"#,
+            r#"{"name": "LI", "type": "INT", "value": 3}"#,
+            ".value: Expected string value for int",
         ),
         (
-            r#"{"name": "LI", "paramType": "Int", "value": {"Int": 3, "Bool": true}}"#,
-            r#"unrecognized value {"Bool":true,"Int":3}"#,
+            r#"{"name": "LI", "type": "INT", "value": {"Int": 3}}"#,
+            ".value: Expected string value for int",
+        ),
+        (
+            r#"{"name": "LI", "type": "LIST[LIST[INT]]", "value": ["1"]}"#,
+            ".value: Expected array for list type",
+        ),
+        (
+            r#"{"name": "LI", "type": "LIST[INT]", "value": [], "bogus": 1}"#,
+            ".bogus: unknown field",
+        ),
+        (
+            r#"{"name": "Q", "type": "INT", "value": "3"}"#,
+            ".name: 'Q', but the parameter's key is 'LI'",
         ),
     ];
     for (param, message) in cases {
         let err = job_from_str(&job(param)).unwrap_err();
         assert_eq!(
             err.to_string(),
-            format!("Validation error: not a built job: parameters[LI]: {message}"),
+            format!("Validation error: not a built job: parameters[LI]{message}"),
             "{param}"
         );
     }
@@ -2171,23 +2217,24 @@ fn job_from_str_names_each_malformed_parameter() {
 fn job_from_str_rejects_a_value_that_is_not_of_the_parameter_type() {
     let job = |ty: &str, value: &str| {
         format!(
-            r#"{{"name": "x", "steps": [], "parameters": {{"P": {{"name": "P", "paramType": "{ty}", "value": {value}}}}}}}"#
+            r#"{{"name": "x", "steps": [], "parameters": {{"P": {{"name": "P", "type": "{ty}", "value": {value}}}}}}}"#
         )
     };
     let cases = [
-        ("ListInt", r#"{"ListList": [[], 48]}"#, "ListList"),
-        ("ListBool", r#"{"ListInt": [1]}"#, "ListInt"),
-        ("ListListInt", r#"{"ListInt": [1]}"#, "ListInt"),
-        ("String", r#"{"Int": 3}"#, "Int"),
-        ("Int", r#""Null""#, "Null"),
+        ("INT", r#""x""#, "Cannot convert 'x' to int: invalid digit found in string"),
+        ("BOOL", r#""maybe""#, "Cannot convert 'maybe' to bool"),
+        ("FLOAT", r#""nan""#, "Cannot convert 'nan' to float"),
+        (
+            "RANGE_EXPR",
+            r#""3-1:1""#,
+            "Cannot convert '3-1:1' to range_expr: Range: a descending range must have a negative step",
+        ),
+        ("LIST[BOOL]", r#"["maybe"]"#, "Cannot convert 'maybe' to bool"),
     ];
-    for (ty, value, tag) in cases {
-        let err = job_from_str(&job(ty, value)).unwrap_err();
+    for (ty, value, message) in cases {
         assert_eq!(
-            err.to_string(),
-            format!(
-                "Validation error: not a built job: parameters[P]: paramType '{ty}' cannot hold a '{tag}' value"
-            ),
+            job_from_str(&job(ty, value)).unwrap_err().to_string(),
+            format!("Validation error: not a built job: parameters[P].value: {message}"),
             "{ty} {value}"
         );
     }
@@ -2230,34 +2277,35 @@ note: {MID_NOTE}"
 // ─── audit round 4 ──────────────────────────────────────────────────
 
 #[test]
-fn job_from_str_rejects_a_list_list_element_that_is_not_a_list_int() {
-    let doc = r#"{"name": "x", "steps": [], "parameters": {"P": {"name": "P", "paramType": "ListListInt", "value": {"ListList": [[{"ListString": [["a"]]}]]}}}}"#;
-    assert_eq!(
-        job_from_str(doc).unwrap_err().to_string(),
-        "Validation error: not a built job: parameters[P]: a ListList element must be a 'ListInt' value, not a 'ListString' value"
-    );
-}
-
-#[test]
-fn job_from_str_rejects_extra_parameter_keys_and_a_name_that_is_not_the_key() {
-    let job =
-        |param: &str| format!(r#"{{"name": "x", "steps": [], "parameters": {{"P": {param}}}}}"#);
+fn job_from_str_reads_each_parameter_type_from_the_host_encoding() {
+    let job = |ty: &str, value: &str| {
+        format!(
+            r#"{{"name": "x", "steps": [], "parameters": {{"P": {{"name": "P", "type": "{ty}", "value": {value}}}}}}}"#
+        )
+    };
     let cases = [
+        ("STRING", r#""s""#, ExprValue::String("s".into())),
+        ("PATH", r#""/p""#, ExprValue::String("/p".into())),
+        ("INT", r#""3""#, ExprValue::Int(3)),
+        ("BOOL", r#""true""#, ExprValue::Bool(true)),
         (
-            r#"{"name": "P", "paramType": "Int", "value": {"Int": 3}, "bogus": 1}"#,
-            "unknown field 'bogus'",
-        ),
-        (
-            r#"{"name": "Q", "paramType": "Int", "value": {"Int": 3}}"#,
-            "'name' is 'Q', but the parameter's key is 'P'",
+            "LIST[LIST[INT]]",
+            r#"[["1"], []]"#,
+            ExprValue::make_list(
+                vec![
+                    ExprValue::make_list(vec![ExprValue::Int(1)], openjd_expr::ExprType::INT)
+                        .unwrap(),
+                    ExprValue::make_list(vec![], openjd_expr::ExprType::INT).unwrap(),
+                ],
+                openjd_expr::ExprType::list(openjd_expr::ExprType::INT),
+            )
+            .unwrap(),
         ),
     ];
-    for (param, message) in cases {
-        assert_eq!(
-            job_from_str(&job(param)).unwrap_err().to_string(),
-            format!("Validation error: not a built job: parameters[P]: {message}"),
-            "{param}"
-        );
+    for (ty, value, want) in cases {
+        let back = job_from_str(&job(ty, value)).unwrap();
+        assert_eq!(back.parameters["P"].value, want, "{ty}");
+        assert_eq!(back.parameters["P"].param_type.as_spec_str(), ty);
     }
 }
 
@@ -2654,41 +2702,114 @@ fn job_from_str_checks_symbol_table_entries() {
 }
 
 #[test]
-fn job_from_str_names_an_unknown_field_in_a_task_parameter_definition() {
-    let def = "/steps/0/parameterSpace/taskParameterDefinitions/F";
-    let at = "steps[0].parameterSpace.taskParameterDefinitions.F";
-    // (below the definition: JSON pointer, error path)
+fn job_from_str_names_each_malformed_task_parameter_definition() {
+    let at = "steps[0].parameterSpace.taskParameterDefinitions[0]";
+    let def = |v: serde_json::Value| {
+        let mut job = built_job_value();
+        job["steps"][0]["parameterSpace"]["taskParameterDefinitions"][0] = v;
+        job
+    };
+    let chunks = serde_json::json!({"defaultTaskCount": 1, "rangeConstraint": "CONTIGUOUS"});
+    use serde_json::json;
     let cases = [
-        ("", ""),
-        ("/int", ".int"),
-        ("/int/range", ".int.range"),
-        ("/int/range/rangeExpr", ".int.range.rangeExpr"),
         (
-            "/int/range/rangeExpr/ranges/0",
-            ".int.range.rangeExpr.ranges[0]",
+            json!({"name": "F", "type": "INT", "range": "1-3", "bogus": 1}),
+            ".bogus: unknown field",
         ),
+        (
+            json!({"name": "F", "type": "INT", "range": "1-3", "list": ["1"]}),
+            ".list: unknown field",
+        ),
+        (
+            json!({"name": "F", "type": "STRING", "range": "1-3"}),
+            ".range: unknown field",
+        ),
+        (
+            json!({"name": "F", "type": "STRING", "list": ["a"], "chunks": chunks}),
+            ".chunks: unknown field",
+        ),
+        (
+            json!({"name": "F", "range": "1-3"}),
+            ": missing field 'type'",
+        ),
+        (
+            json!({"type": "INT", "range": "1-3"}),
+            ": missing field 'name'",
+        ),
+        (
+            json!({"name": "F", "type": "INT"}),
+            ": missing field 'list'",
+        ),
+        (
+            json!({"name": "F", "type": "CHUNK[INT]", "range": "1-3"}),
+            ": missing field 'chunks'",
+        ),
+        (
+            json!({"name": "F", "type": "int", "range": "1-3"}),
+            ".type: unknown task parameter type 'int'",
+        ),
+        (
+            json!({"name": "F", "type": "INT", "range": 3}),
+            ".range: expected a string",
+        ),
+        (
+            json!({"name": "F", "type": "INT", "list": ["x"]}),
+            ".list[0]: 'x' is not an INT",
+        ),
+        (
+            json!({"name": "F", "type": "FLOAT", "list": ["x"]}),
+            ".list[0]: 'x' is not a FLOAT",
+        ),
+        (
+            json!({"name": "F", "type": "STRING", "list": [1]}),
+            ".list[0]: expected a string",
+        ),
+        (
+            json!({"name": "F", "type": "STRING", "list": "a"}),
+            ".list: expected a list",
+        ),
+        (
+            json!({"name": "F", "type": "CHUNK[INT]", "range": "1-3", "chunks": {"defaultTaskCount": 1}}),
+            ".chunks: missing field 'rangeConstraint'",
+        ),
+        (
+            json!({"name": "F", "type": "CHUNK[INT]", "range": "1-3", "chunks": {"defaultTaskCount": -1, "rangeConstraint": "CONTIGUOUS"}}),
+            ".chunks.defaultTaskCount: expected a non-negative integer",
+        ),
+        (json!("F"), ": expected an object"),
     ];
-    for (pointer, path) in cases {
-        let mut v = built_job_value();
-        v.pointer_mut(&format!("{def}{pointer}"))
-            .unwrap()
-            .as_object_mut()
-            .unwrap()
-            .insert("bogus".into(), serde_json::json!(1));
-        let want = format!("Validation error: not a built job: {at}{path}.bogus: unknown field");
-        let doc = serde_json::to_string(&v).unwrap();
+    for (v, message) in cases {
+        let doc = def(v.clone());
+        let want = format!("Validation error: not a built job: {at}{message}");
         assert_eq!(
-            job_from_str(&doc).unwrap_err().to_string(),
+            job_from_str(&serde_json::to_string(&doc).unwrap())
+                .unwrap_err()
+                .to_string(),
             want,
-            "{pointer}"
+            "{v}"
         );
-        let yaml = serde_saphyr::to_string(&v).unwrap();
+        let yaml = serde_saphyr::to_string(&doc).unwrap();
         assert_eq!(
             job_from_str(&yaml).unwrap_err().to_string(),
             want,
-            "{pointer} (YAML)"
+            "{v} (YAML)"
         );
     }
+    // A repeated name, and definitions that are not a list.
+    let mut job = built_job_value();
+    let defs = &mut job["steps"][0]["parameterSpace"]["taskParameterDefinitions"];
+    let first = defs[0].clone();
+    defs.as_array_mut().unwrap().push(first);
+    assert_eq!(
+        job_from_str(&job.to_string()).unwrap_err().to_string(),
+        "Validation error: not a built job: steps[0].parameterSpace.taskParameterDefinitions[1].name: 'F' is repeated"
+    );
+    let mut job = built_job_value();
+    job["steps"][0]["parameterSpace"]["taskParameterDefinitions"] = json!({"F": {}});
+    assert_eq!(
+        job_from_str(&job.to_string()).unwrap_err().to_string(),
+        "Validation error: not a built job: steps[0].parameterSpace.taskParameterDefinitions: expected a list"
+    );
 }
 
 // ─── audit round 6 ──────────────────────────────────────────────────
@@ -3329,8 +3450,8 @@ fn an_int_with_chunks_and_the_chunk_int_it_mirrors_name_their_types() {
         .build()
         .unwrap();
     let doc = serde_json::to_string(&JobDocument(&old)).unwrap();
-    assert!(doc.contains("\"chunkInt\""), "{doc}");
-    let new = job_from_str(&doc.replace("\"chunkInt\"", "\"int\"")).unwrap();
+    assert!(doc.contains("\"type\":\"CHUNK[INT]\""), "{doc}");
+    let new = job_from_str(&doc.replace("\"type\":\"CHUNK[INT]\"", "\"type\":\"INT\"")).unwrap();
     let d = diff_built_jobs(old, new, &opts());
     let c = d
         .changes

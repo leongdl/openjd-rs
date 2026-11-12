@@ -815,8 +815,9 @@ Diff two templates or two parameter sets, with origins and stages; see
 pub fn job::template_diff::diff_templates(old: &TemplateInput, new: &TemplateInput, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
 pub fn job::template_diff::diff_job_template_with_parameter_sets(template: &TemplateInput, old: &JobParameterInputValues, new: &JobParameterInputValues, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
 pub fn job::template_diff::diff_built_jobs(old: Job, new: Job, options: &DiffOptions) -> TemplateDiff;   // origin Job, no template layer
-pub fn job::template_diff::job_from_str(text: &str) -> Result<Job, ModelError>;   // JSON or YAML serde form of a Job
-pub struct job::template_diff::JobDocument<'a>(pub &'a Job);   // Serialize: the Job serde form, parameters and environment variables sorted; Debug, Clone, Copy
+pub fn job::template_diff::job_from_str(text: &str) -> Result<Job, ModelError>;   // JSON or YAML JobDocument
+pub struct job::template_diff::JobDocument<'a>(pub &'a Job);   // Serialize: the Job serde form, parameters and environment variables sorted,
+                                                                 // parameters and parameter spaces in the host encoding; Debug, Clone, Copy
 
 pub enum job::template_diff::TemplateSource { Path(PathBuf), Text(String), Value(serde_json::Value), Decoded(Box<JobTemplate>) }
 impl TemplateSource { pub fn guess(s: &str) -> Self; }   // Path if s names an existing file, else Text
@@ -844,7 +845,7 @@ pub struct job::template_diff::TemplateStepFragment { pub step: serde_json::Valu
 pub fn job::template_diff::build_job_symbol_table(job: &Job) -> Result<SerializedSymbolTable, ModelError>;
 pub fn job::template_diff::job_digest(job: &Job) -> Result<String, ModelError>;   // sha256 hex of the JobDocument JSON
 pub fn job::template_diff::merge_parameters(stored: &JobParameterValues, requested: &JobParameterInputValues,
-    new_template: &JobTemplate, environments: &[EnvironmentTemplate]) -> Result<JobParameterInputValues, ModelError>;
+    new: &TemplateInput) -> Result<JobParameterValues, ModelError>;   // for TemplateInput::preprocessed
 
 pub struct job::template_diff::TemplateDiff { pub changes: Vec<Change>, pub steps: Vec<StepSummary>, pub job: DiffTree,
     pub old_job: Job, pub new_job: Job, pub notes: Vec<Note> }
@@ -906,7 +907,7 @@ impl<T: ToDocument> Op<'_, T> {
     pub fn as_document(&self) -> impl Serialize + '_;   // {"change": verb, "old"?, "new"?}
     pub fn to_value(&self) -> Result<serde_json::Value, ModelError>;
 }
-pub trait job::apply::ToDocument { fn as_document(&self) -> impl Serialize + '_; }   // for Job, Step, Environment, JobParameter
+pub trait job::apply::ToDocument { fn as_document(&self) -> impl Serialize + '_; }   // for Job, Step, Environment, JobParameter, StepParameterSpace
 pub enum job::apply::TaskChange { Boxes(Box<ProductDelta>), All, Replace }
 impl TaskChange {
     pub fn as_document(&self) -> impl Serialize + '_;   // {"change": "all" | "replace" | "boxes", …}
@@ -932,10 +933,10 @@ impl PlannedOp<'_> {
 pub struct job::apply::ApplyPlan<'a> { pub ops: Vec<PlannedOp<'a>>, pub diff: DiffTree }
 impl ApplyPlan<'_> { pub fn kinds(&self) -> BTreeSet<MutationKind>; }
 pub struct job::apply::ApplyReport { pub applied: usize }
-pub enum job::apply::ApplyError<E> { Refused { op: usize, refusal: Refusal }, Vetoed { op: usize, target: OpTarget, error: E },
+#[non_exhaustive] pub enum job::apply::ApplyError<E> { Refused { op: usize, refusal: Refusal }, Vetoed { op: usize, target: OpTarget, error: E },
     Store { op: usize, error: E }, Model(ModelError) }
     // Display for E: Display; Error for E: Debug + Display (source: the Refusal or the ModelError)
-pub struct job::apply::Refusal { pub kind: MutationKind, pub target: OpTarget, pub reason: String }
+#[non_exhaustive] pub struct job::apply::Refusal { pub kind: MutationKind, pub target: OpTarget, pub reason: String }
 impl Refusal { pub fn new(op: &PlannedOp<'_>, kind: MutationKind, reason: impl Into<String>) -> Self; }
     // Display "{target}: {reason}"; Error
 
@@ -961,9 +962,11 @@ pub trait job::apply::JobApplier {   // object safe
 
 `StepRef` names a step by name and index, so a store keyed by name needs no job to resolve
 the index. `OpTarget` is the owned form a `Refusal` and `ApplyError::Vetoed` carry. The
-`as_document` views write each object in its `JobDocument` form and borrow the plan;
-`to_value` turns one into a `serde_json::Value`, whose objects sort their keys, and fails
-only if serialization fails. `ApplyError` separates a policy refusal (`Refused`: not
+`as_document` views write each object in its `JobDocument` form, in the host encoding of
+[host-support.md](host-support.md#host-encoding), and borrow the plan; `to_value` turns one
+into the same document as a `serde_json::Value` (every order in it is a list order, so key
+sorting changes nothing) and fails only if serialization fails. `Refusal` is built with
+`Refusal::new`, since it is `#[non_exhaustive]`. `ApplyError` separates a policy refusal (`Refused`: not
 allowed yet), a store veto in `check` (`Vetoed`: not allowed in the store's current state;
 nothing written) and a failed write (`Store`: ops before it were applied). `AllowList`
 refuses with the reason `{kind} is not allowed`, so a refusal displays as

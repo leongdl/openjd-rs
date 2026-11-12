@@ -57,12 +57,14 @@ descended.
 |---|---|---|
 | `steps`, `jobEnvironments`, `stepEnvironments`, `embeddedFiles` | `name` | `<collection>.order` field change |
 | `taskParameterDefinitions` | map key | `taskParameterDefinitions.order` when there is no `combination`, or it is `*` (then it fixes task order) |
-| `parameters` | map key | not a change |
+| `parameters` | map key, compared in name order | not a change |
 | `variables` | map key | not a change; entries are `variables.<KEY>` |
 | `hostRequirements.amounts` / `attributes` | `name` | `<collection>.order`; entries are `<collection>[<name>]` |
 | `dependencies` | set of `dependsOn` | `dependencies.order` |
 
-Children are ordered old-side first, then new-only entries. With duplicate names (not
+Children are ordered old-side first, then new-only entries. `parameters` are compared in
+name order, so the parameter nodes, their indices and `ApplyPlan`'s parameter ops do not
+depend on how either map was filled. With duplicate names (not
 possible in a validated job, but the fields are public) the first occurrence is matched
 and the later copies are compared as a list. When they differ, a
 `<collection>.duplicates` field change lists the repeated names, so the parent is never
@@ -79,7 +81,7 @@ None-vs-empty are recorded as `dependencies.order`.
 | node kind | segment from parent | own fields | children |
 |---|---|---|---|
 | Job | (root) | `name`, `description`, `extensions`, `steps.order`, `steps.duplicates`, `jobEnvironments`, `jobEnvironments.order` | `parameters[K]`, `jobEnvironments[N]`, `steps[N]` |
-| JobParameter | `parameters[K]` | `name`, `type`, `value` | — |
+| JobParameter | `parameters[K]` | `name`, `type`, `value` (written in the [host encoding](host-support.md#host-encoding): `"STRING"`, `"1-100"`) | — |
 | Step | `steps[N]` | `name`, `description`, `dependencies`, `dependencies.order`, `stepEnvironments`, `stepEnvironments.order`, `resolvedSymTab` | `script`, `stepEnvironments[N]`, `parameterSpace`, `hostRequirements` |
 | StepScript | `script` | `let`, `embeddedFiles`, `embeddedFiles.order` | `onRun`, `embeddedFiles[N]` |
 | Environment | `jobEnvironments[N]` / `stepEnvironments[N]` | `name`, `description`, `variables.K`, `variables`, `resolvedSymTab` | `script` |
@@ -87,7 +89,7 @@ None-vs-empty are recorded as `dependencies.order`.
 | Action | `onRun`, `onEnter`, ... | `command`, `args`, `timeout`, `cancelation` | — |
 | EmbeddedFile | `embeddedFiles[N]` | `name`, `type`, `filename`, `data`, `runnable`, `endOfLine` | — |
 | ParameterSpace | `parameterSpace` | `combination`, `taskParameterDefinitions.order` | `taskParameterDefinitions[K]` |
-| TaskParameter | `taskParameterDefinitions[K]` | `definition` (whole value) | — |
+| TaskParameter | `taskParameterDefinitions[K]` | `definition` (whole value, in the host encoding without its `name`: `{"type": "INT", "range": "1-100"}`) | — |
 | HostRequirements | `hostRequirements` | `amounts[N]`, `amounts.order`, `amounts`, `attributes[N]`, `attributes.order`, `attributes` | — |
 
 ## Identity and position

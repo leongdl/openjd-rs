@@ -518,15 +518,11 @@ kinds: ParameterValue, TaskAppend
       "path": "parameters[Frames]",
       "field": "value",
       "before": {
-        "raw": {
-          "String": "1-100"
-        },
+        "raw": "1-100",
         "text": "1-100"
       },
       "after": {
-        "raw": {
-          "String": "1-200"
-        },
+        "raw": "1-200",
         "text": "1-200"
       },
       "origin": "parameters",
@@ -539,47 +535,15 @@ kinds: ParameterValue, TaskAppend
       "field": "definition",
       "before": {
         "raw": {
-          "int": {
-            "chunks": null,
-            "range": {
-              "rangeExpr": {
-                "cumulative_lengths": [
-                  100
-                ],
-                "length": 100,
-                "ranges": [
-                  {
-                    "end": 100,
-                    "start": 1,
-                    "step": 1
-                  }
-                ]
-              }
-            }
-          }
+          "range": "1-100",
+          "type": "INT"
         },
         "text": "1-100"
       },
       "after": {
         "raw": {
-          "int": {
-            "chunks": null,
-            "range": {
-              "rangeExpr": {
-                "cumulative_lengths": [
-                  200
-                ],
-                "length": 200,
-                "ranges": [
-                  {
-                    "end": 200,
-                    "start": 1,
-                    "step": 1
-                  }
-                ]
-              }
-            }
-          }
+          "range": "1-200",
+          "type": "INT"
         },
         "text": "1-200"
       },
@@ -1416,22 +1380,20 @@ kinds: TaskAppend
       "field": "definition",
       "before": {
         "raw": {
-          "string": {
-            "range": [
-              "left"
-            ]
-          }
+          "list": [
+            "left"
+          ],
+          "type": "STRING"
         },
         "text": "[left]"
       },
       "after": {
         "raw": {
-          "string": {
-            "range": [
-              "left",
-              "right"
-            ]
-          }
+          "list": [
+            "left",
+            "right"
+          ],
+          "type": "STRING"
         },
         "text": "[left, right]"
       },
@@ -1525,12 +1487,12 @@ kinds: TaskReplace
       "before": null,
       "after": {
         "raw": {
-          "string": {
-            "range": [
-              "left",
-              "right"
-            ]
-          }
+          "list": [
+            "left",
+            "right"
+          ],
+          "name": "Eye",
+          "type": "STRING"
         },
         "text": "[left, right]"
       },

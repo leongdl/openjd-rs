@@ -33,7 +33,10 @@ these, so only a hand-built `Job` has one. The diff reports the copies as a sing
 
 1. `Action::Job`: one `Modify` when the root has its own field changes (name,
    description, extensions, step or job-environment order).
-2. `Action::Parameter`: one op per changed parameter.
+2. `Action::Parameter`: one op per changed parameter, in name order. The diff orders
+   parameter nodes by name, so the order does not depend on how either job's map was
+   filled (`create_job` fills it from a `HashMap`), and a plan of rebuilt jobs has the
+   same ops at the same indices, which `execute(plan, store, op)` relies on to resume.
 3. `Action::Environment(index, op)`: one op per changed **job** environment.
    - Removes come first. They are matched by name; the index is the old one and is
      informational.
@@ -124,7 +127,8 @@ space uses.
 
 A `Refusal` names the refused kind, the op's target (`OpTarget`: the job, a parameter or
 job environment by name, or a step by name and index) and a reason. `Refusal::new` fills
-the target from the op, for a custom policy. It displays as `{target}: {reason}`;
+the target from the op, for a custom policy; `Refusal`, `OpTarget` and `ApplyError` are
+`#[non_exhaustive]`, so a later field or variant is not a breaking change. It displays as `{target}: {reason}`;
 `AllowList`'s reason is `{kind} is not allowed`:
 
 | op | message |
@@ -176,12 +180,14 @@ Every payload has a plain-data form that needs nothing outside these types:
 | `check` | `&PlannedOp` | `PlannedOp::as_document`: `{"kinds": [names], "action": "job" \| "parameter" \| "environment" \| "step" \| "tasks", …}` |
 | `job`, `parameter`, `environment`, `step` | `Op<'_, T>` | `Op::as_document`: `{"change": "add" \| "modify" \| "remove", "old"?: …, "new"?: …}` |
 | `step`, `tasks` | `StepRef` | `Serialize`: `{"name": …, "index": …}` |
-| `tasks` | `Option<&StepParameterSpace>` | `Serialize`, the `JobDocument` form |
+| `tasks` | `Option<&StepParameterSpace>` | `ToDocument`, the `JobDocument` form |
 | `tasks` | `&TaskChange` | `TaskChange::as_document` |
 
-Objects inside an op (`Job`, `Step`, `Environment`, `JobParameter`, through `ToDocument`)
-are written as `JobDocument` writes them: `parameters` and environment `variables` sorted
-by name, task parameter definitions in definition order. `Op::Modify::node` is left out,
+Objects inside an op (`Job`, `Step`, `Environment`, `JobParameter`, `StepParameterSpace`,
+through `ToDocument`) are written as `JobDocument` writes them, in the
+[host encoding](host-support.md#host-encoding): `parameters` and environment `variables`
+sorted by name, typed values as `{type, value}`, and `taskParameterDefinitions` a list in
+definition order. `Op::Modify::node` is left out,
 because it indexes the plan's diff. `TaskChange::as_document` is `{"change": "all"}`,
 `{"change": "replace"}` (the host enumerates the new space for both, as at job creation),
 or
@@ -196,10 +202,11 @@ is written by `task_parameter_set_document`: name to `{type, value}`, the value 
 float keeps its literal. The document lists every changed task, so its size is linear in
 them.
 
-`as_document` returns a `Serialize` view that borrows the plan. Serializing it straight
-into the host's value keeps key order; `to_value` produces a `serde_json::Value`, which
-sorts object keys, so there `taskParameterDefinitions` is in name order. Task order is
-unaffected: it is `appended`'s list order.
+`as_document` returns a `Serialize` view that borrows the plan; `to_value` is the same
+document as a `serde_json::Value`. Every order in a document is a list order, so the two
+agree, and a host may read either into maps that do not keep key order. A host that
+enumerates a space for `All` or `Replace` from `taskParameterDefinitions`, rightmost
+fastest, gets `create_job`'s task order.
 
 The reference adaptor is `DynStore` in `test_job_apply.rs`. It is used through
 `&mut dyn JobApplier<Error = Box<dyn Error + Send + Sync>>`, appends one
@@ -208,13 +215,100 @@ to an inner store. The tests replay the oracle cases through it, assert the whol
 one case, and resume after an injected write failure.
 
 A PyO3 adaptor (in openjd-model-for-python, not here) has the same shape: a struct holding
-a `Py<PyAny>`, the Python store object. Each trait method takes the GIL, converts its
-arguments with `as_document` (serialized into a `dict`) or `to_value`, and calls the
-matching Python method (`store.step(step, op)`). A Python exception becomes the adaptor's
-`Error` (a `PyErr`, or a boxed error wrapping it). The binding maps `ApplyError` back to a
-Python exception; the variants keep apart what a host treats differently (`Refused` and
-`Vetoed` wrote nothing, `Store` wrote the ops before `op`). `execute(plan, store, op)`
-resumes after a failed write, as for any store.
+a `Py<PyAny>`, the Python store object, whose trait methods take the GIL and call the
+matching Python method. Documents cross the boundary as JSON text, read by Python's
+`json.loads`; the `pythonize` crate, which serializes into Python objects directly, is the
+alternative. The sketch below compiles against PyO3 0.25:
+
+```rust
+use openjd_model::job::apply::{
+    apply, AllowList, ApplyError, ApplyReport, JobApplier, Op, PlannedOp, StepRef, TaskChange,
+    ToDocument,
+};
+use openjd_model::job::{Environment, Job, JobParameter, Step, StepParameterSpace};
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+
+/// A `JobApplier` that forwards each call to a Python store object.
+struct PyStore {
+    store: Py<PyAny>,
+}
+
+/// A document as a Python value: JSON text, read by Python's `json`.
+fn to_py<'py>(py: Python<'py>, doc: &impl serde::Serialize) -> PyResult<Bound<'py, PyAny>> {
+    let text = serde_json::to_string(doc).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    PyModule::import(py, "json")?.call_method1("loads", (text,))
+}
+
+/// Object-safe `Serialize`, so `call` takes a list of mixed documents.
+trait Doc {
+    fn to_py<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>>;
+}
+impl<T: serde::Serialize> Doc for T {
+    fn to_py<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        to_py(py, self)
+    }
+}
+
+impl PyStore {
+    /// `store.<method>(*args)`, each argument a document.
+    fn call(&self, method: &str, args: &[&dyn Doc]) -> PyResult<()> {
+        Python::with_gil(|py| {
+            let args = args.iter().map(|a| a.to_py(py)).collect::<PyResult<Vec<_>>>()?;
+            let args = pyo3::types::PyTuple::new(py, args)?;
+            self.store.call_method1(py, method, args)?;
+            Ok(())
+        })
+    }
+}
+
+impl JobApplier for PyStore {
+    type Error = PyErr;
+
+    fn check(&mut self, op: &PlannedOp<'_>) -> PyResult<()> {
+        self.call("check", &[&op.as_document()])
+    }
+    fn job(&mut self, op: Op<'_, Job>) -> PyResult<()> {
+        self.call("job", &[&op.as_document()])
+    }
+    fn parameter(&mut self, op: Op<'_, JobParameter>) -> PyResult<()> {
+        self.call("parameter", &[&op.as_document()])
+    }
+    fn environment(&mut self, index: usize, op: Op<'_, Environment>) -> PyResult<()> {
+        self.call("environment", &[&index, &op.as_document()])
+    }
+    fn step(&mut self, step: StepRef<'_>, op: Op<'_, Step>) -> PyResult<()> {
+        self.call("step", &[&step, &op.as_document()])
+    }
+    fn tasks(
+        &mut self,
+        step: StepRef<'_>,
+        space: Option<&StepParameterSpace>,
+        change: &TaskChange,
+    ) -> PyResult<()> {
+        let space = space.map(ToDocument::as_document);
+        self.call("tasks", &[&step, &space, &change.as_document()])
+    }
+}
+
+/// Apply through the adaptor as a `dyn JobApplier`.
+fn apply_to(
+    old: &Job,
+    new: &Job,
+    policy: &AllowList,
+    store: Py<PyAny>,
+) -> Result<ApplyReport, ApplyError<PyErr>> {
+    let mut adaptor = PyStore { store };
+    let dyn_store: &mut dyn JobApplier<Error = PyErr> = &mut adaptor;
+    apply(old, new, policy, dyn_store)
+}
+```
+
+A Python exception is the adaptor's `Error`. The binding maps `ApplyError` back to a Python
+exception; the variants keep apart what a host treats differently (`Refused` and `Vetoed`
+wrote nothing, `Store` wrote the ops before `op`). `ApplyError` is `#[non_exhaustive]`, so
+the binding's `match` needs a final arm. `execute(plan, store, op)` resumes after a failed
+write, as for any store.
 
 ## Tests
 
@@ -238,7 +332,13 @@ order (adds and removes). Other tests cover plan order and kinds, policy refusal
 writes, store veto, resuming after a failed write, repeated names, and `combination: "*"`.
 Every kind is produced by some test, and for each one a policy that allows every other kind
 in that plan refuses it with no writes. The adaptor tests above cover the dyn path; others
-assert each refusal message in full, every kind's name round trip, `AllowList::from_names`,
-and that each op's document equals the matching part of the `JobDocument`.
+assert each refusal message in full, every kind's name round trip, that `MutationKind::ALL`
+lists every variant (an exhaustive match whose arms index a fixed list by constant,
+so a new variant fails to compile, or fails the test, until `ALL` lists it), `AllowList::from_names`, that each op's document equals the matching part of the
+`JobDocument`, one whole `check` document for a job, an environment and a step op, that a
+host enumerating a step add's and a `Replace`'s space from the document (definitions `[Z, A]`)
+gets `create_job`'s task order, that 20 plans of independently rebuilt jobs are equal, and
+that resuming after a failed write with a plan of rebuilt jobs leaves the store holding the
+new job.
 `test_task_delta.rs` checks `appended` and `removed` against enumeration for every product
-case.
+case, and `removed`'s old indices for three dimensions.

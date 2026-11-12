@@ -9,10 +9,12 @@
 
 use openjd_expr::path_mapping::PathFormat;
 use openjd_expr::ExprValue;
+use openjd_model::job::apply::plan;
 use openjd_model::job::diff::{diff_jobs, DiffOptions};
 use openjd_model::job::template_diff::{
-    build_job_symbol_table, diff_templates, job_digest, merge_parameters,
-    template_job_environment_fragment, template_step_fragment, TemplateInput, TemplateSource,
+    build_job_symbol_table, diff_templates, job_digest, job_from_str, merge_parameters,
+    template_job_environment_fragment, template_step_fragment, JobDocument, TemplateInput,
+    TemplateSource,
 };
 use openjd_model::job::Job;
 use openjd_model::{
@@ -224,8 +226,31 @@ fn the_digest_ignores_map_order() {
     // Pinned: a change here is a change of the document format.
     assert_eq!(
         job_digest(&text(V1).build().unwrap()).unwrap(),
-        "95423ad8a6e4bc246de8ea22402a20597a164af1a563defb458a7f3ba1ed3cc5"
+        "4b3e1d1cfc8a45073bbb81fade8854a2737a3e409c740a7d0c3c2a9d925e8b80"
     );
+}
+
+#[test]
+fn value_equal_jobs_have_the_same_digest() {
+    // A list's cached size is not part of its value, nor of the document.
+    let a = text(EVERY_TYPE).build().unwrap();
+    let mut b = a.clone();
+    b.parameters["LS"].value = ExprValue::ListString(vec!["a".into(), "b".into()], 0);
+    assert_ne!(
+        serde_json::to_string(&a.parameters["LS"].value).unwrap(),
+        serde_json::to_string(&b.parameters["LS"].value).unwrap()
+    );
+    assert_eq!(a, b);
+    assert_eq!(job_digest(&a).unwrap(), job_digest(&b).unwrap());
+    // Every rebuild of the same inputs, and its document read back.
+    let digests: std::collections::BTreeSet<String> = (0..50)
+        .flat_map(|_| {
+            let job = text(EVERY_TYPE).build().unwrap();
+            let back = job_from_str(&serde_json::to_string(&JobDocument(&job)).unwrap()).unwrap();
+            [job_digest(&job).unwrap(), job_digest(&back).unwrap()]
+        })
+        .collect();
+    assert_eq!(digests.len(), 1, "{digests:?}");
 }
 
 #[test]
@@ -366,26 +391,19 @@ steps:
     script: {actions: {onRun: {command: x}}}
 "#;
 
-fn sorted(values: &JobParameterInputValues) -> Vec<String> {
+/// Each value as `name=TYPE:value`, sorted.
+fn sorted(values: &JobParameterValues) -> Vec<String> {
     let mut v: Vec<String> = values
         .iter()
-        .map(|(k, v)| format!("{k}={}", serde_json::to_string(v).unwrap()))
+        .map(|(k, v)| format!("{k}={}:{}", v.param_type, v.value.to_display_string()))
         .collect();
     v.sort();
     v
 }
 
-#[test]
-fn merge_keeps_stored_values_the_new_template_still_declares() {
-    let old = text(OLD)
-        .param("A", "x")
-        .param("B", "5")
-        .param("C", "y")
-        .param("E", "z")
-        .build()
-        .unwrap();
-    let stored: JobParameterValues = old
-        .parameters
+/// A built job's values, as [`TemplateInput::preprocessed`] takes them.
+fn values_of(job: &Job) -> JobParameterValues {
+    job.parameters
         .values()
         .map(|p| {
             (
@@ -396,42 +414,49 @@ fn merge_keeps_stored_values_the_new_template_still_declares() {
                 },
             )
         })
+        .collect()
+}
+
+#[test]
+fn merge_keeps_stored_values_and_preprocesses_the_rest() {
+    let old = text(OLD)
+        .param("A", "x")
+        .param("B", "5")
+        .param("C", "y")
+        .param("E", "z")
+        .build()
+        .unwrap();
+    let stored = values_of(&old);
+    let requested: JobParameterInputValues = [("C".to_string(), ExprValue::String("req".into()))]
+        .into_iter()
         .collect();
-    let new_template = decode_job_template(doc(NEW), None, &CallerLimits::default()).unwrap();
-    let requested: JobParameterInputValues = [
-        ("C".to_string(), ExprValue::String("req".into())),
-        ("Z".to_string(), ExprValue::String("undeclared".into())),
-    ]
-    .into_iter()
-    .collect();
-    let merged = merge_parameters(&stored, &requested, &new_template, &[]).unwrap();
-    // A kept (same type); B retyped and E removed: left out; C requested;
-    // New: left out; Z requested though undeclared.
+    let merged = merge_parameters(&stored, &requested, &text(NEW)).unwrap();
+    // A kept (same type); B retyped: the new default; C requested; E no
+    // longer declared: dropped; New: the new default.
     assert_eq!(
         sorted(&merged),
-        vec![
-            r#"A={"String":"x"}"#,
-            r#"C={"String":"req"}"#,
-            r#"Z={"String":"undeclared"}"#,
-        ]
+        vec!["A=STRING:x", "B=STRING:b2", "C=STRING:req", "New=INT:7"]
     );
-    // Without the undeclared request, the new template builds with its
-    // defaults for B and N.
-    let mut merged = merged;
-    merged.remove("Z");
-    let job = text(NEW).params(merged).build().unwrap();
-    let mut built: Vec<String> = job
-        .parameters
-        .values()
-        .map(|p| format!("{}={}", p.name, p.value.to_display_string()))
-        .collect();
-    built.sort();
-    assert_eq!(built, vec!["A=x", "B=b2", "C=req", "New=7"]);
+    let job = text(NEW).preprocessed(merged.clone()).build().unwrap();
+    assert_eq!(sorted(&values_of(&job)), sorted(&merged));
     assert_eq!(stored["B"].param_type, JobParameterType::Int);
 }
 
 #[test]
-fn merge_leaves_out_a_retyped_parameter_without_a_default() {
+fn merge_reports_a_request_the_new_template_does_not_declare() {
+    let requested: JobParameterInputValues =
+        [("Z".to_string(), ExprValue::String("undeclared".into()))]
+            .into_iter()
+            .collect();
+    let err = merge_parameters(&JobParameterValues::new(), &requested, &text(NEW)).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: Job parameter values provided for parameters that are not defined in the template: Z"
+    );
+}
+
+#[test]
+fn merge_reports_a_retyped_parameter_without_a_default() {
     let stored: JobParameterValues = [(
         "B".to_string(),
         JobParameterValue {
@@ -445,13 +470,76 @@ fn merge_leaves_out_a_retyped_parameter_without_a_default() {
         "{name: B, type: STRING, default: b2}",
         "{name: B, type: STRING}",
     );
-    let template = decode_job_template(doc(&retyped), None, &CallerLimits::default()).unwrap();
-    let merged =
-        merge_parameters(&stored, &JobParameterInputValues::new(), &template, &[]).unwrap();
-    assert!(merged.is_empty(), "{merged:?}");
-    let err = text(&retyped).params(merged).build().unwrap_err();
+    let err =
+        merge_parameters(&stored, &JobParameterInputValues::new(), &text(&retyped)).unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Values missing for required job parameters: B"
     );
+}
+
+#[test]
+fn merge_keeps_a_stored_windows_path_so_a_no_op_update_plans_nothing() {
+    let stored = stored_windows_out();
+    let old = text(OUT).preprocessed(stored.clone()).build().unwrap();
+    let merged = merge_parameters(&stored, &JobParameterInputValues::new(), &text(OUT)).unwrap();
+    assert_eq!(merged["Out"].value, stored["Out"].value);
+    let new = text(OUT).preprocessed(merged).build().unwrap();
+    assert_eq!(out_value(&new), r"C:\work\out");
+    let p = plan(&old, &new).unwrap();
+    assert!(p.ops.is_empty(), "{:?}", p.kinds());
+}
+
+#[test]
+fn merge_preprocesses_a_requested_path() {
+    let requested: JobParameterInputValues = [("Out".to_string(), ExprValue::String("o".into()))]
+        .into_iter()
+        .collect();
+    let merged = merge_parameters(&stored_windows_out(), &requested, &text(OUT)).unwrap();
+    assert_eq!(
+        merged["Out"].value.to_display_string(),
+        format!("{CWD}{SEP}o")
+    );
+}
+
+#[test]
+fn two_preprocessed_sides_with_the_same_values_give_a_template_origin() {
+    // Both sides hold the stored values, so only the template changed. On a
+    // POSIX host the Windows path would change if preprocessed again, so a
+    // rule that split the change would mark it `both`.
+    let a = OUT.replace(
+        r#"{command: a, args: ["{{RawParam.Out}}"]}"#,
+        "{command: a}",
+    );
+    let b = OUT.replace(
+        r#"{command: a, args: ["{{RawParam.Out}}"]}"#,
+        r#"{command: "a {{RawParam.Out}}"}"#,
+    );
+    let d = diff_templates(
+        &text(&a).preprocessed(stored_windows_out()),
+        &text(&b).preprocessed(stored_windows_out()),
+        &DiffOptions::default(),
+    )
+    .unwrap();
+    let got: Vec<String> = d.changes.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        got,
+        [
+            r"~ steps[A].resolvedSymTab: (none) -> RawParam.Out=C:\work\out  [template]",
+            "~ steps[A].script.onRun.command: a -> a {{RawParam.Out}}  [template]",
+        ]
+    );
+}
+
+#[test]
+fn the_job_symbol_table_has_no_job_name_with_feature_bundle_1_alone() {
+    let t = V1.replace("\r\n", "\n").replace(
+        "specificationVersion: jobtemplate-2023-09\n",
+        "specificationVersion: jobtemplate-2023-09\nextensions: [FEATURE_BUNDLE_1]\n",
+    );
+    assert_ne!(t, V1);
+    let job = text(&t).build().unwrap();
+    let table = serde_json::to_string(&build_job_symbol_table(&job).unwrap()).unwrap();
+    assert!(table.starts_with(r#"[{"name":"Param.Frames""#), "{table}");
+    assert!(!table.contains("Job.Name"), "{table}");
 }

@@ -34,13 +34,16 @@ use indexmap::IndexMap;
 use openjd_expr::format_string::FormatString;
 use openjd_expr::path_mapping::PathFormat;
 use openjd_expr::value::Float64;
-use openjd_expr::{ExprType, ExprValue, RangeExpr};
+use openjd_expr::{ExprType, ExprValue};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
 
 use crate::error::ModelError;
 use crate::job::apply::{plan, ApplyPlan};
 use crate::job::diff::{diff_jobs, diff_steps, DiffNode, DiffOptions, DiffStatus, DiffTree};
+use crate::job::document::{
+    definition_from_document, parameter_from_document, space_from_document, ParameterDoc, SpaceDoc,
+};
 use crate::job::task_delta::{task_delta, TaskBox, TaskDelta};
 use crate::job::TaskParameter;
 use crate::job::{Environment, Job, JobParameter, Step, StepParameterSpace, TaskParamRange};
@@ -49,9 +52,7 @@ use crate::template::parse::{
     decode_environment_template, decode_job_template, document_string_to_object, DocumentType,
 };
 use crate::template::{EnvironmentTemplate, JobParameterDefinition, JobTemplate};
-use crate::types::{
-    CallerLimits, JobParameterInputValues, JobParameterType, JobParameterValues, ModelExtension,
-};
+use crate::types::{CallerLimits, JobParameterInputValues, JobParameterValues, ModelExtension};
 use crate::{create_job, preprocess_job_parameters, PathParameterOptions};
 
 mod host;
@@ -377,18 +378,7 @@ fn build(loaded: &Loaded, values: Values<'_>, limits: &CallerLimits) -> Result<J
     let values = match values {
         Values::Preprocessed(v) => v,
         Values::Input(params) => {
-            preprocessed = preprocess_job_parameters(
-                &loaded.template,
-                params,
-                &loaded.environments,
-                &PathParameterOptions {
-                    job_template_dir: &loaded.template_dir,
-                    current_working_dir: &loaded.cwd,
-                    path_format: PathFormat::host(),
-                    allow_template_dir_walk_up: false,
-                    allow_uri_path_values: true,
-                },
-            )?;
+            preprocessed = preprocess(loaded, params)?;
             &preprocessed
         }
     };
@@ -397,6 +387,26 @@ fn build(loaded: &Loaded, values: Values<'_>, limits: &CallerLimits) -> Result<J
         .default_validation_context()
         .with_caller_limits(limits.clone());
     create_job(&loaded.template, values, &ctx)
+}
+
+/// `preprocess_job_parameters` for a side's template, environments and
+/// directories.
+fn preprocess(
+    loaded: &Loaded,
+    params: &JobParameterInputValues,
+) -> Result<JobParameterValues, ModelError> {
+    preprocess_job_parameters(
+        &loaded.template,
+        params,
+        &loaded.environments,
+        &PathParameterOptions {
+            job_template_dir: &loaded.template_dir,
+            current_working_dir: &loaded.cwd,
+            path_format: PathFormat::host(),
+            allow_template_dir_walk_up: false,
+            allow_uri_path_values: true,
+        },
+    )
 }
 
 /// Prefix an error with the input that failed (`old template`, `new
@@ -1181,31 +1191,10 @@ fn to_json<T: Serialize + ?Sized>(v: &T) -> Value {
     serde_json::to_value(v).unwrap_or_else(|e| Value::String(format!("<not serializable: {e}>")))
 }
 
-/// A job as a `Value` for whole-node [`Shown::raw`]s: its [`JobDocument`]
-/// form, except that each step's `taskParameterDefinitions` is a list of
-/// `{name, definition}` in definition order. A `Value` object sorts its
-/// keys, and definition order is task order, so a map would lose it.
+/// A job as a `Value` for whole-node [`Shown::raw`]s: its [`JobDocument`],
+/// whose `taskParameterDefinitions` lists keep definition order.
 fn job_value(job: &Job) -> Value {
-    let mut doc = to_json(&JobDocument(job));
-    for (i, step) in job.steps.iter().enumerate() {
-        let Some(space) = &step.parameter_space else {
-            continue;
-        };
-        let defs = space
-            .task_parameter_definitions
-            .iter()
-            .map(|(name, p)| json!({"name": name, "definition": to_json(p)}))
-            .collect();
-        if let Some(slot) = doc
-            .get_mut("steps")
-            .and_then(|s| s.get_mut(i))
-            .and_then(|s| s.get_mut("parameterSpace"))
-            .and_then(|s| s.get_mut("taskParameterDefinitions"))
-        {
-            *slot = Value::Array(defs);
-        }
-    }
-    doc
+    to_json(&JobDocument(job))
 }
 
 /// The key of the step node at or above `id`: the name of the step the
@@ -1237,8 +1226,7 @@ fn segments(tree: &DiffTree, id: usize) -> Vec<String> {
 }
 
 /// Follow diff segments through a [`job_value`]: `name[key]` selects a map
-/// entry, or the element of a list whose `name` is `key` (for a task
-/// parameter definition, that element's `definition`).
+/// entry, or the element of a list whose `name` is `key`.
 ///
 /// Every diff segment is the serialized field name except an action's
 /// (`onRun`, `onEnter`, …), which the diff hangs on the script directly but
@@ -1254,16 +1242,9 @@ fn lookup<'v>(doc: &'v Value, segments: &[String]) -> Option<&'v Value> {
                 let key = rest.strip_suffix(']')?;
                 match v.get(coll)? {
                     Value::Object(m) => m.get(key),
-                    Value::Array(a) => {
-                        let e = a
-                            .iter()
-                            .find(|e| e.get("name").and_then(Value::as_str) == Some(key))?;
-                        if coll == "taskParameterDefinitions" {
-                            e.get("definition")
-                        } else {
-                            Some(e)
-                        }
-                    }
+                    Value::Array(a) => a
+                        .iter()
+                        .find(|e| e.get("name").and_then(Value::as_str) == Some(key)),
                     _ => None,
                 }
             }
@@ -1355,7 +1336,7 @@ fn node_text(node: &DiffNode, field: &str, raw: &Value, job: &Job, def: Definiti
     use crate::job::diff::DiffNodeKind;
     match (node.kind, field) {
         (DiffNodeKind::TaskParameter, "definition" | "") => {
-            TaskParameter::deserialize(raw).map_or_else(|_| render(raw), |p| def(&p))
+            definition(raw).map_or_else(|| render(raw), |p| def(&p))
         }
         (DiffNodeKind::JobParameter, "value" | "") => node
             .key
@@ -1371,6 +1352,14 @@ fn node_text(node: &DiffNode, field: &str, raw: &Value, job: &Job, def: Definiti
         (_, "") => whole_text(&without_label(raw, node.key.as_deref()), def),
         _ => whole_text(&without_label(raw, field_key(field)), def),
     }
+}
+
+/// A task parameter definition from its host-encoding document, with or
+/// without its `name`.
+fn definition(raw: &Value) -> Option<TaskParameter> {
+    definition_from_document(raw, "", raw.get("name").is_some())
+        .ok()
+        .map(|(_, p)| p)
 }
 
 /// A job parameter's value, bare: a `STRING` or `PATH` as [`string_text`]
@@ -1394,15 +1383,13 @@ fn whole_text(v: &Value, def: DefinitionText) -> String {
         {
             return Some(space_text(e, def));
         }
-        let is_parameter = m.len() == 3
-            && ["name", "paramType", "value"]
-                .iter()
-                .all(|k| m.contains_key(*k));
+        let is_parameter =
+            m.len() == 3 && ["name", "type", "value"].iter().all(|k| m.contains_key(*k));
         if !is_parameter {
             return None;
         }
         let name = m.get("name").and_then(Value::as_str)?;
-        let p = parameter_from_value(name, e).ok()?;
+        let p = parameter_from_document(name, e, "").ok()?;
         Some(format!(
             "{} ({})",
             parameter_text(&p),
@@ -1461,13 +1448,7 @@ fn space_text(raw: &Value, def: DefinitionText) -> String {
         .iter()
         .map(|d| {
             let name = d.get("name").map_or_else(String::new, render);
-            let range = d
-                .get("definition")
-                .and_then(|v| TaskParameter::deserialize(v).ok())
-                .map_or_else(
-                    || d.get("definition").map_or_else(String::new, render),
-                    |p| def(&p),
-                );
+            let range = definition(d).map_or_else(|| render(&without_label(d, None)), |p| def(&p));
             format!("{name}: {range}")
         })
         .collect::<Vec<_>>()
@@ -2173,7 +2154,8 @@ fn is_adaptive(step: &Step) -> bool {
 
 // ─── built-job reader ───────────────────────────────────────────────
 
-/// The serde form of a [`Job`], read field by field.
+/// The serde form of a [`Job`] as [`JobDocument`] writes it, read field by
+/// field.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BuiltJob {
@@ -2184,20 +2166,32 @@ struct BuiltJob {
     // an error like any other unexpected `null`.
     #[serde(default)]
     parameters: IndexMap<String, Value>,
-    steps: Vec<Step>,
+    steps: Vec<BuiltStep>,
     job_environments: Option<Vec<Environment>>,
 }
 
+/// A [`Step`] as [`JobDocument`] writes it: its serde form, except that the
+/// parameter space is in the host encoding, read by hand.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BuiltStep {
+    name: String,
+    description: Option<String>,
+    script: crate::job::StepScript,
+    step_environments: Option<Vec<Environment>>,
+    parameter_space: Option<Value>,
+    host_requirements: Option<crate::job::HostRequirements>,
+    dependencies: Option<Vec<crate::job::StepDependency>>,
+    #[serde(rename = "resolvedSymTab")]
+    resolved_symtab: Option<openjd_expr::symbol_table::SerializedSymbolTable>,
+}
+
 /// Read a [`Job`] back from the JSON or YAML that `openjd build` prints
-/// (the job's serde form). JSON when the first non-whitespace character is
-/// `{`, YAML otherwise. Unknown fields are rejected at every level, and so are a
-/// parameter whose value's type is not its `paramType`'s and a
-/// `resolvedSymTab` entry that is not the `{name, type, value}` a
-/// `SymbolTable` serializes to.
-///
-/// It takes text, not a `serde_json::Value`, because a `Value` object
-/// sorts its keys, which would reorder task parameter definitions and so
-/// change task order.
+/// (its [`JobDocument`]). JSON when the first non-whitespace character is
+/// `{`, YAML otherwise. Unknown fields are rejected at every level, and so
+/// are a parameter or task parameter definition that is not in the host
+/// encoding and a `resolvedSymTab` entry that is not the
+/// `{name, type, value}` a `SymbolTable` serializes to.
 ///
 /// Unstable: see the module docs.
 pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
@@ -2208,10 +2202,6 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
     } else {
         serde_saphyr::from_str(text).map_err(|e| err(e.to_string()))?
     };
-    // Serde reports an extra key beside an enum tag without its path.
-    if let Some(path) = extra_tag_key(&input) {
-        return Err(err(format!("{path}: unknown field")));
-    }
     let raw: BuiltJob = if json {
         serde_json::from_str(text).map_err(|e| err(e.to_string()))?
     } else {
@@ -2226,36 +2216,6 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
     }
     check_symbol_tables(&job).map_err(err)?;
     Ok(job)
-}
-
-/// The variant tags of [`TaskParameter`] and of [`TaskParamRange`], as
-/// serde writes them.
-const TASK_PARAMETER_TAGS: [&str; 5] = ["int", "float", "string", "path", "chunkInt"];
-const RANGE_TAGS: [&str; 2] = ["list", "rangeExpr"];
-
-/// The path of the first key beside the tag of a task parameter
-/// definition or of its `range`, or `None`.
-fn extra_tag_key(input: &Value) -> Option<String> {
-    let extra = |v: &Value, tags: &[&str]| {
-        v.as_object()
-            .and_then(|m| m.keys().find(|k| !tags.contains(&k.as_str())).cloned())
-    };
-    let steps = input.get("steps")?.as_array()?;
-    steps.iter().enumerate().find_map(|(i, step)| {
-        let defs = step
-            .get("parameterSpace")?
-            .get("taskParameterDefinitions")?
-            .as_object()?;
-        defs.iter().find_map(|(name, def)| {
-            let path = format!("steps[{i}].parameterSpace.taskParameterDefinitions.{name}");
-            if let Some(k) = extra(def, &TASK_PARAMETER_TAGS) {
-                return Some(format!("{path}.{k}"));
-            }
-            let (tag, body) = def.as_object()?.iter().next()?;
-            let k = extra(body.get("range")?, &RANGE_TAGS)?;
-            Some(format!("{path}.{tag}.range.{k}"))
-        })
-    })
 }
 
 /// Check every `resolvedSymTab` has the shape a [`SymbolTable`] serializes
@@ -2431,207 +2391,75 @@ fn job_from_built(raw: BuiltJob) -> Result<Job, String> {
         .map_err(|e| format!("extensions: {e}"))?;
     let mut parameters = IndexMap::new();
     for (k, v) in raw.parameters {
-        let p = parameter_from_value(&k, &v).map_err(|e| format!("parameters[{k}]: {e}"))?;
+        let p = parameter_from_document(&k, &v, &format!("parameters[{k}]"))?;
         parameters.insert(k, p);
     }
+    let steps = raw
+        .steps
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| step_from_built(s, i))
+        .collect::<Result<_, _>>()?;
     Ok(Job {
         name: raw.name,
         description: raw.description,
         extensions,
         parameters,
-        steps: raw.steps,
+        steps,
         job_environments: raw.job_environments,
     })
 }
 
-/// The parameter stored under `key`.
-fn parameter_from_value(key: &str, v: &Value) -> Result<JobParameter, String> {
-    if let Some(extra) = v.as_object().and_then(|m| {
-        m.keys()
-            .find(|k| !["name", "paramType", "value"].contains(&k.as_str()))
-    }) {
-        return Err(format!("unknown field '{extra}'"));
-    }
-    let name = v
-        .get("name")
-        .and_then(Value::as_str)
-        .ok_or("'name' must be a string")?
-        .to_string();
-    if name != key {
-        return Err(format!(
-            "'name' is '{name}', but the parameter's key is '{key}'"
-        ));
-    }
-    let type_name = v
-        .get("paramType")
-        .and_then(Value::as_str)
-        .ok_or("'paramType' must be a string")?;
-    let &(_, param_type, tags) = PARAM_TYPES
-        .iter()
-        .find(|(n, _, _)| *n == type_name)
-        .ok_or_else(|| format!("unknown paramType '{type_name}'"))?;
-    let value = v.get("value").ok_or("missing 'value'")?;
-    if let Some(tag) = value_tag(value) {
-        if !tags.contains(&tag) {
-            return Err(format!(
-                "paramType '{type_name}' cannot hold a '{tag}' value"
-            ));
-        }
-    }
-    Ok(JobParameter {
+/// The [`Step`] a [`BuiltStep`] describes; `i` is its index, for errors.
+fn step_from_built(s: BuiltStep, i: usize) -> Result<Step, String> {
+    let BuiltStep {
         name,
-        param_type,
-        value: expr_value(value)?,
+        description,
+        script,
+        step_environments,
+        parameter_space,
+        host_requirements,
+        dependencies,
+        resolved_symtab,
+    } = s;
+    let parameter_space = match parameter_space {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(space_from_document(
+            &v,
+            &format!("steps[{i}].parameterSpace"),
+        )?),
+    };
+    // A struct literal: a new `Step` field fails to compile here until the
+    // reader handles it.
+    Ok(Step {
+        name,
+        description,
+        script,
+        step_environments,
+        parameter_space,
+        host_requirements,
+        dependencies,
+        resolved_symtab,
     })
-}
-
-/// Each `paramType`, and the `ExprValue` tags its value may have.
-/// `create_job` stores a PATH as a `String` and a `LIST[PATH]` as a
-/// `ListString`; a `Path` or `ListPath` value is read as well.
-const PARAM_TYPES: [(&str, JobParameterType, &[&str]); 12] = [
-    ("String", JobParameterType::String, &["String"]),
-    ("Int", JobParameterType::Int, &["Int"]),
-    ("Float", JobParameterType::Float, &["Float"]),
-    ("Path", JobParameterType::Path, &["String", "Path"]),
-    ("Bool", JobParameterType::Bool, &["Bool"]),
-    ("RangeExpr", JobParameterType::RangeExpr, &["RangeExpr"]),
-    ("ListString", JobParameterType::ListString, &["ListString"]),
-    ("ListInt", JobParameterType::ListInt, &["ListInt"]),
-    ("ListFloat", JobParameterType::ListFloat, &["ListFloat"]),
-    (
-        "ListPath",
-        JobParameterType::ListPath,
-        &["ListString", "ListPath"],
-    ),
-    ("ListBool", JobParameterType::ListBool, &["ListBool"]),
-    ("ListListInt", JobParameterType::ListListInt, &["ListList"]),
-];
-
-/// The tag of an `ExprValue`'s serde form (`Null`, or the one key of
-/// `{"Int": 3}`), or `None` when it has no single tag.
-fn value_tag(v: &Value) -> Option<&str> {
-    if v.as_str() == Some("Null") {
-        return Some("Null");
-    }
-    let m = v.as_object().filter(|m| m.len() == 1)?;
-    m.keys().next().map(String::as_str)
-}
-
-/// An `ExprValue` from its derived serde form, e.g. `{"String": "x"}` or
-/// `{"ListString": [["a"], 48]}`. Its type comes from its tag. A
-/// `ListList` is a `LIST[LIST[INT]]`, the only list of lists a job
-/// parameter holds, which an empty one cannot show.
-fn expr_value(v: &Value) -> Result<ExprValue, String> {
-    let bad = || format!("unrecognized value {v}");
-    let Some((tag, inner)) = v
-        .as_object()
-        .filter(|m| m.len() == 1)
-        .and_then(|m| m.iter().next())
-    else {
-        return Err(bad());
-    };
-    // Lists serialize as `[elements, ...cached fields]`.
-    let elements = || -> Result<&Vec<Value>, String> {
-        match inner {
-            Value::Array(a) => match a.first() {
-                Some(Value::Array(e))
-                    if tag != "ListBool" && tag != "ListInt" && tag != "ListFloat" =>
-                {
-                    Ok(e)
-                }
-                _ => Ok(a),
-            },
-            _ => Err(bad()),
-        }
-    };
-    let list = |items: Vec<ExprValue>, elem: ExprType| {
-        ExprValue::make_list(items, elem).map_err(|e| e.to_string())
-    };
-    let float = |x: &Value| Float64::deserialize(x).map_err(|e| e.to_string());
-    let string = |x: &Value| x.as_str().map(str::to_string).ok_or_else(bad);
-    match tag.as_str() {
-        "Bool" => inner.as_bool().map(ExprValue::Bool).ok_or_else(bad),
-        "Int" => inner.as_i64().map(ExprValue::Int).ok_or_else(bad),
-        "Float" => float(inner).map(ExprValue::Float),
-        "String" => string(inner).map(ExprValue::String),
-        "Path" => {
-            let value = inner.get("value").ok_or_else(bad).and_then(string)?;
-            let format = PathFormat::deserialize(inner.get("format").ok_or_else(bad)?)
-                .map_err(|e| e.to_string())?;
-            Ok(ExprValue::new_path(value, format))
-        }
-        "RangeExpr" => RangeExpr::deserialize(inner)
-            .map(ExprValue::RangeExpr)
-            .map_err(|e| e.to_string()),
-        "ListBool" => list(
-            elements()?
-                .iter()
-                .map(|e| e.as_bool().map(ExprValue::Bool).ok_or_else(bad))
-                .collect::<Result<_, _>>()?,
-            ExprType::BOOL,
-        ),
-        "ListInt" => list(
-            elements()?
-                .iter()
-                .map(|e| e.as_i64().map(ExprValue::Int).ok_or_else(bad))
-                .collect::<Result<_, _>>()?,
-            ExprType::INT,
-        ),
-        "ListFloat" => list(
-            elements()?
-                .iter()
-                .map(|e| float(e).map(ExprValue::Float))
-                .collect::<Result<_, _>>()?,
-            ExprType::FLOAT,
-        ),
-        "ListString" => list(
-            elements()?
-                .iter()
-                .map(|e| string(e).map(ExprValue::String))
-                .collect::<Result<_, _>>()?,
-            ExprType::STRING,
-        ),
-        "ListPath" => {
-            let format = match inner.get(1) {
-                Some(f) => PathFormat::deserialize(f).map_err(|e| e.to_string())?,
-                None => return Err(bad()),
-            };
-            list(
-                elements()?
-                    .iter()
-                    .map(|e| string(e).map(|s| ExprValue::new_path(s, format)))
-                    .collect::<Result<_, _>>()?,
-                ExprType::PATH,
-            )
-        }
-        "ListList" => list(
-            elements()?
-                .iter()
-                .map(|e| match value_tag(e) {
-                    Some("ListInt") => expr_value(e),
-                    Some(t) => Err(format!(
-                        "a ListList element must be a 'ListInt' value, not a '{t}' value"
-                    )),
-                    None => Err(format!("unrecognized value {e}")),
-                })
-                .collect::<Result<_, _>>()?,
-            ExprType::list(ExprType::INT),
-        ),
-        _ => Err(bad()),
-    }
 }
 
 // ─── serde helpers ──────────────────────────────────────────────────
 
-/// A [`Job`] serialized as `openjd build` prints it: the job's serde form,
-/// except that `parameters` and each environment's `variables` are written
-/// sorted by name.
+/// A [`Job`] serialized as `openjd build` prints it, and as every host
+/// document writes it: the job's serde form, except that
 ///
-/// `create_job` fills `Job::parameters` from a `HashMap` and
-/// `Environment::variables` is a `HashMap`, so the plain serde form of a job
-/// with more than one of either changes from run to run. This form is
-/// deterministic, and [`job_from_str`] reads it back. Task parameter
-/// definitions keep their order, which is task order.
+/// - `parameters` and each environment's `variables` are sorted by name
+///   (`create_job` fills `Job::parameters` from a `HashMap`, and
+///   `Environment::variables` is one);
+/// - a parameter is `{"name", "type", "value"}` and a parameter space is
+///   `{"taskParameterDefinitions": [{"name", "type", "range" | "list",
+///   "chunks"?}, …], "combination"}`, the host encoding of
+///   `specs/model/host-support.md`, with no cached sizes or Rust variant
+///   names.
+///
+/// The definitions are a list in definition order, which is task order, so
+/// the document means the same as a `serde_json::Value`. [`job_from_str`]
+/// reads it back.
 #[derive(Debug, Clone, Copy)]
 pub struct JobDocument<'a>(pub &'a Job);
 
@@ -2651,7 +2479,10 @@ impl Serialize for JobDocument<'_> {
             name,
             description,
             extensions,
-            parameters: parameters.iter().collect(),
+            parameters: parameters
+                .iter()
+                .map(|(k, p)| (k, ParameterDoc::new(p)))
+                .collect(),
             steps: steps.iter().map(DocStep::new).collect(),
             job_environments: job_environments
                 .as_ref()
@@ -2668,7 +2499,7 @@ struct DocJob<'a> {
     name: &'a String,
     description: &'a Option<String>,
     extensions: &'a Option<Vec<ModelExtension>>,
-    parameters: std::collections::BTreeMap<&'a String, &'a JobParameter>,
+    parameters: std::collections::BTreeMap<&'a String, ParameterDoc<'a>>,
     steps: Vec<DocStep<'a>>,
     job_environments: Option<Vec<DocEnvironment<'a>>>,
 }
@@ -2681,7 +2512,7 @@ pub(crate) struct DocStep<'a> {
     description: &'a Option<String>,
     script: &'a crate::job::StepScript,
     step_environments: Option<Vec<DocEnvironment<'a>>>,
-    parameter_space: &'a Option<StepParameterSpace>,
+    parameter_space: Option<SpaceDoc<'a>>,
     host_requirements: &'a Option<crate::job::HostRequirements>,
     dependencies: &'a Option<Vec<crate::job::StepDependency>>,
     #[serde(rename = "resolvedSymTab", skip_serializing_if = "Option::is_none")]
@@ -2707,7 +2538,7 @@ impl<'a> DocStep<'a> {
             step_environments: step_environments
                 .as_ref()
                 .map(|v| v.iter().map(DocEnvironment::new).collect()),
-            parameter_space,
+            parameter_space: parameter_space.as_ref().map(SpaceDoc::new),
             host_requirements,
             dependencies,
             resolved_symtab,
@@ -3217,6 +3048,7 @@ fn is_type_shown_by_value(c: &Change, job_level: &[&Change]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openjd_expr::RangeExpr;
 
     #[test]
     fn run_time_symbols_need_a_name_boundary() {

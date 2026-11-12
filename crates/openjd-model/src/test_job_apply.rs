@@ -1241,7 +1241,9 @@ impl<S: JobApplier<Error = String>> JobApplier for DynStore<S> {
     ) -> Result<(), BoxError> {
         self.record(
             serde_json::json!({
-                "call": "tasks", "step": step, "space": space, "change": change.to_value()?,
+                "call": "tasks", "step": step,
+                "space": space.map(crate::job::apply::ToDocument::as_document),
+                "change": change.to_value()?,
             }),
             true,
         )?;
@@ -1316,9 +1318,9 @@ fn the_dyn_adaptor_logs_plain_data() {
         .iter()
         .map(ToString::to_string)
         .collect();
-    let space = r#"{"combination":null,"taskParameterDefinitions":{"Frame":{"int":{"chunks":null,"range":{"rangeExpr":{"cumulative_lengths":[4],"length":4,"ranges":[{"end":4,"start":1,"step":1}]}}}}}}"#;
+    let space = r#"{"combination":null,"taskParameterDefinitions":[{"name":"Frame","range":"1-4","type":"INT"}]}"#;
     let change = r#"{"appended":[{"Frame":{"type":"INT","value":"3"}},{"Frame":{"type":"INT","value":"4"}}],"appendedCount":2,"change":"boxes","keptCount":2,"oldCount":2,"removed":[],"removedCount":0}"#;
-    let param = r#"{"change":"modify","new":{"name":"Frames","paramType":"String","value":{"String":"1-4"}},"old":{"name":"Frames","paramType":"String","value":{"String":"1-2"}}}"#;
+    let param = r#"{"change":"modify","new":{"name":"Frames","type":"STRING","value":"1-4"},"old":{"name":"Frames","type":"STRING","value":"1-2"}}"#;
     let step = r#"{"index":0,"name":"Render"}"#;
     assert_eq!(
         log,
@@ -1475,7 +1477,6 @@ fn a_model_error_displays_as_itself() {
 
 #[test]
 fn every_kind_round_trips_through_its_name() {
-    assert_eq!(MutationKind::ALL.len(), 24);
     let names: std::collections::BTreeSet<&str> =
         MutationKind::ALL.iter().map(|k| k.name()).collect();
     assert_eq!(names.len(), MutationKind::ALL.len(), "names are unique");
@@ -1502,4 +1503,306 @@ fn an_allow_list_reads_kind_names() {
     }
     let err = "TaskAppend ".parse::<MutationKind>().unwrap_err();
     assert_eq!(err.to_string(), "unknown mutation kind 'TaskAppend '");
+}
+
+// ─── audit round 1 of the applier adaptor ───────────────────────────
+
+/// The tasks a host enumerates from a parameter-space document, with no
+/// help from openjd-rs: each definition's `range` (a range expression of
+/// `a`, `a-b` and `a-b:s` items) or `list`, rightmost fastest, in the
+/// document's list order. Each task as sorted `name=value` pairs.
+fn enumerate_document(space: &serde_json::Value) -> Vec<String> {
+    let expand = |text: &str| -> Vec<String> {
+        let mut out = Vec::new();
+        for item in text.split(',') {
+            let (span, step) = item.split_once(':').unwrap_or((item, "1"));
+            let step: i64 = step.parse().unwrap();
+            let (a, b) = match span.split_once('-') {
+                Some((a, b)) if !a.is_empty() => (a.parse::<i64>().unwrap(), b.parse().unwrap()),
+                _ => (span.parse().unwrap(), span.parse().unwrap()),
+            };
+            let mut v = a;
+            while v <= b {
+                out.push(v.to_string());
+                v += step;
+            }
+        }
+        out
+    };
+    let mut tasks: Vec<Vec<(String, String)>> = vec![Vec::new()];
+    for d in space["taskParameterDefinitions"].as_array().unwrap() {
+        let name = d["name"].as_str().unwrap().to_string();
+        let values: Vec<String> = match (d.get("range"), d.get("list")) {
+            (Some(r), _) => expand(r.as_str().unwrap()),
+            (_, Some(l)) => l
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect(),
+            _ => panic!("no range or list: {d}"),
+        };
+        tasks = tasks
+            .into_iter()
+            .flat_map(|t| {
+                let name = &name;
+                values.iter().map(move |v| {
+                    let mut t = t.clone();
+                    t.push((name.clone(), v.clone()));
+                    t
+                })
+            })
+            .collect();
+    }
+    tasks
+        .into_iter()
+        .map(|mut t| {
+            t.sort();
+            t.iter()
+                .map(|(n, v)| format!("{n}={v}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect()
+}
+
+/// `create_job`'s task order for a space, as [`enumerate_document`] writes
+/// tasks.
+fn create_job_order(space: &StepParameterSpace) -> Vec<String> {
+    StepParameterSpaceIterator::new(space)
+        .unwrap()
+        .map(|t| {
+            let mut kv: Vec<String> = t
+                .iter()
+                .map(|(k, v)| format!("{k}={}", v.value.to_display_string()))
+                .collect();
+            kv.sort();
+            kv.join(",")
+        })
+        .collect()
+}
+
+fn za_step(defs: &str) -> String {
+    format!(
+        "specificationVersion: jobtemplate-2023-09\nname: ZA\nsteps:\n  - name: O\n    script: {{actions: {{onRun: {{command: o}}}}}}\n{defs}"
+    )
+}
+
+const ZA_S: &str = "  - name: S\n    parameterSpace:\n      taskParameterDefinitions:\n        - {name: Z, type: INT, range: \"1-2\"}\n        - {name: A, type: STRING, range: [x, w]}\n    script: {actions: {onRun: {command: a}}}\n";
+
+#[test]
+fn a_host_enumerating_the_document_gets_create_jobs_task_order() {
+    let only_z = ZA_S.replace("        - {name: A, type: STRING, range: [x, w]}\n", "");
+    let cases = [
+        // A step add (`All`), and a parameter added (`Replace`).
+        (job(&za_step(""), &[]), job(&za_step(ZA_S), &[]), "all"),
+        (
+            job(&za_step(&only_z), &[]),
+            job(&za_step(ZA_S), &[]),
+            "replace",
+        ),
+    ];
+    for (a, b, change) in &cases {
+        let p = plan(a, b).unwrap();
+        let tasks = p
+            .ops
+            .iter()
+            .find(|o| matches!(o.action, Action::Tasks { .. }))
+            .unwrap();
+        let v = tasks.to_value().unwrap();
+        assert_eq!(v["tasks"]["change"], *change);
+        let text = serde_json::to_string(&tasks.as_document()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v, parsed, "to_value is the serialized document");
+        let want = create_job_order(b.steps[1].parameter_space.as_ref().unwrap());
+        assert_eq!(
+            want,
+            ["A=x,Z=1", "A=w,Z=1", "A=x,Z=2", "A=w,Z=2"],
+            "Z is the outer dimension"
+        );
+        assert_eq!(enumerate_document(&v["space"]), want);
+        assert_eq!(enumerate_document(&parsed["space"]), want);
+    }
+}
+
+const MANY: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: Many
+parameterDefinitions:
+  - {name: A, type: STRING}
+  - {name: B, type: STRING}
+  - {name: C, type: STRING}
+  - {name: D, type: STRING}
+  - {name: E, type: STRING}
+steps:
+  - name: S
+    script: {actions: {onRun: {command: "{{Param.A}}{{Param.B}}{{Param.C}}{{Param.D}}{{Param.E}}"}}}
+"#;
+
+fn many(v: &str) -> Job {
+    job(MANY, &[("A", v), ("B", v), ("C", v), ("D", v), ("E", v)])
+}
+
+#[test]
+fn plans_of_independent_rebuilds_are_identical() {
+    let pairs: Vec<(Job, Job)> = (0..20).map(|_| (many("0"), many("1"))).collect();
+    let first = plan(&pairs[0].0, &pairs[0].1).unwrap();
+    let targets: Vec<String> = first.ops.iter().map(|o| o.target().to_string()).collect();
+    assert_eq!(
+        targets,
+        [
+            "parameter A",
+            "parameter B",
+            "parameter C",
+            "parameter D",
+            "parameter E",
+            "step S"
+        ]
+    );
+    let docs = |p: &crate::job::apply::ApplyPlan<'_>| -> Vec<String> {
+        p.ops
+            .iter()
+            .map(|o| o.to_value().unwrap().to_string())
+            .collect()
+    };
+    for (a, b) in &pairs[1..] {
+        let p = plan(a, b).unwrap();
+        assert_eq!(p, first, "ops and diff tree");
+        assert_eq!(docs(&p), docs(&first));
+    }
+}
+
+#[test]
+fn resuming_after_a_re_plan_rebuilds_the_new_job() {
+    for fail_at in 1..5 {
+        let (a, b) = (many("0"), many("1"));
+        let p = plan(&a, &b).unwrap();
+        let mut s = DynStore::new(JobRebuilder::holding(
+            &a,
+            b.steps.iter().map(|s| s.name.clone()).collect(),
+        ));
+        s.fail_at = Some(fail_at);
+        let store: &mut dyn JobApplier<Error = BoxError> = &mut s;
+        validate(&p, &AllowList::of(p.kinds()), store).unwrap();
+        let ApplyError::Store { op, .. } = execute(&p, store, 0).unwrap_err() else {
+            panic!("expected a store error");
+        };
+        assert_eq!(op, fail_at);
+        // The process restarts: both jobs are rebuilt and planned again.
+        let (a2, b2) = (many("0"), many("1"));
+        let p2 = plan(&a2, &b2).unwrap();
+        execute(&p2, store, op).unwrap();
+        s.inner.assert_holds(&b2);
+    }
+}
+
+const DOC_A: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: Doc
+jobEnvironments:
+  - name: E
+    variables: {V: "1"}
+steps:
+  - name: S
+    script: {actions: {onRun: {command: a}}}
+"#;
+
+#[test]
+fn planned_op_documents_for_job_environment_and_step_actions() {
+    let b = DOC_A
+        .replace("name: Doc\n", "name: Doc2\n")
+        .replace("V: \"1\"", "V: \"2\"")
+        .replace("command: a", "command: b");
+    let (a, b) = (job(DOC_A, &[]), job(&b, &[]));
+    let p = plan(&a, &b).unwrap();
+    let got: Vec<String> = p
+        .ops
+        .iter()
+        .map(|o| o.to_value().unwrap().to_string())
+        .collect();
+    assert_eq!(got, PLANNED_OP_DOCUMENTS);
+}
+
+const PLANNED_OP_DOCUMENTS: [&str; 3] = [
+    concat!(
+        r#"{"action":"job","kinds":["JobMetadata"],"op":{"change":"modify","#,
+        r#""new":{"description":null,"extensions":null,"jobEnvironments":[{"description":null,"name":"E","resolvedSymTab":[],"script":null,"variables":{"V":"2"}}],"name":"Doc2","parameters":{},"steps":[{"dependencies":null,"description":null,"hostRequirements":null,"name":"S","parameterSpace":null,"resolvedSymTab":[],"script":{"actions":{"onRun":{"args":null,"cancelation":null,"command":"b","timeout":null}},"embeddedFiles":null,"let":null},"stepEnvironments":null}]},"#,
+        r#""old":{"description":null,"extensions":null,"jobEnvironments":[{"description":null,"name":"E","resolvedSymTab":[],"script":null,"variables":{"V":"1"}}],"name":"Doc","parameters":{},"steps":[{"dependencies":null,"description":null,"hostRequirements":null,"name":"S","parameterSpace":null,"resolvedSymTab":[],"script":{"actions":{"onRun":{"args":null,"cancelation":null,"command":"a","timeout":null}},"embeddedFiles":null,"let":null},"stepEnvironments":null}]}}}"#,
+    ),
+    concat!(
+        r#"{"action":"environment","index":0,"kinds":["EnvVariables"],"op":{"change":"modify","#,
+        r#""new":{"description":null,"name":"E","resolvedSymTab":[],"script":null,"variables":{"V":"2"}},"#,
+        r#""old":{"description":null,"name":"E","resolvedSymTab":[],"script":null,"variables":{"V":"1"}}}}"#,
+    ),
+    concat!(
+        r#"{"action":"step","kinds":["StepScript"],"op":{"change":"modify","#,
+        r#""new":{"dependencies":null,"description":null,"hostRequirements":null,"name":"S","parameterSpace":null,"resolvedSymTab":[],"script":{"actions":{"onRun":{"args":null,"cancelation":null,"command":"b","timeout":null}},"embeddedFiles":null,"let":null},"stepEnvironments":null},"#,
+        r#""old":{"dependencies":null,"description":null,"hostRequirements":null,"name":"S","parameterSpace":null,"resolvedSymTab":[],"script":{"actions":{"onRun":{"args":null,"cancelation":null,"command":"a","timeout":null}},"embeddedFiles":null,"let":null},"stepEnvironments":null}},"#,
+        r#""step":{"index":0,"name":"S"}}"#,
+    ),
+];
+
+/// `MutationKind::ALL` lists every variant. The match has no wildcard, so a
+/// new variant needs an arm, and its arm indexes `EVERY` with a constant:
+/// past the end is a compile error, so `EVERY` must grow, and then it must
+/// equal `ALL`.
+#[test]
+fn mutation_kind_all_lists_every_variant() {
+    use MutationKind as K;
+    const EVERY: [MutationKind; 24] = [
+        K::JobMetadata,
+        K::JobExtensions,
+        K::ParameterValue,
+        K::ParameterAdd,
+        K::ParameterRemove,
+        K::EnvVariables,
+        K::EnvScript,
+        K::EnvMetadata,
+        K::EnvSymbols,
+        K::EnvAdd,
+        K::EnvRemove,
+        K::EnvReorder,
+        K::StepMetadata,
+        K::StepScript,
+        K::StepHostRequirements,
+        K::StepDependencies,
+        K::StepSymbols,
+        K::StepParameterSpace,
+        K::StepAdd,
+        K::StepRemove,
+        K::StepReorder,
+        K::TaskAppend,
+        K::TaskRemove,
+        K::TaskReplace,
+    ];
+    let listed = |k: MutationKind| match k {
+        K::JobMetadata => EVERY[0],
+        K::JobExtensions => EVERY[1],
+        K::ParameterValue => EVERY[2],
+        K::ParameterAdd => EVERY[3],
+        K::ParameterRemove => EVERY[4],
+        K::EnvVariables => EVERY[5],
+        K::EnvScript => EVERY[6],
+        K::EnvMetadata => EVERY[7],
+        K::EnvSymbols => EVERY[8],
+        K::EnvAdd => EVERY[9],
+        K::EnvRemove => EVERY[10],
+        K::EnvReorder => EVERY[11],
+        K::StepMetadata => EVERY[12],
+        K::StepScript => EVERY[13],
+        K::StepHostRequirements => EVERY[14],
+        K::StepDependencies => EVERY[15],
+        K::StepSymbols => EVERY[16],
+        K::StepParameterSpace => EVERY[17],
+        K::StepAdd => EVERY[18],
+        K::StepRemove => EVERY[19],
+        K::StepReorder => EVERY[20],
+        K::TaskAppend => EVERY[21],
+        K::TaskRemove => EVERY[22],
+        K::TaskReplace => EVERY[23],
+    };
+    for k in EVERY {
+        assert_eq!(listed(k), k, "{k}'s arm indexes its own entry");
+    }
+    assert_eq!(MutationKind::ALL, EVERY.as_slice());
 }

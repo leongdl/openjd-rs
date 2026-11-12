@@ -41,6 +41,7 @@ use crate::job::diff::{
     diff_environments, diff_jobs, diff_steps, DiffNode, DiffNodeId, DiffNodeKind, DiffOptions,
     DiffStatus, DiffTree,
 };
+use crate::job::document::{ParameterDoc, SpaceDoc};
 use crate::job::task_delta::{task_delta, task_parameter_set_document, ProductDelta, TaskDelta};
 use crate::job::template_diff::{DocEnvironment, DocStep, JobDocument};
 use crate::job::{Environment, Job, JobParameter, Step, StepParameterSpace};
@@ -92,13 +93,10 @@ impl fmt::Display for OpTarget {
 }
 
 /// A model type with a plain-data form: the form [`JobDocument`] writes it
-/// in, so `parameters` and environment `variables` are sorted by name and
-/// task parameter definitions keep their order (which is task order).
-///
-/// Serialize the document straight into the host's own value type when it
-/// keeps key order (a PyO3 adaptor building a `dict`). A `serde_json::Value`
-/// sorts object keys, so there `taskParameterDefinitions` comes back in name
-/// order, not definition order.
+/// in. `parameters` and environment `variables` are sorted by name, typed
+/// values are in the host encoding, and `taskParameterDefinitions` is a list
+/// in definition order (which is task order), so no part of the document
+/// depends on the order of an object's keys. See `specs/model/host-support.md`.
 pub trait ToDocument {
     /// The document view. It borrows `self` and serializes on demand.
     fn as_document(&self) -> impl Serialize + '_;
@@ -124,7 +122,13 @@ impl ToDocument for Environment {
 
 impl ToDocument for JobParameter {
     fn as_document(&self) -> impl Serialize + '_ {
-        self
+        ParameterDoc::new(self)
+    }
+}
+
+impl ToDocument for StepParameterSpace {
+    fn as_document(&self) -> impl Serialize + '_ {
+        SpaceDoc::new(self)
     }
 }
 
@@ -498,7 +502,8 @@ impl PlannedOp<'_> {
     /// host: `{"kinds": [<kind name>, …], "action": "job" | "parameter" |
     /// "environment" | "step" | "tasks", …}`. `environment` adds `"index"`
     /// and `"op"`; `step` adds `"step"` (a [`StepRef`]) and `"op"`; `tasks`
-    /// adds `"step"`, `"space"` (the step's new parameter space) and
+    /// adds `"step"`, `"space"` (the step's new parameter space, as
+    /// [`ToDocument`] writes it) and
     /// `"tasks"` ([`TaskChange::as_document`]). `"op"` is
     /// [`Op::as_document`].
     pub fn as_document(&self) -> impl Serialize + '_ {
@@ -544,7 +549,7 @@ impl Serialize for PlannedOpDocument<'_, '_> {
             } => {
                 m.serialize_entry("action", "tasks")?;
                 m.serialize_entry("step", step)?;
-                m.serialize_entry("space", space)?;
+                m.serialize_entry("space", &space.map(SpaceDoc::new))?;
                 m.serialize_entry("tasks", &change.as_document())?;
             }
         }
@@ -574,8 +579,10 @@ impl ApplyPlan<'_> {
 
 /// Why a [`MutationPolicy`] refused an op: a kind that is not allowed yet,
 /// whatever the store holds. A store's own veto, a kind that is not allowed
-/// in the store's current state, is [`ApplyError::Vetoed`] instead.
+/// in the store's current state, is [`ApplyError::Vetoed`] instead. Built
+/// with [`Refusal::new`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Refusal {
     /// The refused kind.
     pub kind: MutationKind,
@@ -689,6 +696,7 @@ pub trait JobApplier {
 
 /// How applying failed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ApplyError<E> {
     /// The policy refused op `op`. Nothing was written.
     Refused {
@@ -1042,7 +1050,9 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
         });
     }
 
-    // 2. Parameters.
+    // 2. Parameters, in name order: the diff orders parameter nodes by name,
+    // so the order does not depend on how either job's map was filled, and
+    // a re-plan resumes at the same op.
     for &c in &root.children {
         let n = &diff.nodes()[c];
         if n.kind != DiffNodeKind::JobParameter || !n.is_changed() {

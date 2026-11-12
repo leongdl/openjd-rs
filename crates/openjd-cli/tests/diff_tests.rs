@@ -533,7 +533,7 @@ fn verbose_human_output_appends_the_job_diff_tree() {
 job diff tree:
 ~ <root>
   ~ parameters[Scene]
-      value: {"String":"//srv/a"} -> {"String":"//srv/b"}
+      value: "//srv/a" -> "//srv/b"
   ~ steps[Render]
       resolvedSymTab: [{"name":"RawParam.Scene","type":"string","value":"//srv/a"}] -> [{"name":"RawParam.Scene","type":"string","value":"//srv/b"}]
 "#,
@@ -1245,7 +1245,7 @@ fn build_merges_environment_parameters_under_both_spellings() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.yaml"), PLAIN).unwrap();
     std::fs::write(dir.path().join("env.yaml"), env).unwrap();
-    let expected = "  \"parameters\": {\n    \"E\": {\n      \"name\": \"E\",\n      \"paramType\": \"String\",\n      \"value\": {\n        \"String\": \"fromenv\"\n      }\n    }\n  },\n";
+    let expected = "  \"parameters\": {\n    \"E\": {\n      \"name\": \"E\",\n      \"type\": \"STRING\",\n      \"value\": \"fromenv\"\n    }\n  },\n";
     for flag in ["--environment", "--env"] {
         let o = openjd_in(dir.path(), &["build", "a.yaml", flag, "env.yaml"], None);
         assert_eq!(o.status.code(), Some(0), "{flag}: {}", stderr(&o));
@@ -1262,7 +1262,7 @@ fn build_accepts_parameter_as_an_alias_for_job_param() {
     let o = openjd_in(dir.path(), &["build", "p.yaml", "--parameter", "P=v"], None);
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
     assert!(
-        stdout(&o).contains("\"value\": {\n        \"String\": \"v\"\n      }"),
+        stdout(&o).contains("\"type\": \"STRING\",\n      \"value\": \"v\"\n"),
         "{}",
         stdout(&o)
     );

@@ -564,3 +564,34 @@ fn reordering_values_inside_a_range_falls_back() {
     let e = space(vec![("F", int_list(&[1, 2]))], None);
     assert!(is_fallback(&task_delta(Some(&d), Some(&e))));
 }
+
+#[test]
+fn removed_indices_use_every_dimensions_stride() {
+    // Three dimensions: F's stride is 2 * 3 = 6, so removing F = 2 removes
+    // old indices 6 to 11. Two dimensions cannot tell `strides[d + 1]` from
+    // `strides[d]`.
+    let rest = || vec![("G", strs(&["a", "b"])), ("H", strs(&["p", "q", "r"]))];
+    let with = |f: &str| {
+        let mut v = vec![("F", ints(f))];
+        v.extend(rest());
+        space(v, None)
+    };
+    let d = check(&with("1-2"), &with("1"));
+    let TaskDelta::Product(pd) = d else {
+        panic!("expected Product");
+    };
+    let removed: Vec<(u64, String)> = pd.removed().unwrap().map(|(i, t)| (i, key(&t))).collect();
+    let task =
+        |g: &str, h: &str| format!(r#"F={{"Int":2}},G={{"String":"{g}"}},H={{"String":"{h}"}}"#);
+    assert_eq!(
+        removed,
+        vec![
+            (6, task("a", "p")),
+            (7, task("a", "q")),
+            (8, task("a", "r")),
+            (9, task("b", "p")),
+            (10, task("b", "q")),
+            (11, task("b", "r")),
+        ]
+    );
+}

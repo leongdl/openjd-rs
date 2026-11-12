@@ -161,7 +161,7 @@ pub fn openjd_model::job::apply::Action<'a>::eq(&self, &openjd_model::job::apply
 impl<'a> core::fmt::Debug for openjd_model::job::apply::Action<'a>
 pub fn openjd_model::job::apply::Action<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::StructuralPartialEq for openjd_model::job::apply::Action<'a>
-pub enum openjd_model::job::apply::ApplyError<E>
+#[non_exhaustive] pub enum openjd_model::job::apply::ApplyError<E>
 pub openjd_model::job::apply::ApplyError::Model(openjd_model::error::ModelError)
 pub openjd_model::job::apply::ApplyError::Refused
 pub openjd_model::job::apply::ApplyError::Refused::op: usize
@@ -335,7 +335,7 @@ pub fn openjd_model::job::apply::PlannedOp<'a>::eq(&self, &openjd_model::job::ap
 impl<'a> core::fmt::Debug for openjd_model::job::apply::PlannedOp<'a>
 pub fn openjd_model::job::apply::PlannedOp<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::StructuralPartialEq for openjd_model::job::apply::PlannedOp<'a>
-pub struct openjd_model::job::apply::Refusal
+#[non_exhaustive] pub struct openjd_model::job::apply::Refusal
 pub openjd_model::job::apply::Refusal::kind: openjd_model::job::apply::MutationKind
 pub openjd_model::job::apply::Refusal::reason: alloc::string::String
 pub openjd_model::job::apply::Refusal::target: openjd_model::job::apply::OpTarget
@@ -404,6 +404,8 @@ impl openjd_model::job::apply::ToDocument for openjd_model::job::JobParameter
 pub fn openjd_model::job::JobParameter::as_document(&self) -> impl serde_core::ser::Serialize + '_
 impl openjd_model::job::apply::ToDocument for openjd_model::job::Step
 pub fn openjd_model::job::Step::as_document(&self) -> impl serde_core::ser::Serialize + '_
+impl openjd_model::job::apply::ToDocument for openjd_model::job::StepParameterSpace
+pub fn openjd_model::job::StepParameterSpace::as_document(&self) -> impl serde_core::ser::Serialize + '_
 pub fn openjd_model::job::apply::apply<A: openjd_model::job::apply::JobApplier + ?core::marker::Sized>(&openjd_model::job::Job, &openjd_model::job::Job, &dyn openjd_model::job::apply::MutationPolicy, &mut A) -> core::result::Result<openjd_model::job::apply::ApplyReport, openjd_model::job::apply::ApplyError<<A as openjd_model::job::apply::JobApplier>::Error>>
 pub fn openjd_model::job::apply::execute<A: openjd_model::job::apply::JobApplier + ?core::marker::Sized>(&openjd_model::job::apply::ApplyPlan<'_>, &mut A, usize) -> core::result::Result<openjd_model::job::apply::ApplyReport, openjd_model::job::apply::ApplyError<<A as openjd_model::job::apply::JobApplier>::Error>>
 pub fn openjd_model::job::apply::plan<'a>(&'a openjd_model::job::Job, &'a openjd_model::job::Job) -> core::result::Result<openjd_model::job::apply::ApplyPlan<'a>, openjd_model::error::ModelError>
@@ -941,7 +943,7 @@ pub fn openjd_model::job::template_diff::diff_job_template_with_parameter_sets(&
 pub fn openjd_model::job::template_diff::diff_templates(&openjd_model::job::template_diff::TemplateInput, &openjd_model::job::template_diff::TemplateInput, &openjd_model::job::diff::DiffOptions) -> core::result::Result<openjd_model::job::template_diff::TemplateDiff, openjd_model::error::ModelError>
 pub fn openjd_model::job::template_diff::job_digest(&openjd_model::job::Job) -> core::result::Result<alloc::string::String, openjd_model::error::ModelError>
 pub fn openjd_model::job::template_diff::job_from_str(&str) -> core::result::Result<openjd_model::job::Job, openjd_model::error::ModelError>
-pub fn openjd_model::job::template_diff::merge_parameters(&openjd_model::types::JobParameterValues, &openjd_model::types::JobParameterInputValues, &openjd_model::template::JobTemplate, &[openjd_model::template::EnvironmentTemplate]) -> core::result::Result<openjd_model::types::JobParameterInputValues, openjd_model::error::ModelError>
+pub fn openjd_model::job::template_diff::merge_parameters(&openjd_model::types::JobParameterValues, &openjd_model::types::JobParameterInputValues, &openjd_model::job::template_diff::TemplateInput) -> core::result::Result<openjd_model::types::JobParameterValues, openjd_model::error::ModelError>
 pub fn openjd_model::job::template_diff::template_job_environment_fragment(&serde_json::value::Value, &str) -> core::result::Result<serde_json::value::Value, openjd_model::error::ModelError>
 pub fn openjd_model::job::template_diff::template_step_fragment(&serde_json::value::Value, &str) -> core::result::Result<openjd_model::job::template_diff::TemplateStepFragment, openjd_model::error::ModelError>
 pub enum openjd_model::job::CancelationMode
@@ -1290,6 +1292,8 @@ pub fn openjd_model::job::StepParameterSpace::fmt(&self, &mut core::fmt::Formatt
 impl core::hash::Hash for openjd_model::job::StepParameterSpace
 pub fn openjd_model::job::StepParameterSpace::hash<H: core::hash::Hasher>(&self, &mut H)
 impl core::marker::StructuralPartialEq for openjd_model::job::StepParameterSpace
+impl openjd_model::job::apply::ToDocument for openjd_model::job::StepParameterSpace
+pub fn openjd_model::job::StepParameterSpace::as_document(&self) -> impl serde_core::ser::Serialize + '_
 impl serde_core::ser::Serialize for openjd_model::job::StepParameterSpace
 pub fn openjd_model::job::StepParameterSpace::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::StepParameterSpace

@@ -20,11 +20,11 @@ use openjd_expr::ExprValue;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use super::{load, preprocess, TemplateInput};
 use crate::create_job::{build_symbol_table, merge_job_parameter_definitions};
 use crate::error::ModelError;
 use crate::job::template_diff::JobDocument;
 use crate::job::Job;
-use crate::template::{EnvironmentTemplate, JobTemplate};
 use crate::types::{
     JobParameterInputValues, JobParameterValue, JobParameterValues, ModelExtension,
 };
@@ -66,7 +66,7 @@ fn named<'a>(
 ///
 /// `document` is the template's parsed document, the value a host passes to
 /// [`decode_job_template`](crate::decode_job_template). The decoded
-/// [`JobTemplate`] is not enough: its types do not serialize back to the
+/// [`JobTemplate`](crate::template::JobTemplate) is not enough: its types do not serialize back to the
 /// document. A host that stores a step body without some fields (such as
 /// `stepEnvironments` or `parameterSpace`) removes them itself.
 pub fn template_step_fragment(
@@ -136,8 +136,10 @@ pub fn build_job_symbol_table(job: &Job) -> Result<SerializedSymbolTable, ModelE
 }
 
 /// A stable digest of a built job: the lowercase hex SHA-256 of its
-/// [`JobDocument`] JSON text. Two jobs with the same document have the same
-/// digest, in any process, whatever the order of their maps. Any change
+/// [`JobDocument`] JSON text. The document writes values in the host
+/// encoding and sorts its maps, so value-equal jobs have the same digest, in
+/// any process. The exception is a float, whose document keeps its literal:
+/// `1.0` and `1.00` compare equal but digest differently. Any change
 /// [`diff_jobs`](crate::job::diff::diff_jobs) reports changes the
 /// document, and so the digest. The converse does not hold: a document
 /// change the diff ignores (a task parameter definition reorder under an
@@ -153,35 +155,44 @@ pub fn job_digest(job: &Job) -> Result<String, ModelError> {
     Ok(hex)
 }
 
-/// The input values for a new template, given a job's stored values and
-/// the values a caller requests:
+/// The values to build a job from a new template with, given the job's
+/// stored (preprocessed) values and the values a caller requests, ready for
+/// [`TemplateInput::preprocessed`](super::TemplateInput::preprocessed):
 ///
-/// - a requested value always wins, including one the new template does not
-///   declare (preprocessing then reports it);
-/// - a parameter the caller leaves out keeps its stored value when the new
-///   template (with `environments`) still declares it with the same type;
-/// - otherwise it is left out, so preprocessing takes the new template's
-///   default, or reports it missing when there is none.
+/// - a parameter the caller leaves out keeps its stored value, untouched,
+///   when the new template (with `new`'s environments) still declares it
+///   with the same type;
+/// - every other value, requested or a new default, is preprocessed against
+///   the new template with `new`'s directories, as `new` builds.
 ///
-/// The result is input to
-/// [`preprocess_job_parameters`](crate::preprocess_job_parameters), which
-/// checks a kept value against the new template's constraints.
+/// `new` is the side the values are for. Its source, environments and
+/// directories are used; its own parameter values are not. A requested
+/// value the new template does not declare, or a required parameter that
+/// is neither requested nor kept, is preprocessing's error. A kept value is
+/// passed to preprocessing too, so that a required parameter is present,
+/// but the stored value is what the result holds: preprocessing it again
+/// could rewrite it (a Windows PATH on a POSIX host is relative). `create_job`
+/// checks it against the new template's constraints when the job is built.
 pub fn merge_parameters(
     stored: &JobParameterValues,
     requested: &JobParameterInputValues,
-    new_template: &JobTemplate,
-    environments: &[EnvironmentTemplate],
-) -> Result<JobParameterInputValues, ModelError> {
-    let mut merged = requested.clone();
-    for def in merge_job_parameter_definitions(new_template, environments)? {
-        if merged.contains_key(&def.name) {
+    new: &TemplateInput,
+) -> Result<JobParameterValues, ModelError> {
+    let loaded = load(new)?;
+    let mut inputs = requested.clone();
+    let mut kept = JobParameterValues::new();
+    for def in merge_job_parameter_definitions(&loaded.template, &loaded.environments)? {
+        if requested.contains_key(&def.name) {
             continue;
         }
-        if let Some(kept) = stored.get(&def.name) {
-            if kept.param_type == def.param_type {
-                merged.insert(def.name.clone(), kept.value.clone());
+        if let Some(value) = stored.get(&def.name) {
+            if value.param_type == def.param_type {
+                inputs.insert(def.name.clone(), value.value.clone());
+                kept.insert(def.name, value.clone());
             }
         }
     }
+    let mut merged = preprocess(&loaded, &inputs)?;
+    merged.extend(kept);
     Ok(merged)
 }
