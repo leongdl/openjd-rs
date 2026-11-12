@@ -1002,7 +1002,7 @@ fn full_texts(
         let types = name.map(|n| (old_job.parameters.get(n), new_job.parameters.get(n)));
         if let Some((Some(o), Some(n))) = types {
             if o.param_type != n.param_type {
-                return Some((typed_text(b, o.param_type), typed_text(a, n.param_type)));
+                return Some((typed_text(b, o), typed_text(a, n)));
             }
         }
     }
@@ -1014,16 +1014,14 @@ fn full_texts(
 
 /// A job parameter value with its type: `"5" (STRING)`, `4.5 (FLOAT)`.
 /// Only `STRING` and `PATH` values are quoted.
-fn typed_text(s: &Shown, ty: JobParameterType) -> FullText {
-    let body = match ty {
-        JobParameterType::String | JobParameterType::Path => {
-            Value::String(s.text.clone()).to_string()
-        }
+fn typed_text(s: &Shown, p: &JobParameter) -> FullText {
+    let body = match &p.value {
+        ExprValue::String(v) | ExprValue::Path { value: v, .. } => quoted(v),
         _ => s.text.clone(),
     };
     FullText {
         body,
-        suffix: format!(" ({})", ty.as_spec_str()),
+        suffix: format!(" ({})", p.param_type.as_spec_str()),
     }
 }
 
@@ -1068,9 +1066,11 @@ fn around_difference(x: &str, y: &str) -> (String, String) {
 
 /// [`around_difference`] with `max` characters in place of
 /// [`MAX_TEXT_CHARS`]. `max` must be at least 64: the head, `…` and 40
-/// characters of context before the difference. A list or object keeps its
-/// first 20 characters, so a cut one still reads as a list or object:
-/// `[s3://bucket/projects… …/renders/b]`.
+/// characters of context before the difference. A list or object keeps up
+/// to its first 20 characters, ending after its last `,` or `:` in them
+/// when there is one, so a cut one still reads as a list or object; the
+/// context starts at the first `/`, or after the first space, in its 40
+/// characters when there is one: `{name: Demo,… …/renders/b]`.
 fn cut_around_difference(x: &str, y: &str, max: usize) -> (String, String) {
     const CONTEXT: usize = 40;
     const HEAD: usize = 20;
@@ -1081,15 +1081,28 @@ fn cut_around_difference(x: &str, y: &str, max: usize) -> (String, String) {
             truncate_to(y.to_string(), max),
         );
     }
-    // Both sides share their first `first_diff` characters, so one test
-    // decides the head for both.
+    // Both sides share their first `first_diff` characters, so the head and
+    // the start of the context are the same for both.
+    let chars: Vec<char> = x.chars().take(first_diff).collect();
     let head: String = if x.starts_with(['[', '{']) {
-        x.chars().take(HEAD).collect::<String>() + "… "
+        let end = (1..HEAD)
+            .rev()
+            .find(|&i| matches!(chars[i - 1..=i], [',' | ':', ' ']))
+            .unwrap_or(HEAD);
+        chars[..end].iter().collect::<String>() + "… "
     } else {
         String::new()
     };
+    let window = first_diff - CONTEXT;
+    let start = (window..first_diff)
+        .find_map(|i| match chars[i] {
+            '/' => Some(i),
+            ' ' if i + 1 < first_diff => Some(i + 1),
+            _ => None,
+        })
+        .unwrap_or(window);
     let from = |s: &str| {
-        let tail: String = s.chars().skip(first_diff - CONTEXT).collect();
+        let tail: String = s.chars().skip(start).collect();
         let room = max - head.chars().count();
         head.clone() + &truncate_to(format!("…{tail}"), room)
     };
@@ -1280,34 +1293,68 @@ fn node_text(node: &DiffNode, field: &str, raw: &Value, job: &Job, def: Definiti
             .key
             .as_ref()
             .and_then(|k| job.parameters.get(k))
-            .map_or_else(|| render(raw), |p| p.value.to_display_string()),
+            .map_or_else(|| render(raw), parameter_text),
         (DiffNodeKind::JobParameter, "type") => node
             .key
             .as_ref()
             .and_then(|k| job.parameters.get(k))
             .map_or_else(|| render(raw), |p| p.param_type.as_spec_str().to_string()),
         (_, "resolvedSymTab") if raw.as_array().is_some_and(Vec::is_empty) => NO_SYMBOLS.into(),
-        (_, "") => render(&with_spaces(&without_label(raw, node.key.as_deref()), def)),
-        _ => render(&with_spaces(&without_label(raw, field_key(field)), def)),
+        (_, "") => whole_text(&without_label(raw, node.key.as_deref()), def),
+        _ => whole_text(&without_label(raw, field_key(field)), def),
     }
 }
 
-/// `v` with every parameter space in it, `v` itself included, replaced by
-/// its [`space_text`].
-fn with_spaces(v: &Value, def: DefinitionText) -> Value {
-    match v {
-        Value::Object(m)
-            if m.get("taskParameterDefinitions")
-                .is_some_and(Value::is_array) =>
+/// A job parameter's value, bare: a `STRING` or `PATH` as [`string_text`]
+/// writes it, any other type as its display form.
+fn parameter_text(p: &JobParameter) -> String {
+    match &p.value {
+        ExprValue::String(s) | ExprValue::Path { value: s, .. } => string_text(s),
+        v => escape_controls(&v.to_display_string()),
+    }
+}
+
+/// A whole node, [`render`]ed, except that every parameter space in it is
+/// its [`space_text`], every job parameter is written as its parameter line
+/// writes it with its type (`Frames: 1-100 (STRING)`), and an empty
+/// `resolvedSymTab` is left out at every depth.
+fn whole_text(v: &Value, def: DefinitionText) -> String {
+    render_with(&without_empty_symbols(v), &|e| {
+        let m = e.as_object()?;
+        if m.get("taskParameterDefinitions")
+            .is_some_and(Value::is_array)
         {
-            Value::String(space_text(v, def))
+            return Some(space_text(e, def));
         }
+        let is_parameter = m.len() == 3
+            && ["name", "paramType", "value"]
+                .iter()
+                .all(|k| m.contains_key(*k));
+        if !is_parameter {
+            return None;
+        }
+        let name = m.get("name").and_then(Value::as_str)?;
+        let p = parameter_from_value(name, e).ok()?;
+        Some(format!(
+            "{} ({})",
+            parameter_text(&p),
+            p.param_type.as_spec_str()
+        ))
+    })
+}
+
+/// `v` without any empty `resolvedSymTab`, at any depth.
+fn without_empty_symbols(v: &Value) -> Value {
+    match v {
         Value::Object(m) => Value::Object(
             m.iter()
-                .map(|(k, e)| (k.clone(), with_spaces(e, def)))
+                .filter(|(k, e)| {
+                    !(k.as_str() == "resolvedSymTab" && e.as_array().is_some_and(Vec::is_empty))
+                })
+                .map(|(k, e)| (k.clone(), without_empty_symbols(e)))
                 .collect(),
         ),
-        Value::Array(a) => Value::Array(a.iter().map(|e| with_spaces(e, def)).collect()),
+        Value::Array(a) => Value::Array(a.iter().map(without_empty_symbols).collect()),
         _ => v.clone(),
     }
 }
@@ -1318,18 +1365,12 @@ fn field_key(field: &str) -> Option<&str> {
 }
 
 /// A value without what its line's label already says: its `name` when
-/// that is `key`, the key the label shows, and an empty `resolvedSymTab`.
+/// that is `key`, the key the label shows.
 fn without_label(raw: &Value, key: Option<&str>) -> Value {
     let mut v = raw.clone();
     if let Some(m) = v.as_object_mut() {
         if key.is_some() && m.get("name").and_then(Value::as_str) == key {
             m.remove("name");
-        }
-        if m.get("resolvedSymTab")
-            .and_then(Value::as_array)
-            .is_some_and(Vec::is_empty)
-        {
-            m.remove("resolvedSymTab");
         }
     }
     v
@@ -1381,7 +1422,7 @@ fn range_text(p: &TaskParameter) -> String {
         TaskParameter::ChunkInt { range, chunks } => chunked_text(range, chunks),
         TaskParameter::Float { range } => list_text(range.iter().map(Float64::to_display_string)),
         TaskParameter::String { range } | TaskParameter::Path { range } => {
-            list_text(range.iter().cloned())
+            list_text(range.iter().map(|s| string_text(s)))
         }
     }
 }
@@ -1418,16 +1459,25 @@ fn list_text(items: impl Iterator<Item = String>) -> String {
     format!("[{}]", items.collect::<Vec<_>>().join(", "))
 }
 
-/// Generic rendering: strings bare, integral floats without `.0`, lists as
-/// `[a, b]`, symbol tables as `name=value` pairs, step dependencies as the
-/// names they depend on, objects as `{key: value}` without their `null`
-/// fields.
+/// Generic rendering: strings as [`string_text`], integral floats without
+/// `.0`, lists as `[a, b]`, symbol tables as `name=value` pairs, step
+/// dependencies as the names they depend on, objects as `{key: value}`
+/// without their `null` fields.
 fn render(v: &Value) -> String {
+    render_with(v, &|_| None)
+}
+
+/// [`render`], with `special` asked first for every value at every depth;
+/// a value it returns text for is written as that text.
+fn render_with(v: &Value, special: &dyn Fn(&Value) -> Option<String>) -> String {
+    if let Some(text) = special(v) {
+        return text;
+    }
     match v {
         Value::Null => "null".into(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => number_text(n),
-        Value::String(s) => s.clone(),
+        Value::String(s) => string_text(s),
         Value::Array(a) if !a.is_empty() && a.iter().all(is_symbol) => a
             .iter()
             .map(|e| {
@@ -1442,16 +1492,49 @@ fn render(v: &Value) -> String {
         Value::Array(a) if !a.is_empty() && a.iter().all(is_dependency) => {
             list_text(a.iter().filter_map(|e| e.get("dependsOn")).map(render))
         }
-        Value::Array(a) => list_text(a.iter().map(render)),
+        Value::Array(a) => list_text(a.iter().map(|e| render_with(e, special))),
         Value::Object(m) => format!(
             "{{{}}}",
             m.iter()
                 .filter(|(_, v)| !v.is_null())
-                .map(|(k, v)| format!("{k}: {}", render(v)))
+                .map(|(k, v)| format!("{k}: {}", render_with(v, special)))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
     }
+}
+
+/// A string bare, with its control characters escaped (`\n`, `\r`, `\t`,
+/// `\u{1b}`). It is quoted, as `"…"` with `"` escaped, when bare text
+/// would be ambiguous: it is empty, starts or ends with whitespace, or
+/// contains ` -> `.
+fn string_text(s: &str) -> String {
+    let quote = s.is_empty() || s.trim() != s || s.contains(" -> ");
+    match quote {
+        true => quoted(s),
+        false => escape_controls(s),
+    }
+}
+
+/// `s` in double quotes, with its control characters and `"` escaped.
+fn quoted(s: &str) -> String {
+    format!("\"{}\"", escape_controls(s).replace('"', "\\\""))
+}
+
+/// `s` with each control character written as an escape: `\n`, `\r`, `\t`,
+/// and any other as `\u{..}`.
+fn escape_controls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// 2^53: every whole number up to it in magnitude is exactly an `f64`.
@@ -3163,6 +3246,12 @@ mod tests {
     fn a_list_of_single_key_objects_is_not_a_dependency_list() {
         assert_eq!(render(&json!([{"ListInt": [1]}])), "[{ListInt: [1]}]");
         assert_eq!(render(&json!([{"dependsOn": "A"}])), "[A]");
+        // Only a one-key object whose value is a string is a dependency.
+        assert_eq!(
+            render(&json!([{"dependsOn": "A", "x": 1}])),
+            "[{dependsOn: A, x: 1}]"
+        );
+        assert_eq!(render(&json!([{"dependsOn": 1}])), "[{dependsOn: 1}]");
     }
 
     #[test]
@@ -3179,5 +3268,55 @@ mod tests {
         );
         let want = |c: char| format!("…{}{c}", "y".repeat(40));
         assert_eq!(around_difference(&x, &y), (want('a'), want('b')));
+        // An object keeps its head too: the `{` branch of the test.
+        let (x, y) = (
+            format!("{{{}a}}", "y".repeat(150)),
+            format!("{{{}b}}", "y".repeat(150)),
+        );
+        let want = |c: char| format!("{{{}… …{}{c}}}", "y".repeat(19), "y".repeat(40));
+        assert_eq!(around_difference(&x, &y), (want('a'), want('b')));
+    }
+
+    #[test]
+    fn a_cut_ends_its_head_and_starts_its_context_between_words() {
+        let side = |v: &str| {
+            format!(
+                "{{name: J, parameters: {{Out: /mnt/{}/passes/{v}/out}}}}",
+                "a".repeat(100)
+            )
+        };
+        let (b, a) = around_difference(&side("v1"), &side("v2"));
+        // The head ends after `J,`, not inside `parameters`; the context
+        // starts at the `/` before `passes`, not inside the `a`s.
+        assert_eq!(b, "{name: J,… …/passes/v1/out}}");
+        assert_eq!(a, "{name: J,… …/passes/v2/out}}");
+        // With no `/` or space in the context, it starts 40 characters
+        // before the difference.
+        let w = |c: char| format!("{}{c}", "x".repeat(150));
+        assert_eq!(
+            around_difference(&w('1'), &w('2')).0,
+            format!("…{}1", "x".repeat(40))
+        );
+        // A space starts the context after it.
+        let s = |c: char| format!("{} {}{c}", "x".repeat(100), "y".repeat(30));
+        assert_eq!(
+            around_difference(&s('1'), &s('2')).0,
+            format!("…{}1", "y".repeat(30))
+        );
+    }
+
+    #[test]
+    fn strings_escape_control_characters_and_quote_when_ambiguous() {
+        assert_eq!(string_text("a\nb"), "a\\nb");
+        assert_eq!(string_text("a\r\nb\tc\u{1b}"), "a\\r\\nb\\tc\\u{1b}");
+        assert_eq!(string_text(""), "\"\"");
+        assert_eq!(string_text(" "), "\" \"");
+        assert_eq!(string_text("a "), "\"a \"");
+        assert_eq!(string_text("a\n"), "\"a\\n\"");
+        assert_eq!(string_text("a -> b"), "\"a -> b\"");
+        assert_eq!(string_text("say \"hi\" -> x"), "\"say \\\"hi\\\" -> x\"");
+        assert_eq!(string_text("a->b c"), "a->b c");
+        assert_eq!(render(&json!(["a\nb"])), "[a\\nb]");
+        assert_eq!(render(&json!(["a\r\nb"])), "[a\\r\\nb]");
     }
 }

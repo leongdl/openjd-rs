@@ -321,7 +321,8 @@ layer](#the-job-layer)). `Shown::text` is for people:
   `~ parameter Count: "5" (STRING) -> 5 (INT)`, `~ parameter X: 4 (INT) -> 4.5 (FLOAT)`.
   A whole parameter left unexpanded by the depth limit is shown the same way. A long
   value is cut as below, and its type is always shown: `…aaaa1" (STRING) -> …aaaa2"
-  (PATH)`;
+  (PATH)`. A whole job writes each job parameter in it as its bare value and its type,
+  whether or not the type changes: `parameters: {Frames: 1-100 (STRING), N: 4 (INT)}`;
 - a symbol table is `name=value` pairs, and an empty one is `(none)`;
 - a whole parameter space is each task parameter's range in definition order, then the
   `combination` when one is set: `{Frame: 1-10, Eye: [left, right]}, combination (Frame, Eye)`.
@@ -331,13 +332,19 @@ layer](#the-job-layer)). `Shown::text` is for people:
 - an object leaves out its `null` fields. A value whose line already names it (a whole
   step, environment or embedded file, a host requirement entry such as
   `amounts[amount.worker.vcpu]`) leaves out its `name`, and a whole node leaves out an
-  empty `resolvedSymTab`. This depends only on the value and the node, so a value looks
+  empty `resolvedSymTab` at every depth. This depends only on the value and the node, so a value looks
   the same wherever it is: `+ jobEnvironments[Tools].script.embeddedFiles[F]: {data: hi,
   fileType: TEXT}` and `+ steps[S].script.embeddedFiles[F]: {data: hi, fileType: TEXT}`;
 - a float that is a whole number of at most 2^53 in magnitude (every such number is
   exactly an `f64`) is written without its fraction (`min: 4`, not `4.0`); a larger one
   keeps it (`9007199254740994.0`). `raw` keeps the number as the job holds it;
 - other strings are bare, lists are `[a, b]`, objects are `{key: value}`;
+- a string's control characters are escaped, so a value is always one line and a CR
+  shows: `\n`, `\r`, `\t`, and any other as `\u{1b}` (`[a\nb] -> [a\r\nb]`). A string
+  that would be ambiguous bare is quoted, with `"` escaped: one that is empty, starts or
+  ends with whitespace, or contains ` -> ` (`a -> "a -> b"`, `"" -> " "`). A multi-line
+  embedded file ends with a newline, so it is quoted:
+  `"set -e\nrender --fast\n" -> "set -e\nrender --quality high\n"`;
 - when both sides' full texts are equal but their values differ, every task parameter
   definition in them, whether the change is the definition, a parameter space, a step or
   the job, shows how its range is written: an integer range as `range expression 1,2` or
@@ -351,9 +358,11 @@ layer](#the-job-layer)). `Shown::text` is for people:
 - text longer than 120 characters is cut to 119 and ends with `…`. The cut happens once,
   after every rule above, and a type suffix such as ` (STRING)` is never cut. **Two sides
   with different values never show the same text**: when the first difference between
-  the two full texts would be cut off, both start with `…` 40 characters before it, and a
-  list or object keeps its first 20 characters before that, so it still reads as one:
-  `[s3://bucket/projects… …/shot_010/renders/a]`. When the full texts are still equal
+  the two full texts would be cut off, both start with `…` up to 40 characters before it,
+  at the first `/` or after the first space in those 40 when there is one, so the cut
+  does not split a word. A list or object keeps up to its first 20 characters before
+  that, ending after the last `,` or `:` in them when there is one, so it still reads
+  as one: `[s3://bucket/projects… …/shot_010/renders/a]`, `{name: J,… …/passes/v1/out}}`. When the full texts are still equal
   (`"3"` and `3` as generic values), both sides show as their JSON, cut the same way.
 
 `Display` is deterministic, so tests assert whole outputs:

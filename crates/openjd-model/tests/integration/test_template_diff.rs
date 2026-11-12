@@ -1831,7 +1831,7 @@ fn task_parameter_reorder_shows_in_whole_node_values_at_every_depth() {
 }
 
 const REORDER_TEXTS: [&str; 3] = [
-    "{name: J, parameters: {}, steps: [{name: S, parameterSpace: {X: 1-3, Y: [p, q]}, resolvedSymTab: [], script: {actions: … | {name: J, parameters: {}, steps: [{name: S, parameterSpace: {Y: [p, q], X: 1-3}, resolvedSymTab: [], script: {actions: …",
+    "{name: J, parameters: {}, steps: [{name: S, parameterSpace: {X: 1-3, Y: [p, q]}, script: {actions: {onRun: {command: c}… | {name: J, parameters: {}, steps: [{name: S, parameterSpace: {Y: [p, q], X: 1-3}, script: {actions: {onRun: {command: c}…",
     "{parameterSpace: {X: 1-3, Y: [p, q]}, script: {actions: {onRun: {command: c}}}} | {parameterSpace: {Y: [p, q], X: 1-3}, script: {actions: {onRun: {command: c}}}}",
     "{X: 1-3, Y: [p, q]} | {Y: [p, q], X: 1-3}",
 ];
@@ -3657,14 +3657,49 @@ fn sweep_template(edits: &[(&str, &str)]) -> String {
         })
 }
 
+/// Text that only a value's serde form, never a rendering for people,
+/// contains, as `render` writes it (keys unquoted), plus the JSON form's
+/// tags.
+pub(crate) const SERDE_INTERNALS: [&str; 15] = [
+    "{String:",
+    "{Int:",
+    "{Float:",
+    "{Bool:",
+    "{ListInt",
+    "{ListString",
+    "{ListFloat",
+    "{ListList",
+    "{RangeExpr",
+    "cumulative_lengths",
+    "paramType",
+    "resolvedSymTab: []",
+    "\"rangeExpr\"",
+    "\"chunkInt\"",
+    "{\"String\"",
+];
+
+/// Each [`SERDE_INTERNALS`] pattern matches text that a whole node showed
+/// before job parameters were written as their parameter lines, so the
+/// sweep below can fail.
+#[test]
+fn every_serde_internal_pattern_can_match() {
+    let samples = [
+        "{name: Demo, parameters: {Frames: {name: Frames, paramType: String, value: {String: 1-100}}}}",
+        "{N: {name: N, paramType: Int, value: {Int: 4}}, X: {name: X, paramType: Float, value: {Float: 4.5}}}",
+        "{B: {name: B, paramType: Bool, value: {Bool: true}}}",
+        "{value: {ListInt: [1, 2]}}, {value: {ListString: [[a], 48]}}, {value: {ListFloat: [1.5]}}",
+        "{value: {ListList: [[{ListInt: [1, 2]}], LIST[INT], 72]}}",
+        "{value: {RangeExpr: {cumulative_lengths: [1], ranges: [{start: 1}]}}}",
+        "steps: [{name: S, resolvedSymTab: [], script: {}}]",
+        "{\"definition\":{\"rangeExpr\":\"1-2\"}}, {\"chunkInt\":{}}, {\"String\":\"a\"}",
+    ];
+    for bad in SERDE_INTERNALS {
+        assert!(samples.iter().any(|s| s.contains(bad)), "{bad}");
+    }
+}
+
 #[test]
 fn whole_nodes_at_every_depth_show_no_serde_internals() {
-    const INTERNALS: [&str; 4] = [
-        "cumulative_lengths",
-        "\"rangeExpr\"",
-        "\"chunkInt\"",
-        "{\"String\"",
-    ];
     let mut checked = 0;
     for (what, pair) in sweep_pairs() {
         let old: Vec<(&str, &str)> = pair.iter().map(|(k, o, _)| (*k, o.as_str())).collect();
@@ -3681,7 +3716,7 @@ fn whole_nodes_at_every_depth_show_no_serde_internals() {
             for c in &d.changes {
                 let sides = [c.before.as_ref(), c.after.as_ref()];
                 for s in sides.into_iter().flatten() {
-                    for bad in INTERNALS {
+                    for bad in SERDE_INTERNALS {
                         assert!(!s.text.contains(bad), "{what}, depth {depth:?}: {c}");
                     }
                     checked += 1;
@@ -3712,6 +3747,126 @@ fn a_list_list_int_change_at_depth_0_shows_its_values() {
         .find(|c| c.path.is_empty() && c.layer == Layer::Job)
         .unwrap();
     let (b, a) = (root.before.as_ref().unwrap(), root.after.as_ref().unwrap());
-    assert!(b.text.contains("{ListInt: [1, 2]}"), "{}", b.text);
-    assert!(a.text.contains("{ListInt: [1, 3]}"), "{}", a.text);
+    assert!(
+        b.text.contains("Tiles: [[1, 2]] (LIST[LIST[INT]])"),
+        "{}",
+        b.text
+    );
+    assert!(
+        a.text.contains("Tiles: [[1, 3]] (LIST[LIST[INT]])"),
+        "{}",
+        a.text
+    );
+}
+
+// ─── diff gallery audit round 5 ─────────────────────────────────────
+
+/// A step whose args and embedded file `data` are filled in by the caller.
+fn strings_template(args: &str, data: &str) -> TemplateInput {
+    text(&format!(
+        "specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: S
+    script:
+      actions: {{onRun: {{command: a, args: {args}}}}}
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: {data}
+"
+    ))
+}
+
+/// The text of the one change at `field` under step `S`.
+fn change_line(d: &TemplateDiff, field: &str) -> String {
+    let c = d
+        .changes
+        .iter()
+        .find(|c| c.field == field || c.path.ends_with(field))
+        .unwrap_or_else(|| panic!("no {field} in\n{d}"));
+    let (b, a) = (c.before.as_ref().unwrap(), c.after.as_ref().unwrap());
+    format!("{b} -> {a}")
+}
+
+#[test]
+fn a_multi_line_data_change_prints_on_one_line() {
+    let d = diff_templates(
+        &strings_template("[x]", "|\n            set -e\n            render --fast"),
+        &strings_template("[x]", "|\n            set -e\n            render --slow"),
+        &opts(),
+    )
+    .unwrap();
+    let line = d
+        .to_string()
+        .lines()
+        .find(|l| l.contains(".data:"))
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        line,
+        "    ~ script.embeddedFiles[Run].data: \"set -e\\nrender --fast\\n\" -> \"set -e\\nrender --slow\\n\"  [template]"
+    );
+}
+
+#[test]
+fn a_carriage_return_is_shown() {
+    let d = diff_templates(
+        &strings_template("[\"a\\nb\"]", "d"),
+        &strings_template("[\"a\\r\\nb\"]", "d"),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(change_line(&d, "args"), "[a\\nb] -> [a\\r\\nb]");
+}
+
+#[test]
+fn an_ambiguous_string_is_quoted() {
+    let pair = |b: &str, a: &str| {
+        let d = diff_templates(
+            &strings_template("[x]", b),
+            &strings_template("[x]", a),
+            &opts(),
+        )
+        .unwrap();
+        change_line(&d, "data")
+    };
+    assert_eq!(pair("a", "\"a -> b\""), "a -> \"a -> b\"");
+    assert_eq!(pair("\" a\"", "a"), "\" a\" -> a");
+    assert_eq!(pair("\"x \"", "\" \""), "\"x \" -> \" \"");
+}
+
+#[test]
+fn a_whole_job_writes_each_parameter_as_its_line_with_its_type() {
+    let pair = |frames: &str| {
+        text(&format!(
+            "specificationVersion: jobtemplate-2023-09
+name: Demo
+parameterDefinitions:
+  - {{name: Frames, type: STRING, default: \"{frames}\"}}
+  - {{name: N, type: INT, default: 4}}
+steps:
+  - name: Render
+    parameterSpace:
+      taskParameterDefinitions:
+        - {{name: Frame, type: INT, range: \"{{{{Param.Frames}}}}\"}}
+    script: {{actions: {{onRun: {{command: render}}}}}}
+"
+        ))
+    };
+    let d = diff_templates(&pair("1-100"), &pair("1-200"), &opts().with_max_depth(0)).unwrap();
+    let root = d
+        .changes
+        .iter()
+        .find(|c| c.path.is_empty() && c.layer == Layer::Job)
+        .unwrap();
+    let (b, a) = (root.before.as_ref().unwrap(), root.after.as_ref().unwrap());
+    assert_eq!(
+        b.text,
+        "{name: Demo, parameters: {Frames: 1-100 (STRING), N: 4 (INT)}, steps: [{name: Render, parameterSpace: {Frame: 1-100}, s…"
+    );
+    assert!(a.text.contains("Frames: 1-200 (STRING)"), "{}", a.text);
+    for t in [&b.text, &a.text] {
+        assert!(!t.contains("resolvedSymTab"), "{t}");
+    }
 }

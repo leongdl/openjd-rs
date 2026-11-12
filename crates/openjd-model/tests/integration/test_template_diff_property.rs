@@ -3,15 +3,18 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 //! `job::template_diff` rendering over random template pairs: two sides with
-//! different values never show the same text, and no text is longer than
-//! 120 characters (`specs/model/template-diff.md` § Rendering).
+//! different values never show the same text, no text is longer than 120
+//! characters, and no text shows a value's serde form
+//! (`specs/model/template-diff.md` § Rendering).
 
 use openjd_model::job::diff::DiffOptions;
 use openjd_model::job::template_diff::*;
 use openjd_model::job::Job;
 
+use super::test_template_diff::SERDE_INTERNALS;
+
 /// Template pairs generated; each is diffed once by `diff_templates` and at
-/// every depth by `diff_built_jobs`.
+/// every depth, unlimited and 0 to 5, by `diff_built_jobs`.
 const CASES: usize = 800;
 
 /// SplitMix64, so the cases are the same on every run and platform.
@@ -72,6 +75,14 @@ fn pools() -> Pools {
             Some(("FLOAT", "4".into())),
             Some(("FLOAT", "4.0".into())),
             Some(("FLOAT", "4.5".into())),
+            Some(("STRING", "a\nb".into())),
+            Some(("STRING", "a\r\nb".into())),
+            Some(("STRING", " a".into())),
+            Some(("STRING", "a -> b".into())),
+            Some(("STRING", "".into())),
+            Some(("BOOL", "true".into())),
+            Some(("\"LIST[INT]\"", "[1, 2]".into())),
+            Some(("RANGE_EXPR", "1-3".into())),
         ],
         task_params: vec![
             None,
@@ -149,7 +160,7 @@ impl Side {
     fn input(&self, p: &Pools) -> TemplateInput {
         let [param, task, desc, deps, host, env, arg, file] = self.0;
         let mut t = String::from(
-            "specificationVersion: jobtemplate-2023-09\nextensions: [TASK_CHUNKING]\nname: J\n",
+            "specificationVersion: jobtemplate-2023-09\nextensions: [EXPR, TASK_CHUNKING]\nname: J\n",
         );
         if let Some((ty, _)) = &p.params[param] {
             t += &format!("parameterDefinitions:\n  - {{name: X, type: {ty}}}\n");
@@ -205,6 +216,14 @@ const EDITS: [(&str, &str); 3] = [
 fn check(d: &TemplateDiff, what: &dyn Fn() -> String) {
     for c in &d.changes {
         for s in [&c.before, &c.after].into_iter().flatten() {
+            for bad in SERDE_INTERNALS {
+                assert!(
+                    !s.text.contains(bad),
+                    "{bad} in {}\n{c}\n{}",
+                    s.text,
+                    what()
+                );
+            }
             assert!(
                 s.text.chars().count() <= 120,
                 "{} chars: {}\n{c}\n{}",
@@ -224,7 +243,7 @@ fn check(d: &TemplateDiff, what: &dyn Fn() -> String) {
 }
 
 fn diff_at_every_depth(old: &Job, new: &Job, what: &dyn Fn() -> String) {
-    for depth in [None, Some(0), Some(1), Some(2), Some(3)] {
+    for depth in [None, Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)] {
         let options = match depth {
             Some(n) => DiffOptions::default().with_max_depth(n),
             None => DiffOptions::default(),
@@ -256,7 +275,7 @@ fn different_values_never_render_alike_and_no_text_is_too_long() {
         let new = old.vary(&mut rng, &sizes);
         let (oi, ni) = (old.input(&p), new.input(&p));
         let what = || format!("case {case}: old {:?}, new {:?}", old.0, new.0);
-        let depth = rng.below(5);
+        let depth = rng.below(7);
         let options = match depth {
             0 => DiffOptions::default(),
             n => DiffOptions::default().with_max_depth(n - 1),
@@ -266,7 +285,7 @@ fn different_values_never_render_alike_and_no_text_is_too_long() {
             format!("diff_templates, depth choice {depth}\n{}", what())
         });
         diff_at_every_depth(&d.old_job, &d.new_job, &what);
-        diffs += 1 + 5;
+        diffs += 1 + 7;
 
         let doc = serde_json::to_string(&JobDocument(&d.new_job)).unwrap();
         let (from, to) = rng.pick(&EDITS);
@@ -277,10 +296,10 @@ fn different_values_never_render_alike_and_no_text_is_too_long() {
                 format!("edit {from} -> {to}\n{}", what())
             });
             edited += 1;
-            diffs += 5;
+            diffs += 7;
         }
     }
     // The pools reach the hand-edited paths, not only the template ones.
     assert!(edited > CASES / 10, "only {edited} edited documents");
-    assert!(diffs > CASES * 6);
+    assert!(diffs > CASES * 8);
 }

@@ -68,6 +68,7 @@ changes, and `plan kinds` the mutation kinds of `--plan`.
 | action `timeout` (FEATURE_BUNDLE_1) | [script_timeout](#script_timeout) | `~ steps[Render].script.onRun.timeout: 600 -> 1200  [template]` | template | job | StepScript |
 | action `cancelation` (FEATURE_BUNDLE_1) | [script_cancelation](#script_cancelation) | `~ steps[Render].script.onRun.cancelation: {mode: NOTIFY_THEN_TERMINATE, notifyPeriodInSeconds: 30} -> {mode: NOTIFY_THEN_TERMINATE, notifyPeriodInSeconds: 120}  [template]` | template | job | StepScript |
 | embedded file `data` | [embedded_file_data](#embedded_file_data) | `~ steps[Render].script.embeddedFiles[Run].data: render --fast -> render --denoise  [template]` | template | job | StepScript |
+| embedded file `data`, multi-line | [embedded_file_data_multiline](#embedded_file_data_multiline) | `~ steps[Render].script.embeddedFiles[Run].data: "set -e\nrender --fast\n" -> "set -e\nrender --quality high\n"  [template]` | template | job | StepScript |
 | embedded file `filename` | [embedded_file_filename](#embedded_file_filename) | `~ steps[Render].script.embeddedFiles[Run].filename: run.sh -> render.sh  [template]` | template | job | StepScript |
 | embedded file `runnable` | [embedded_file_runnable](#embedded_file_runnable) | `+ steps[Render].script.embeddedFiles[Run].runnable: true  [template]` | template | job | StepScript |
 | `embeddedFiles` order | [embedded_file_reordered](#embedded_file_reordered) | `~ steps[Render].script.embeddedFiles.order: [Run, Config] -> [Config, Run]  [template]` | template | job | StepScript |
@@ -994,6 +995,20 @@ $ openjd diff crates/openjd-cli/examples/diff/file_data_v1.yaml crates/openjd-cl
 crates/openjd-cli/examples/diff/file_data_v1.yaml -> crates/openjd-cli/examples/diff/file_data_v2.yaml
 ~ step Render
     ~ script.embeddedFiles[Run].data: render --fast -> render --denoise  [template]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
+### embedded_file_data_multiline
+
+A line of the step's multi-line embedded script changes; the value stays on one line.
+
+```console
+$ openjd diff crates/openjd-cli/examples/diff/file_multiline_v1.yaml crates/openjd-cli/examples/diff/file_multiline_v2.yaml
+crates/openjd-cli/examples/diff/file_multiline_v1.yaml -> crates/openjd-cli/examples/diff/file_multiline_v2.yaml
+~ step Render
+    ~ script.embeddedFiles[Run].data: "set -e\nrender --fast\n" -> "set -e\nrender --quality high\n"  [template]
     tasks: 1 unchanged
 
 1 step changed. Tasks: 1 kept, 0 added, 0 removed.

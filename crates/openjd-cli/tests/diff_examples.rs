@@ -183,6 +183,8 @@ const CASES: &[Case] = &[
         "diff @cancelation_v1.yaml @cancelation_v2.yaml", "onRun.cancelation"),
     case(STEPS, "embedded_file_data", "embedded file `data`", "The step's embedded script changes.",
         "diff @file_data_v1.yaml @file_data_v2.yaml", ".data:"),
+    case(STEPS, "embedded_file_data_multiline", "embedded file `data`, multi-line", "A line of the step's multi-line embedded script changes; the value stays on one line.",
+        "diff @file_multiline_v1.yaml @file_multiline_v2.yaml", ".data:"),
     case(STEPS, "embedded_file_filename", "embedded file `filename`", "The embedded file is written under another name.",
         "diff @file_name_v1.yaml @file_name_v2.yaml", ".filename:"),
     case(STEPS, "embedded_file_runnable", "embedded file `runnable`", "The embedded file becomes runnable.",
