@@ -226,7 +226,7 @@ fn the_digest_ignores_map_order() {
     // Pinned: a change here is a change of the document format.
     assert_eq!(
         job_digest(&text(V1).build().unwrap()).unwrap(),
-        "4b3e1d1cfc8a45073bbb81fade8854a2737a3e409c740a7d0c3c2a9d925e8b80"
+        "236cb20c8f3f685c70ba07758c98365324bc00288b6c27a02b305758929dae70"
     );
 }
 
@@ -542,4 +542,196 @@ fn the_job_symbol_table_has_no_job_name_with_feature_bundle_1_alone() {
     let table = serde_json::to_string(&build_job_symbol_table(&job).unwrap()).unwrap();
     assert!(table.starts_with(r#"[{"name":"Param.Frames""#), "{table}");
     assert!(!table.contains("Job.Name"), "{table}");
+}
+
+// ─── kept values are not preprocessed again ─────────────────────────
+
+/// `template`'s parameters preprocessed from `input` with `format`'s
+/// directories, as a host on that platform stores them.
+fn stored_as(template: &str, input: &[(&str, &str)], format: PathFormat) -> JobParameterValues {
+    let template = decode_job_template(doc(template), None, &CallerLimits::default()).unwrap();
+    let input: JobParameterInputValues = input
+        .iter()
+        .map(|(k, v)| (k.to_string(), ExprValue::String(v.to_string())))
+        .collect();
+    let (dir, cwd) = match format {
+        PathFormat::Windows => (r"C:\t", r"C:\work"),
+        _ => ("/t", "/work"),
+    };
+    preprocess_job_parameters(
+        &template,
+        &input,
+        &[],
+        &PathParameterOptions {
+            job_template_dir: dir,
+            current_working_dir: cwd,
+            path_format: format,
+            allow_template_dir_walk_up: false,
+            allow_uri_path_values: false,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn merge_keeps_a_stored_path_without_checking_its_rewritten_form() {
+    // (constraint, stored value): the stored value meets the constraint; on
+    // a POSIX host its preprocessed form (`/work/C:\...`) does not.
+    let cases = [
+        (r#"allowedValues: ['C:\w\out']"#, r"C:\w\out"),
+        ("maxLength: 12", r"C:\work\out"),
+    ];
+    for (constraint, value) in cases {
+        let t = OUT.replace("type: PATH}", &format!("type: PATH, {constraint}}}"));
+        assert_ne!(t, OUT);
+        let stored = stored_as(&t, &[("Out", value)], PathFormat::Windows);
+        let merged = merge_parameters(&stored, &JobParameterInputValues::new(), &text(&t))
+            .unwrap_or_else(|e| panic!("{constraint}: {e}"));
+        assert_eq!(sorted(&merged), sorted(&stored), "{constraint}");
+        let job = text(&t).preprocessed(merged).build().unwrap();
+        assert_eq!(out_value(&job), value, "{constraint}");
+    }
+}
+
+#[test]
+fn a_kept_value_that_breaks_a_narrowed_constraint_fails_when_the_job_is_built() {
+    let stored = stored_windows_out();
+    let narrowed = OUT.replace("type: PATH}", "type: PATH, maxLength: 3}");
+    let merged =
+        merge_parameters(&stored, &JobParameterInputValues::new(), &text(&narrowed)).unwrap();
+    assert_eq!(sorted(&merged), sorted(&stored));
+    let err = text(&narrowed).preprocessed(merged).build().unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: Parameter 'Out': value length 11 exceeds maximum 3"
+    );
+}
+
+#[test]
+fn merge_still_preprocesses_a_requested_value_and_a_new_default() {
+    // A requested value is preprocessed, constraints included.
+    let t = OUT.replace("type: PATH}", "type: PATH, maxLength: 3}");
+    let requested: JobParameterInputValues = [("Out".to_string(), ExprValue::String("o".into()))]
+        .into_iter()
+        .collect();
+    let err = merge_parameters(&stored_windows_out(), &requested, &text(&t)).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Validation error: Parameter 'Out': value length {} exceeds maximum 3",
+            CWD.len() + 2
+        )
+    );
+    // A new PATH default is joined to the template directory, beside a kept
+    // value.
+    let with_default = OUT.replace("steps:", "  - {name: D, type: PATH, default: d}\nsteps:");
+    let merged = merge_parameters(
+        &stored_windows_out(),
+        &JobParameterInputValues::new(),
+        &text(&with_default),
+    )
+    .unwrap();
+    assert_eq!(
+        sorted(&merged),
+        [
+            format!("D=PATH:{TEMPLATE_DIR}{SEP}d"),
+            r"Out=PATH:C:\work\out".to_string()
+        ]
+    );
+}
+
+const PN: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: PN
+parameterDefinitions:
+  - {name: P, type: PATH}
+  - {name: Count, type: INT}
+steps:
+  - name: A
+    script: {actions: {onRun: {command: a, args: ["{{RawParam.P}}", "{{Param.Count}}"]}}}
+"#;
+
+#[test]
+fn the_origin_split_builds_its_middle_job_from_the_old_stored_values() {
+    let new_template = PN.replace(r#""{{Param.Count}}"]"#, r#""{{Param.Count}}", x]"#);
+    assert_ne!(new_template, PN);
+    // (format the values were stored with, stored P)
+    for (format, p) in [
+        (PathFormat::Windows, r"C:\w\out"),
+        (PathFormat::Posix, "/w/out"),
+    ] {
+        let old = stored_as(PN, &[("P", p), ("Count", "1")], format);
+        let new = stored_as(PN, &[("P", p), ("Count", "2")], format);
+        let d = diff_templates(
+            &text(PN).preprocessed(old),
+            &text(&new_template).preprocessed(new),
+            &DiffOptions::default(),
+        )
+        .unwrap();
+        let got: Vec<String> = d.changes.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            got,
+            [
+                "~ parameters[Count].value: 1 -> 2  [parameters]".to_string(),
+                format!(
+                    "~ steps[A].resolvedSymTab: Param.Count=1, RawParam.P={p} -> \
+                     Param.Count=2, RawParam.P={p}  [parameters]"
+                ),
+                "~ steps[A].script.onRun.args: [{{RawParam.P}}, {{Param.Count}}] -> \
+                 [{{RawParam.P}}, {{Param.Count}}, x]  [template]"
+                    .to_string(),
+            ],
+            "{p}"
+        );
+    }
+}
+
+// ─── range expressions in the host encoding ─────────────────────────
+
+#[test]
+fn a_range_flagged_contiguous_writes_its_canonical_text() {
+    use openjd_expr::RangeExpr;
+    use openjd_model::job::{JobParameter, StepParameterSpace, TaskParamRange, TaskParameter};
+    let plain: RangeExpr = "5,6".parse().unwrap();
+    let flagged = plain.clone().with_contiguous(true);
+    assert_eq!(flagged.to_string(), "5-6");
+    let job = |r: &RangeExpr| {
+        let mut job = text(OUT)
+            .preprocessed(stored_windows_out())
+            .build()
+            .unwrap();
+        job.parameters.insert(
+            "R".into(),
+            JobParameter {
+                name: "R".into(),
+                param_type: JobParameterType::RangeExpr,
+                value: ExprValue::RangeExpr(r.clone()),
+            },
+        );
+        job.steps[0].parameter_space = Some(StepParameterSpace {
+            task_parameter_definitions: [(
+                "F".to_string(),
+                TaskParameter::Int {
+                    range: TaskParamRange::RangeExpr(r.clone()),
+                    chunks: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            combination: None,
+        });
+        job
+    };
+    let (a, b) = (job(&plain), job(&flagged));
+    let doc = serde_json::to_value(JobDocument(&b)).unwrap();
+    assert_eq!(
+        doc["parameters"]["R"].to_string(),
+        r#"{"name":"R","type":"RANGE_EXPR","value":"5,6"}"#
+    );
+    assert_eq!(
+        doc["steps"][0]["parameterSpace"].to_string(),
+        r#"{"combination":null,"taskParameterDefinitions":[{"name":"F","range":"5,6","type":"INT"}]}"#
+    );
+    assert_eq!(doc, serde_json::to_value(JobDocument(&a)).unwrap());
+    assert_eq!(job_digest(&a).unwrap(), job_digest(&b).unwrap());
 }

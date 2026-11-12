@@ -816,7 +816,7 @@ pub fn job::template_diff::diff_templates(old: &TemplateInput, new: &TemplateInp
 pub fn job::template_diff::diff_job_template_with_parameter_sets(template: &TemplateInput, old: &JobParameterInputValues, new: &JobParameterInputValues, options: &DiffOptions) -> Result<TemplateDiff, ModelError>;
 pub fn job::template_diff::diff_built_jobs(old: Job, new: Job, options: &DiffOptions) -> TemplateDiff;   // origin Job, no template layer
 pub fn job::template_diff::job_from_str(text: &str) -> Result<Job, ModelError>;   // JSON or YAML JobDocument
-pub struct job::template_diff::JobDocument<'a>(pub &'a Job);   // Serialize: the Job serde form, parameters and environment variables sorted,
+pub struct job::template_diff::JobDocument<'a>(pub &'a Job);   // Serialize: "documentVersion": 1, then the Job serde form, parameters and environment variables sorted,
                                                                  // parameters and parameter spaces in the host encoding; Debug, Clone, Copy
 
 pub enum job::template_diff::TemplateSource { Path(PathBuf), Text(String), Value(serde_json::Value), Decoded(Box<JobTemplate>) }

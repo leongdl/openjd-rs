@@ -1050,9 +1050,10 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
         });
     }
 
-    // 2. Parameters, in name order: the diff orders parameter nodes by name,
-    // so the order does not depend on how either job's map was filled, and
-    // a re-plan resumes at the same op.
+    // 2. Parameters: the old job's, in name order, then the ones only the new
+    // job has, in name order. The diff orders parameter nodes this way, so the
+    // order does not depend on how either job's map was filled, and a re-plan
+    // resumes at the same op.
     for &c in &root.children {
         let n = &diff.nodes()[c];
         if n.kind != DiffNodeKind::JobParameter || !n.is_changed() {

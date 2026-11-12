@@ -20,8 +20,8 @@ use openjd_expr::ExprValue;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{load, preprocess, TemplateInput};
-use crate::create_job::{build_symbol_table, merge_job_parameter_definitions};
+use super::{keepable, load, typed_values, TemplateInput};
+use crate::create_job::build_symbol_table;
 use crate::error::ModelError;
 use crate::job::template_diff::JobDocument;
 use crate::job::Job;
@@ -143,7 +143,10 @@ pub fn build_job_symbol_table(job: &Job) -> Result<SerializedSymbolTable, ModelE
 /// [`diff_jobs`](crate::job::diff::diff_jobs) reports changes the
 /// document, and so the digest. The converse does not hold: a document
 /// change the diff ignores (a task parameter definition reorder under an
-/// explicit `combination`) also changes the digest.
+/// explicit `combination`) also changes the digest. `==` jobs whose task
+/// parameter definitions are in a different order also digest differently,
+/// because definition order is task order. The document includes its
+/// `documentVersion`, so digests compare only within one version.
 pub fn job_digest(job: &Job) -> Result<String, ModelError> {
     let text = serde_json::to_vec(&JobDocument(job))
         .map_err(|e| ModelError::DecodeValidation(format!("cannot write the job as data: {e}")))?;
@@ -169,30 +172,17 @@ pub fn job_digest(job: &Job) -> Result<String, ModelError> {
 /// directories are used; its own parameter values are not. A requested
 /// value the new template does not declare, or a required parameter that
 /// is neither requested nor kept, is preprocessing's error. A kept value is
-/// passed to preprocessing too, so that a required parameter is present,
-/// but the stored value is what the result holds: preprocessing it again
-/// could rewrite it (a Windows PATH on a POSIX host is relative). `create_job`
-/// checks it against the new template's constraints when the job is built.
+/// neither preprocessed again nor checked here: preprocessing could rewrite
+/// it (a Windows PATH on a POSIX host is relative), and the rewritten form
+/// could fail a constraint the stored value meets. It counts as supplied,
+/// so a required parameter is not missing. `create_job` checks it against
+/// the new template's constraints when the job is built.
 pub fn merge_parameters(
     stored: &JobParameterValues,
     requested: &JobParameterInputValues,
     new: &TemplateInput,
 ) -> Result<JobParameterValues, ModelError> {
     let loaded = load(new)?;
-    let mut inputs = requested.clone();
-    let mut kept = JobParameterValues::new();
-    for def in merge_job_parameter_definitions(&loaded.template, &loaded.environments)? {
-        if requested.contains_key(&def.name) {
-            continue;
-        }
-        if let Some(value) = stored.get(&def.name) {
-            if value.param_type == def.param_type {
-                inputs.insert(def.name.clone(), value.value.clone());
-                kept.insert(def.name, value.clone());
-            }
-        }
-    }
-    let mut merged = preprocess(&loaded, &inputs)?;
-    merged.extend(kept);
-    Ok(merged)
+    let kept = keepable(&loaded, stored, requested)?;
+    typed_values(&loaded, kept, requested)
 }

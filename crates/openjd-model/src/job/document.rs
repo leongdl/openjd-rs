@@ -19,6 +19,7 @@ use openjd_expr::{ExprType, ExprValue, RangeExpr};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::job::step_param_space::tokenize;
 use crate::job::{JobParameter, ResolvedChunks, StepParameterSpace, TaskParamRange, TaskParameter};
 use crate::template::RangeConstraint;
 use crate::types::JobParameterType;
@@ -289,6 +290,9 @@ fn chunks(v: &Value, path: &str) -> Result<ResolvedChunks, String> {
             .ok_or_else(|| format!("{path}.{k}: expected a non-negative integer"))
     };
     let default_task_count = count("defaultTaskCount")?;
+    if default_task_count == 0 {
+        return Err(format!("{path}.defaultTaskCount: must be at least 1"));
+    }
     let target_runtime_seconds = match m.get("targetRuntimeSeconds") {
         None | Some(Value::Null) => None,
         Some(_) => Some(count("targetRuntimeSeconds")?),
@@ -400,6 +404,9 @@ pub(crate) fn space_from_document(v: &Value, path: &str) -> Result<StepParameter
     let defs = m["taskParameterDefinitions"]
         .as_array()
         .ok_or_else(|| format!("{defs_path}: expected a list"))?;
+    if defs.is_empty() {
+        return Err(format!("{defs_path}: must not be empty"));
+    }
     let mut task_parameter_definitions = IndexMap::new();
     for (i, d) in defs.iter().enumerate() {
         let at = format!("{defs_path}[{i}]");
@@ -415,6 +422,20 @@ pub(crate) fn space_from_document(v: &Value, path: &str) -> Result<StepParameter
         Some(Value::String(s)) => Some(s.clone()),
         Some(_) => return Err(format!("{path}.combination: expected a string")),
     };
+    // Only the names are checked: `create_job` writes a combination the
+    // template validated, so a name it does not define is not one it wrote.
+    let operator = |t: &str| matches!(t, "*" | "(" | ")" | ",");
+    if let Some(unknown) = combination
+        .as_deref()
+        .map(tokenize)
+        .into_iter()
+        .flatten()
+        .find(|t| !operator(t) && !task_parameter_definitions.contains_key(t))
+    {
+        return Err(format!(
+            "{path}.combination: '{unknown}' is not a task parameter of the step"
+        ));
+    }
     Ok(StepParameterSpace {
         task_parameter_definitions,
         combination,

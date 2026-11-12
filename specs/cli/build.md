@@ -32,8 +32,8 @@ CLI's caller limits: the same decode, parameter preprocessing and `create_job` c
 
 ## Output
 
-The job as a `JobDocument` (`openjd_model::job::template_diff`), pretty JSON or YAML: the
-`Job`'s serde form with `parameters` and each environment's `variables` sorted by name, so
+The job as a `JobDocument` (`openjd_model::job::template_diff`), pretty JSON or YAML: a
+`"documentVersion": 1` field first, then the `Job`'s serde form with `parameters` and each environment's `variables` sorted by name, so
 the output is the same on every run (`create_job` fills `parameters` from a `HashMap`, and
 `Environment::variables` is a `HashMap`), and parameters and parameter spaces in the host
 encoding of [`specs/model/host-support.md`](../model/host-support.md#host-encoding): a

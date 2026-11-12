@@ -31,7 +31,8 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError>;
 - `diff_built_jobs` is for callers that already hold two jobs. It has no template layer,
   and every change has origin `Job`, because the cause is not known.
 - `job_from_str` reads a job back from its `JobDocument` (JSON when the first
-  non-whitespace character is `{`, YAML otherwise), as `openjd build` prints it.
+  non-whitespace character is `{`, YAML otherwise), as `openjd build` prints it. Its
+  `documentVersion` must be 1.
   Parameters and parameter spaces must be in the
   [host encoding](host-support.md#host-encoding), which also lists their errors; the rest of
   the document is the job types' serde form. Unknown fields are rejected at every
@@ -223,8 +224,8 @@ new-only steps. `status` is the step's status under the caller's options (one
 
 Counts are `u64` and count what `StepParameterSpaceIterator` yields (chunks, for a chunked
 step). Sums saturate at `u64::MAX` rather than overflow. When either side's parameter space
-does not iterate (reachable only through an edited built job, for example a `combination`
-naming an unknown parameter), the step's `tasks_unknown` is `Some("cannot count tasks")`,
+does not iterate (reachable only through an edited built job, for example an association
+whose members have different lengths), the step's `tasks_unknown` is `Some("cannot count tasks")`,
 its counts are 0 (`Replaced` with reason `cannot count tasks` when the space changed),
 `notes` has `steps[S]: cannot count tasks: <the iterator's error>`, and `Display` prints
 `tasks: unknown (cannot count tasks)`; adaptive chunking, below, takes precedence. A `BoxSummary` has each dimension's name and its values: integers as the

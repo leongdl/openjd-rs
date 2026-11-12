@@ -38,6 +38,7 @@ use openjd_expr::{ExprType, ExprValue};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
 
+use crate::create_job::{merge_job_parameter_definitions, preprocess_job_parameters_besides};
 use crate::error::ModelError;
 use crate::job::apply::{plan, ApplyPlan};
 use crate::job::diff::{diff_jobs, diff_steps, DiffNode, DiffOptions, DiffStatus, DiffTree};
@@ -53,7 +54,7 @@ use crate::template::parse::{
 };
 use crate::template::{EnvironmentTemplate, JobParameterDefinition, JobTemplate};
 use crate::types::{CallerLimits, JobParameterInputValues, JobParameterValues, ModelExtension};
-use crate::{create_job, preprocess_job_parameters, PathParameterOptions};
+use crate::{create_job, PathParameterOptions};
 
 mod host;
 pub use host::{
@@ -395,9 +396,23 @@ fn preprocess(
     loaded: &Loaded,
     params: &JobParameterInputValues,
 ) -> Result<JobParameterValues, ModelError> {
-    preprocess_job_parameters(
+    typed_values(loaded, JobParameterValues::new(), params)
+}
+
+/// The values to build `loaded` with: `kept` as given, and `inputs`
+/// preprocessed against the side. A kept value is never preprocessed or
+/// checked here, because a second pass can rewrite it (a Windows PATH is
+/// relative on a POSIX host); `create_job` checks it when the job is built.
+/// Kept parameters count as supplied, so they get no default and are not
+/// missing. `kept` comes from [`keepable`].
+fn typed_values(
+    loaded: &Loaded,
+    kept: JobParameterValues,
+    inputs: &JobParameterInputValues,
+) -> Result<JobParameterValues, ModelError> {
+    let mut values = preprocess_job_parameters_besides(
         &loaded.template,
-        params,
+        inputs,
         &loaded.environments,
         &PathParameterOptions {
             job_template_dir: &loaded.template_dir,
@@ -406,7 +421,48 @@ fn preprocess(
             allow_template_dir_walk_up: false,
             allow_uri_path_values: true,
         },
-    )
+        &kept,
+    )?;
+    values.extend(kept);
+    Ok(values)
+}
+
+/// The values of `stored` that `loaded` keeps: those its template (with its
+/// environments) declares with the stored type, and `inputs` does not set.
+fn keepable(
+    loaded: &Loaded,
+    stored: &JobParameterValues,
+    inputs: &JobParameterInputValues,
+) -> Result<JobParameterValues, ModelError> {
+    let mut kept = JobParameterValues::new();
+    for def in merge_job_parameter_definitions(&loaded.template, &loaded.environments)? {
+        if inputs.contains_key(&def.name) {
+            continue;
+        }
+        if let Some(value) = stored.get(&def.name) {
+            if value.param_type == def.param_type {
+                kept.insert(def.name, value.clone());
+            }
+        }
+    }
+    Ok(kept)
+}
+
+/// The values of the origin split's middle job: the new template with the
+/// old side's values. Old input values are preprocessed against the new
+/// template. Old stored values the new template keeps are used as stored;
+/// the rest (retyped or undeclared) are preprocessed as inputs.
+fn middle_values(old: &TemplateInput, new: &Loaded) -> Result<JobParameterValues, ModelError> {
+    let Some(stored) = &old.preprocessed else {
+        return typed_values(new, JobParameterValues::new(), &old.parameters);
+    };
+    let kept = keepable(new, stored, &JobParameterInputValues::new())?;
+    let rest: JobParameterInputValues = stored
+        .iter()
+        .filter(|(k, _)| !kept.contains_key(*k))
+        .map(|(k, v)| (k.clone(), v.value.clone()))
+        .collect();
+    typed_values(new, kept, &rest)
 }
 
 /// Prefix an error with the input that failed (`old template`, `new
@@ -798,9 +854,9 @@ pub fn diff_templates(
             OriginRule::All(Origin::Parameters)
         } else {
             // `mid` is the new template with the old parameters.
-            // Old preprocessed values are preprocessed again here: they were
-            // resolved for the old template, and `mid` uses the new one.
-            match build(&ln, Values::Input(&old_inputs), &new.limits) {
+            match middle_values(old, &ln)
+                .and_then(|v| build(&ln, Values::Preprocessed(&v), &new.limits))
+            {
                 Ok(mid) => OriginRule::Split {
                     template: change_keys(&diff_jobs(&old_job, &mid, options)),
                     parameters: change_keys(&diff_jobs(&mid, &new_job, options)),
@@ -2159,6 +2215,9 @@ fn is_adaptive(step: &Step) -> bool {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BuiltJob {
+    /// Checked by [`check_document_version`] before this is read.
+    #[serde(rename = "documentVersion")]
+    _document_version: serde::de::IgnoredAny,
     name: String,
     description: Option<String>,
     extensions: Option<Vec<String>>,
@@ -2188,7 +2247,8 @@ struct BuiltStep {
 
 /// Read a [`Job`] back from the JSON or YAML that `openjd build` prints
 /// (its [`JobDocument`]). JSON when the first non-whitespace character is
-/// `{`, YAML otherwise. Unknown fields are rejected at every level, and so
+/// `{`, YAML otherwise. The document's `documentVersion` must be 1, the one
+/// [`JobDocument`] writes. Unknown fields are rejected at every level, and so
 /// are a parameter or task parameter definition that is not in the host
 /// encoding and a `resolvedSymTab` entry that is not the
 /// `{name, type, value}` a `SymbolTable` serializes to.
@@ -2202,6 +2262,7 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
     } else {
         serde_saphyr::from_str(text).map_err(|e| err(e.to_string()))?
     };
+    check_document_version(&input).map_err(err)?;
     let raw: BuiltJob = if json {
         serde_json::from_str(text).map_err(|e| err(e.to_string()))?
     } else {
@@ -2216,6 +2277,27 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
     }
     check_symbol_tables(&job).map_err(err)?;
     Ok(job)
+}
+
+/// The `documentVersion` [`JobDocument`] writes, and the only one
+/// [`job_from_str`] reads.
+const DOCUMENT_VERSION: u64 = 1;
+
+/// Check the document is an object whose `documentVersion` is
+/// [`DOCUMENT_VERSION`].
+fn check_document_version(input: &Value) -> Result<(), String> {
+    let Some(m) = input.as_object() else {
+        return Err("expected an object".into());
+    };
+    match m.get("documentVersion") {
+        Some(v) if v.as_u64() == Some(DOCUMENT_VERSION) => Ok(()),
+        Some(v) => Err(format!(
+            "documentVersion: {v} is not supported; the supported version is {DOCUMENT_VERSION}"
+        )),
+        None => Err(format!(
+            "missing field 'documentVersion'; the supported version is {DOCUMENT_VERSION}"
+        )),
+    }
 }
 
 /// Check every `resolvedSymTab` has the shape a [`SymbolTable`] serializes
@@ -2448,6 +2530,7 @@ fn step_from_built(s: BuiltStep, i: usize) -> Result<Step, String> {
 /// A [`Job`] serialized as `openjd build` prints it, and as every host
 /// document writes it: the job's serde form, except that
 ///
+/// - it starts with `"documentVersion": 1`, the version of this format;
 /// - `parameters` and each environment's `variables` are sorted by name
 ///   (`create_job` fills `Job::parameters` from a `HashMap`, and
 ///   `Environment::variables` is one);
@@ -2476,6 +2559,7 @@ impl Serialize for JobDocument<'_> {
             job_environments,
         } = self.0;
         DocJob {
+            document_version: DOCUMENT_VERSION,
             name,
             description,
             extensions,
@@ -2492,10 +2576,12 @@ impl Serialize for JobDocument<'_> {
     }
 }
 
-/// Field names and attributes mirror [`Job`], with `parameters` sorted.
+/// Field names and attributes mirror [`Job`], with `parameters` sorted,
+/// after the format's `documentVersion`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DocJob<'a> {
+    document_version: u64,
     name: &'a String,
     description: &'a Option<String>,
     extensions: &'a Option<Vec<ModelExtension>>,

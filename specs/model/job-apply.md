@@ -33,8 +33,9 @@ these, so only a hand-built `Job` has one. The diff reports the copies as a sing
 
 1. `Action::Job`: one `Modify` when the root has its own field changes (name,
    description, extensions, step or job-environment order).
-2. `Action::Parameter`: one op per changed parameter, in name order. The diff orders
-   parameter nodes by name, so the order does not depend on how either job's map was
+2. `Action::Parameter`: one op per changed parameter: the old job's parameters in name
+   order, then the parameters only the new job has, in name order. The diff orders
+   parameter nodes this way, so the order does not depend on how either job's map was
    filled (`create_job` fills it from a `HashMap`), and a plan of rebuilt jobs has the
    same ops at the same indices, which `execute(plan, store, op)` relies on to resume.
 3. `Action::Environment(index, op)`: one op per changed **job** environment.

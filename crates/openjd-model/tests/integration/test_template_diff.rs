@@ -698,8 +698,9 @@ steps:
         assert_eq!(back, job);
         assert!(!openjd_model::job::diff::diff_jobs(&back, &job, &opts()).is_changed());
     }
-    let err = job_from_str(r#"{"name": "x", "steps": [], "bogus": 1}"#).unwrap_err();
-    assert_eq!(err.to_string(), "Validation error: not a built job: unknown field `bogus`, expected one of `name`, `description`, `extensions`, `parameters`, `steps`, `jobEnvironments` at line 1 column 34");
+    let err = job_from_str(r#"{"documentVersion": 1, "name": "x", "steps": [], "bogus": 1}"#)
+        .unwrap_err();
+    assert_eq!(err.to_string(), "Validation error: not a built job: unknown field `bogus`, expected one of `documentVersion`, `name`, `description`, `extensions`, `parameters`, `steps`, `jobEnvironments` at line 1 column 56");
 }
 
 #[test]
@@ -1658,6 +1659,7 @@ fn job_document_is_the_serde_form_with_the_host_encoding() {
     // The serde form, with the parameters and parameter spaces replaced by
     // their host documents, is the document.
     let mut want = serde_json::to_value(&job).unwrap();
+    want["documentVersion"] = serde_json::json!(1);
     for (k, p) in &job.parameters {
         want["parameters"][k] = serde_json::to_value(p.as_document()).unwrap();
     }
@@ -1846,7 +1848,7 @@ fn task_parameter_reorder_shows_in_whole_node_values_at_every_depth() {
 }
 
 const REORDER_TEXTS: [&str; 3] = [
-    "{name: J, parameters: {}, steps: [{name: S, parameterSpace: {X: 1-3, Y: [p, q]}, script: {actions: {onRun: {command: c}… | {name: J, parameters: {}, steps: [{name: S, parameterSpace: {Y: [p, q], X: 1-3}, script: {actions: {onRun: {command: c}…",
+    "{documentVersion: 1, name: J, parameters: {}, steps: [{name: S, parameterSpace: {X: 1-3, Y: [p, q]}, script: {actions: … | {documentVersion: 1, name: J, parameters: {}, steps: [{name: S, parameterSpace: {Y: [p, q], X: 1-3}, script: {actions: …",
     "{parameterSpace: {X: 1-3, Y: [p, q]}, script: {actions: {onRun: {command: c}}}} | {parameterSpace: {Y: [p, q], X: 1-3}, script: {actions: {onRun: {command: c}}}}",
     "{X: 1-3, Y: [p, q]} | {Y: [p, q], X: 1-3}",
 ];
@@ -2010,6 +2012,17 @@ fn built_job_path_and_list_path_parameters_read_back() {
             )
             .unwrap()
         );
+        // `==` holds between a Path and a String, so check the variants.
+        assert!(
+            matches!(back.parameters["Scene"].value, ExprValue::String(_)),
+            "{:?}",
+            back.parameters["Scene"].value
+        );
+        assert!(
+            matches!(back.parameters["LP"].value, ExprValue::ListString(..)),
+            "{:?}",
+            back.parameters["LP"].value
+        );
         assert_eq!(
             serde_json::to_string(&JobDocument(&back)).unwrap(),
             serde_json::to_string(&JobDocument(&job)).unwrap()
@@ -2145,8 +2158,11 @@ fn repeated_integer_values_are_not_a_run() {
 
 #[test]
 fn job_from_str_names_each_malformed_parameter() {
-    let job =
-        |param: &str| format!(r#"{{"name": "x", "steps": [], "parameters": {{"LI": {param}}}}}"#);
+    let job = |param: &str| {
+        format!(
+            r#"{{"documentVersion": 1, "name": "x", "steps": [], "parameters": {{"LI": {param}}}}}"#
+        )
+    };
     let cases = [
         (r#"3"#, ": expected an object"),
         (
@@ -2217,7 +2233,7 @@ fn job_from_str_names_each_malformed_parameter() {
 fn job_from_str_rejects_a_value_that_is_not_of_the_parameter_type() {
     let job = |ty: &str, value: &str| {
         format!(
-            r#"{{"name": "x", "steps": [], "parameters": {{"P": {{"name": "P", "type": "{ty}", "value": {value}}}}}}}"#
+            r#"{{"documentVersion": 1, "name": "x", "steps": [], "parameters": {{"P": {{"name": "P", "type": "{ty}", "value": {value}}}}}}}"#
         )
     };
     let cases = [
@@ -2280,7 +2296,7 @@ note: {MID_NOTE}"
 fn job_from_str_reads_each_parameter_type_from_the_host_encoding() {
     let job = |ty: &str, value: &str| {
         format!(
-            r#"{{"name": "x", "steps": [], "parameters": {{"P": {{"name": "P", "type": "{ty}", "value": {value}}}}}}}"#
+            r#"{{"documentVersion": 1, "name": "x", "steps": [], "parameters": {{"P": {{"name": "P", "type": "{ty}", "value": {value}}}}}}}"#
         )
     };
     let cases = [
@@ -2776,6 +2792,14 @@ fn job_from_str_names_each_malformed_task_parameter_definition() {
             json!({"name": "F", "type": "CHUNK[INT]", "range": "1-3", "chunks": {"defaultTaskCount": -1, "rangeConstraint": "CONTIGUOUS"}}),
             ".chunks.defaultTaskCount: expected a non-negative integer",
         ),
+        (
+            json!({"name": "F", "type": "CHUNK[INT]", "range": "1-3", "chunks": {"defaultTaskCount": 0, "rangeConstraint": "CONTIGUOUS"}}),
+            ".chunks.defaultTaskCount: must be at least 1",
+        ),
+        (
+            json!({"name": "F", "type": "INT", "range": "1-3", "chunks": {"defaultTaskCount": 0, "rangeConstraint": "CONTIGUOUS"}}),
+            ".chunks.defaultTaskCount: must be at least 1",
+        ),
         (json!("F"), ": expected an object"),
     ];
     for (v, message) in cases {
@@ -2810,6 +2834,26 @@ fn job_from_str_names_each_malformed_task_parameter_definition() {
         job_from_str(&job.to_string()).unwrap_err().to_string(),
         "Validation error: not a built job: steps[0].parameterSpace.taskParameterDefinitions: expected a list"
     );
+    // Forms `create_job` never writes: no definitions, and a combination
+    // naming a parameter the step does not define.
+    let mut job = built_job_value();
+    job["steps"][0]["parameterSpace"]["taskParameterDefinitions"] = json!([]);
+    assert_eq!(
+        job_from_str(&job.to_string()).unwrap_err().to_string(),
+        "Validation error: not a built job: steps[0].parameterSpace.taskParameterDefinitions: must not be empty"
+    );
+    for combination in ["G", "F * G", "(F, G)"] {
+        let mut job = built_job_value();
+        job["steps"][0]["parameterSpace"]["combination"] = json!(combination);
+        assert_eq!(
+            job_from_str(&job.to_string()).unwrap_err().to_string(),
+            "Validation error: not a built job: steps[0].parameterSpace.combination: 'G' is not a task parameter of the step",
+            "{combination}"
+        );
+    }
+    let mut job = built_job_value();
+    job["steps"][0]["parameterSpace"]["combination"] = json!("F");
+    assert!(job_from_str(&job.to_string()).is_ok());
 }
 
 // ─── audit round 6 ──────────────────────────────────────────────────
@@ -3005,7 +3049,7 @@ fn job_from_str_rejects_null_parameters() {
     let doc = serde_json::to_string(&v).unwrap();
     assert_eq!(
         job_from_str(&doc).unwrap_err().to_string(),
-        "Validation error: not a built job: invalid type: null, expected a map at line 1 column 301"
+        "Validation error: not a built job: invalid type: null, expected a map at line 1 column 321"
     );
 }
 
@@ -3030,8 +3074,8 @@ fn a_step_whose_space_does_not_iterate_has_an_unknown_task_count() {
     let old = text(&t).build().unwrap();
     let doc = serde_json::to_string(&JobDocument(&old)).unwrap();
     assert!(doc.contains("\"combination\":null"), "{doc}");
-    let new = job_from_str(&doc.replace("\"combination\":null", "\"combination\":\"F * Bogus\""))
-        .unwrap();
+    let mut new = old.clone();
+    new.steps[0].parameter_space.as_mut().unwrap().combination = Some("F * Bogus".into());
     let d = diff_built_jobs(old, new, &opts());
     let s = d.step("S").unwrap();
     assert_eq!(s.tasks_unknown.as_deref(), Some("cannot count tasks"));
@@ -3984,10 +4028,54 @@ steps:
     let (b, a) = (root.before.as_ref().unwrap(), root.after.as_ref().unwrap());
     assert_eq!(
         b.text,
-        "{name: Demo, parameters: {Frames: 1-100 (STRING), N: 4 (INT)}, steps: [{name: Render, parameterSpace: {Frame: 1-100}, s…"
+        "{documentVersion: 1, name: Demo, parameters: {Frames: 1-100 (STRING), N: 4 (INT)}, steps: [{name: Render, parameterSpac…"
     );
     assert!(a.text.contains("Frames: 1-200 (STRING)"), "{}", a.text);
     for t in [&b.text, &a.text] {
         assert!(!t.contains("resolvedSymTab"), "{t}");
     }
+}
+
+// ─── document version ───────────────────────────────────────────────
+
+#[test]
+fn the_job_document_writes_and_requires_its_version() {
+    let job = built_job_value();
+    assert_eq!(job["documentVersion"], serde_json::json!(1));
+    let text =
+        serde_json::to_string(&JobDocument(&job_from_str(&job.to_string()).unwrap())).unwrap();
+    assert!(
+        text.starts_with(r#"{"documentVersion":1,"name":"J","#),
+        "{text}"
+    );
+    let cases = [
+        (
+            serde_json::json!(null),
+            "documentVersion: null is not supported",
+        ),
+        (serde_json::json!(2), "documentVersion: 2 is not supported"),
+        (
+            serde_json::json!("1"),
+            r#"documentVersion: "1" is not supported"#,
+        ),
+    ];
+    for (version, message) in cases {
+        let mut v = built_job_value();
+        v["documentVersion"] = version;
+        assert_eq!(
+            job_from_str(&v.to_string()).unwrap_err().to_string(),
+            format!("Validation error: not a built job: {message}; the supported version is 1")
+        );
+    }
+    let mut v = built_job_value();
+    v.as_object_mut().unwrap().remove("documentVersion");
+    let want = "Validation error: not a built job: missing field 'documentVersion'; \
+                the supported version is 1";
+    assert_eq!(job_from_str(&v.to_string()).unwrap_err().to_string(), want);
+    let yaml = serde_saphyr::to_string(&v).unwrap();
+    assert_eq!(job_from_str(&yaml).unwrap_err().to_string(), want);
+    assert_eq!(
+        job_from_str("[]").unwrap_err().to_string(),
+        "Validation error: not a built job: expected an object"
+    );
 }

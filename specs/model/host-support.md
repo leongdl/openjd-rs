@@ -48,6 +48,14 @@ back as the STRING `create_job` stores.
 | task parameter set | `{"Frame": {"type": "INT", "value": "3"}}` (`task_parameter_set_document`) |
 | symbol table entry | `{"name": "Param.Frames", "type": "string", "value": "1-100"}` (`SerializedSymbolTable`, unchanged) |
 
+A symbol table keeps its own type names (`string`, `list[int]`), not the spec names above,
+because it is the `SerializedSymbolTable` form workers read.
+
+`JobDocument` starts with `"documentVersion": 1`, the version of this format. `job_from_str`
+reads only version 1: a document without the field is `missing field 'documentVersion';
+the supported version is 1`, and another value is `documentVersion: 2 is not supported;
+the supported version is 1`.
+
 `taskParameterDefinitions` is a list in definition order, which is task order. No part of a
 document depends on the order of an object's keys, so `serde_json::to_value` of a document
 and the document parsed back from its JSON text are the same value, and a host may parse
@@ -61,7 +69,14 @@ and its `value` must have that type
 (`parameters[P].value: Cannot convert 'x' to int: invalid digit found in string`). A
 definition must have exactly the keys its type takes
 (`steps[0].parameterSpace.taskParameterDefinitions[0].bogus: unknown field`), and two
-definitions of a step may not have the same name.
+definitions of a step may not have the same name. It also rejects forms `create_job`
+never writes, each with its location:
+
+| form | message |
+|---|---|
+| `chunks.defaultTaskCount: 0` | `steps[0].parameterSpace.taskParameterDefinitions[0].chunks.defaultTaskCount: must be at least 1` |
+| `taskParameterDefinitions: []` | `steps[0].parameterSpace.taskParameterDefinitions: must not be empty` |
+| a `combination` naming a parameter the step does not define | `steps[0].parameterSpace.combination: 'G' is not a task parameter of the step` |
 
 ## Template fragments
 
@@ -119,8 +134,12 @@ exception is a float, whose document keeps its literal, so `1.0` and `1.00` comp
 but digest differently. Any change `diff_jobs` reports changes the document, so a host can
 check "the stored job is the one I built" with one comparison. The converse does not hold:
 a document change the diff ignores, such as a task parameter definition reorder under an
-explicit `combination`, also changes the digest. The digest of a fixed job is pinned in a
-test, so a change of the document format shows up there.
+explicit `combination`, also changes the digest. A second exception: `==` jobs whose task
+parameter definitions are in a different order have different digests, correctly, because
+definition order is task order (`StepParameterSpace` compares its definitions as a map).
+The document includes its `documentVersion`, so digests are comparable only within one
+version. The digest of a fixed job is pinned in a test, so a change of the document format
+shows up there.
 
 The hash is `sha2`, a dependency of openjd-model for this function only.
 
@@ -136,8 +155,10 @@ joined to the working directory. The preprocessed values replace those set with 
 
 In `diff_templates`, two sides compare their values as typed input values; a preprocessed
 side and an input side never count as the same parameters. The origin split's middle job
-(the new template with the old parameters) preprocesses the old values against the new
-template, because they were resolved for the old one. `diff_job_template_with_parameter_sets`
+(the new template with the old parameters) is built the way `merge_parameters` builds,
+with nothing requested: a preprocessed old value the new template declares with the same
+type is used as stored, and the rest of the old values are preprocessed against the new
+template. Old input values are all preprocessed against the new template. `diff_job_template_with_parameter_sets`
 overlays its parameter sets on the side's values and preprocesses the result.
 
 ## Parameter merge
@@ -154,13 +175,21 @@ environments and directories are used, and its own parameter values are not.
 | not requested, retyped, or not stored | the new default, preprocessed; a missing required value is an error |
 | stored, no longer declared | left out |
 
-A kept value is not preprocessed again, because that can change it: a Windows PATH stored by
-a Windows host is relative on a POSIX host and would be joined to the working directory, so a
-no-op update would plan `ParameterValue` and `StepSymbols`. It is passed to preprocessing so
-that a required parameter is present, and the stored value replaces the result. `create_job`
-checks it against the new template's constraints when the job is built. A requested value the
-new template does not declare is preprocessing's error (`Job parameter values provided for
-parameters that are not defined in the template: Z`).
+A kept value is not preprocessed again, nor checked by preprocessing, because preprocessing
+can change it: a Windows PATH stored by a Windows host is relative on a POSIX host and would
+be joined to the working directory. A no-op update would then plan `ParameterValue` and
+`StepSymbols`, or fail a constraint the stored value meets (`allowedValues: ['C:\w\out']`,
+or a `maxLength` the joined form exceeds). Preprocessing treats a kept parameter as
+supplied, so a required one is not missing. `create_job` checks a kept value against the new
+template's constraints when the job is built, so a template that narrowed a constraint
+fails there (`Parameter 'Out': value length 11 exceeds maximum 3`); it checks only the job
+template's parameters, so a kept value of a parameter only an environment template declares
+is not checked. A requested value the new template does not declare is preprocessing's
+error (`Job parameter values provided for parameters that are not defined in the template:
+Z`).
+
+`merge_parameters` and the middle job of `diff_templates` share one helper that builds a
+side's values from kept values and values to preprocess.
 
 ## Tests
 
@@ -173,8 +202,11 @@ rebuilds and their documents read back), and different for each changed pair, a 
 Windows PATH value built unchanged with `preprocessed` and changed by a second preprocess,
 constraint checks on preprocessed values, two preprocessed sides giving a `template`
 origin, and each merge rule: a kept, a retyped, a removed and a new parameter, an
-undeclared request, a stored Windows PATH that plans nothing, and a requested PATH that is
-preprocessed. The host encoding is tested in `tests/integration/test_template_diff.rs`
+undeclared request, a stored Windows PATH that plans nothing, a stored PATH whose rewritten
+form would break `allowedValues` or `maxLength`, a kept value that a narrowed template
+rejects when the job is built, a requested PATH and a new default that are preprocessed,
+and the middle job keeping a stored Windows PATH (origins as for a POSIX path), and a range
+flagged contiguous writing its canonical text with an unchanged digest. The host encoding is tested in `tests/integration/test_template_diff.rs`
 (the document against the serde form, each parameter type read back, each malformed
-parameter and definition) and in `src/test_job_apply.rs` (a host enumerating a space from
+parameter and definition, the forms `create_job` never writes, the document version) and in `src/test_job_apply.rs` (a host enumerating a space from
 the document gets `create_job`'s task order).
