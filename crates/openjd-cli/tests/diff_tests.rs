@@ -1529,3 +1529,65 @@ fn key_value_null_is_the_text_null() {
     );
     assert_ok(&o, &a_changes("dflt", "null"));
 }
+
+/// Write `t2.yaml`, whose STRING `A` has the default `dflt` and `B` the
+/// default `bd`.
+fn two_param_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("t2.yaml"),
+        "specificationVersion: jobtemplate-2023-09\nname: J\nparameterDefinitions:\n  - {name: A, type: STRING, default: dflt}\n  - {name: B, type: STRING, default: bd}\nsteps:\n  - name: S\n    script: {actions: {onRun: {command: c, args: [\"{{Param.A}}\", \"{{Param.B}}\"]}}}\n",
+    )
+    .unwrap();
+    dir
+}
+
+/// The diff when only `A` changes and `B` is `given` on both sides.
+fn a_changes_b_given(old: &str, new: &str) -> String {
+    format!(
+        "t2.yaml: old parameters -> new parameters\n~ parameter A: {old} -> {new}  [parameters]\n~ step S\n    ~ resolvedSymTab: Param.A={old}, Param.B=given -> Param.A={new}, Param.B=given  [parameters]\n    tasks: 1 unchanged\n\n1 step changed. Tasks: 1 kept, 0 added, 0 removed.\n"
+    )
+}
+
+/// A null in `--new-parameter` removes only `A`, so the new side keeps the
+/// `B` that `-p` gave.
+#[test]
+fn new_side_null_leaves_other_parameters() {
+    let dir = two_param_dir();
+    let o = openjd_in(
+        dir.path(),
+        &[
+            "diff",
+            "t2.yaml",
+            "-p",
+            "A=x",
+            "-p",
+            "B=given",
+            "--new-parameter",
+            r#"{"A": null}"#,
+        ],
+        None,
+    );
+    assert_ok(&o, &a_changes_b_given("x", "dflt"));
+}
+
+/// A null in `--old-parameter` overrides `-p` on the old side only.
+#[test]
+fn old_side_null_overrides_p() {
+    let dir = two_param_dir();
+    let o = openjd_in(
+        dir.path(),
+        &[
+            "diff",
+            "t2.yaml",
+            "-p",
+            "A=x",
+            "-p",
+            "B=given",
+            "--old-parameter",
+            r#"{"A": null}"#,
+        ],
+        None,
+    );
+    assert_ok(&o, &a_changes_b_given("dflt", "x"));
+}

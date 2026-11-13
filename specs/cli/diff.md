@@ -76,6 +76,9 @@ This list is not exhaustive. Each entry was run against `openjd diff` with a tem
 whose parameter `A` is a STRING.
 
 - `file://~/p.json` does not expand `~`: `Provided parameter file '~/p.json' does not exist.`
+- A top-level null means not given, so the template default applies. `deadline bundle
+  submit -p '{"A": null}'` instead fails with `Parameter A has no value.` openjd-rs follows
+  deadline's job bundle parameter handling here (see [parameter-parsing.md](parameter-parsing.md)).
 - Every value other than null is passed as text. JSON `{"A": true}` gives `true`.
 - For an INT parameter `N`, a YAML file with `N: 007` fails with `Parameter 'N': Value
   '7.0' is not a valid integer or integer string.`, where `deadline` gives 7.

@@ -13,7 +13,8 @@ use std::path::PathBuf;
 ///
 /// Supports `Key=Value`, `file://path` (JSON/YAML), and inline JSON `{...}`.
 /// Later arguments win. A JSON or YAML null removes the parameter, so the
-/// template default applies, as in `deadline`.
+/// template default applies, as deadline's job bundle parameter handling does.
+/// deadline's `-p` rejects a top-level null instead.
 pub fn parse_cli_parameters(
     args: &[String],
 ) -> Result<HashMap<String, openjd_expr::ExprValue>, Box<dyn std::error::Error>> {
@@ -68,8 +69,7 @@ pub fn parse_cli_parameters(
 }
 
 /// Set a parameter from a JSON or YAML value. A null means the value is not
-/// given, as in `deadline`, so it removes any earlier value and the template
-/// default applies.
+/// given, so it removes any earlier value and the template default applies.
 fn set_json_param(
     params: &mut HashMap<String, openjd_expr::ExprValue>,
     key: &str,

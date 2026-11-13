@@ -730,6 +730,51 @@ steps:
         assert_eq!(code, 0, "stderr: {stderr}");
         assert!(stdout.contains("DoTask null"), "stdout: {stdout}");
     }
+
+    /// `A` has the default `dflt` and `B` the default `bd`.
+    const TWO: &str = r#"specificationVersion: "jobtemplate-2023-09"
+name: T
+parameterDefinitions:
+  - name: A
+    type: STRING
+    default: dflt
+  - name: B
+    type: STRING
+    default: bd
+steps:
+  - name: S
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('DoTask {{Param.A}} {{Param.B}}')"]
+"#;
+
+    const TWO_SUMMARY: &str = "\n--- Summary for 'T' ---\n\nParameters:\n  - A (STRING): dflt\n  - B (STRING): given\n\nTotal steps: 1\nTotal tasks: 1\nTotal environments: 0\n\n--- Steps in 'T' ---\n\n1. 'S' (1 total Tasks)\n\n\n";
+
+    /// A null removes only its own parameter, so `B` keeps its given value.
+    #[test]
+    fn summary_null_leaves_other_parameters() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("t2.yaml"), TWO).unwrap();
+        let t2 = path(dir.path(), "t2.yaml");
+        let (code, stdout, stderr) =
+            run_cli(&["summary", &t2, "-p", "B=given", "-p", r#"{"A": null}"#]);
+        assert_eq!((code, stderr.as_str()), (0, ""));
+        assert_eq!(stdout, TWO_SUMMARY);
+    }
+
+    #[test]
+    fn summary_null_in_a_file_leaves_other_parameters() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("t2.yaml"), TWO).unwrap();
+        std::fs::write(dir.path().join("null.yaml"), "A: null\n").unwrap();
+        let t2 = path(dir.path(), "t2.yaml");
+        let file = format!("file://{}", dir.path().join("null.yaml").display());
+        let (code, stdout, stderr) = run_cli(&["summary", &t2, "-p", "B=given", "-p", &file]);
+        assert_eq!((code, stderr.as_str()), (0, ""));
+        assert_eq!(stdout, TWO_SUMMARY);
+    }
 }
 
 // ============================================================

@@ -16,15 +16,23 @@ with `--job-param` as a hidden alias. `diff` also parses `--old-parameter` and
 order, so a later value wins. It accepts three input formats and returns a
 `HashMap<String, ExprValue>`.
 
-A JSON or YAML null means the value is not given, as in `deadline` (deadline-cloud
-`job_bundle/parameters.py`), where a null value leaves the parameter out so the template
-default applies. That covers `{"A": null}` inline, `null` in a JSON file, and `A: null`,
+A JSON or YAML null means the value is not given. This matches deadline-cloud's job bundle
+parameter handling (`apply_job_parameters` in `job_bundle/parameters.py`), which skips a
+None value so the template default applies. It does not match `deadline bundle submit -p`,
+which rejects a top-level null with `Parameter A has no value.` That covers `{"A": null}` inline, `null` in a JSON file, and `A: null`,
 `A: ~` or `A:` in a YAML file. The null removes the parameter from the map, and it still
 takes part in "later wins": `-p A=1 -p '{"A": null}'` leaves `A` unset, so the template
 default applies. With no default, building the job fails with `Values missing for required
-job parameters: A`. In `openjd diff`, a null in
+job parameters: A`. A null for a parameter the template does not define is ignored, with no
+error. A non-null value for one fails with `Job parameter values provided for parameters
+that are not defined in the template: Z`. In `openjd diff`, a null in
 `--new-parameter` or `--old-parameter` overrides a `-p` value for that side. `A=null` is a
 Key=Value string, so it stays the text `null`, as in `deadline`.
+
+openjd-rs differs from the Python `openjd` CLI on purpose: that CLI keeps the None
+(openjd-cli `_job_from_template.py`) and openjd-model turns it into the text `None`
+(`_create_job.py`, `str(value)`), so `{"A": null}` runs with `A=None` even when `A` has
+no default.
 
 ### Format 1: Key=Value Pairs
 
