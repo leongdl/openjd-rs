@@ -1388,3 +1388,144 @@ fn verbose_json_includes_both_jobs() {
         )
     );
 }
+
+// ─── a null parameter value ─────────────────────────────────────────
+
+/// Write `t.yaml`, whose STRING `A` has the default `dflt`, `nd.yaml`, whose
+/// `A` has no default, and one parameter file per null spelling.
+fn null_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let t = |default: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nname: J\nparameterDefinitions:\n  - {{name: A, type: STRING{default}}}\nsteps:\n  - name: S\n    script: {{actions: {{onRun: {{command: c, args: [\"{{{{Param.A}}}}\"]}}}}}}\n"
+        )
+    };
+    std::fs::write(dir.path().join("t.yaml"), t(", default: dflt")).unwrap();
+    std::fs::write(dir.path().join("nd.yaml"), t("")).unwrap();
+    std::fs::write(dir.path().join("n.json"), "{\"A\": null}\n").unwrap();
+    std::fs::write(dir.path().join("null.yaml"), "A: null\n").unwrap();
+    std::fs::write(dir.path().join("tilde.yaml"), "A: ~\n").unwrap();
+    std::fs::write(dir.path().join("empty.yaml"), "A:\n").unwrap();
+    dir
+}
+
+/// Every parameter form that gives `A` a null.
+const NULLS: &[&str] = &[
+    r#"{"A": null}"#,
+    "file://n.json",
+    "file://null.yaml",
+    "file://tilde.yaml",
+    "file://empty.yaml",
+];
+
+fn a_changes(old: &str, new: &str) -> String {
+    format!(
+        "t.yaml: old parameters -> new parameters\n~ parameter A: {old} -> {new}  [parameters]\n~ step S\n    ~ resolvedSymTab: Param.A={old} -> Param.A={new}  [parameters]\n    tasks: 1 unchanged\n\n1 step changed. Tasks: 1 kept, 0 added, 0 removed.\n"
+    )
+}
+
+/// A null means not given, so the template default applies.
+#[test]
+fn null_parameter_uses_the_default() {
+    let dir = null_dir();
+    for null in NULLS {
+        let o = openjd_in(
+            dir.path(),
+            &[
+                "diff",
+                "t.yaml",
+                "--old-parameter",
+                "A=x",
+                "--new-parameter",
+                null,
+            ],
+            None,
+        );
+        assert_eq!(stderr(&o), DIFF_WARNING, "{null}");
+        assert_eq!(stdout(&o), a_changes("x", "dflt"), "{null}");
+        assert_eq!(o.status.code(), Some(0), "{null}");
+    }
+}
+
+/// A null in the side flag overrides the `-p` value for that side only.
+#[test]
+fn side_flag_null_overrides_p() {
+    let dir = null_dir();
+    for null in NULLS {
+        let o = openjd_in(
+            dir.path(),
+            &["diff", "t.yaml", "-p", "A=x", "--new-parameter", null],
+            None,
+        );
+        assert_eq!(stderr(&o), DIFF_WARNING, "{null}");
+        assert_eq!(stdout(&o), a_changes("x", "dflt"), "{null}");
+        assert_eq!(o.status.code(), Some(0), "{null}");
+    }
+}
+
+/// A null after a value in `-p` wins, as any later value does.
+#[test]
+fn null_after_a_value_uses_the_default() {
+    let dir = null_dir();
+    let o = openjd_in(
+        dir.path(),
+        &[
+            "diff",
+            "t.yaml",
+            "-p",
+            "A=1",
+            "-p",
+            r#"{"A": null}"#,
+            "--new-parameter",
+            "A=2",
+        ],
+        None,
+    );
+    assert_ok(&o, &a_changes("dflt", "2"));
+}
+
+#[test]
+fn null_parameter_with_no_default_is_a_missing_value() {
+    let dir = null_dir();
+    for null in NULLS {
+        let o = openjd_in(
+            dir.path(),
+            &[
+                "diff",
+                "nd.yaml",
+                "--old-parameter",
+                "A=x",
+                "--new-parameter",
+                null,
+            ],
+            None,
+        );
+        assert_eq!(
+            stderr(&o),
+            format!("{DIFF_WARNING}ERROR: Validation error: new parameters: Values missing for required job parameters: A\n"),
+            "{null}"
+        );
+        assert_eq!(stdout(&o), "", "{null}");
+        assert_eq!(o.status.code(), Some(1), "{null}");
+    }
+}
+
+/// `A=null` is a Key=Value string, so it stays the text `null`, unlike a
+/// JSON null.
+#[test]
+fn key_value_null_is_the_text_null() {
+    let dir = null_dir();
+    let o = openjd_in(
+        dir.path(),
+        &[
+            "diff",
+            "t.yaml",
+            "--old-parameter",
+            r#"{"A": null}"#,
+            "--new-parameter",
+            "A=null",
+        ],
+        None,
+    );
+    assert_ok(&o, &a_changes("dflt", "null"));
+}

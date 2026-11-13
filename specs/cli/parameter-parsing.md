@@ -16,6 +16,16 @@ with `--job-param` as a hidden alias. `diff` also parses `--old-parameter` and
 order, so a later value wins. It accepts three input formats and returns a
 `HashMap<String, ExprValue>`.
 
+A JSON or YAML null means the value is not given, as in `deadline` (deadline-cloud
+`job_bundle/parameters.py`), where a null value leaves the parameter out so the template
+default applies. That covers `{"A": null}` inline, `null` in a JSON file, and `A: null`,
+`A: ~` or `A:` in a YAML file. The null removes the parameter from the map, and it still
+takes part in "later wins": `-p A=1 -p '{"A": null}'` leaves `A` unset, so the template
+default applies. With no default, building the job fails with `Values missing for required
+job parameters: A`. In `openjd diff`, a null in
+`--new-parameter` or `--old-parameter` overrides a `-p` value for that side. `A=null` is a
+Key=Value string, so it stays the text `null`, as in `deadline`.
+
 ### Format 1: Key=Value Pairs
 
 ```
@@ -40,6 +50,7 @@ must contain a dictionary mapping parameter names to values. Each value is conve
 `ExprValue` via `json_val_to_expr()`:
 
 - JSON strings → `ExprValue::String`
+- null → not given (the parameter is removed, see above)
 - All other JSON types → `ExprValue::String(value.to_string())` (stringified)
 
 ### Format 3: Inline JSON
@@ -75,7 +86,7 @@ the model crate's `CallerLimits::max_template_size`.
 
 ### Value Coercion
 
-`json_val_to_expr()` converts all JSON values to `ExprValue::String`:
+`json_val_to_expr()` converts every non-null JSON value to `ExprValue::String`:
 
 ```rust
 fn json_val_to_expr(v: &serde_json::Value) -> ExprValue {
@@ -91,12 +102,14 @@ model crate's parameter preprocessing handles parsing this string into the corre
 based on the parameter definition. This matches the Python CLI's behavior where all
 parameter values pass through as strings initially.
 
-### Known defects (shared by run, summary and diff)
+### Known type coercion bugs (shared by run, summary and diff)
 
 Known bugs in the shared parser. Each was run with `openjd diff t.yaml
 --old-parameter A=x --new-parameter <input>`, where `A` is a STRING.
 
-- JSON `null` becomes the text `null`: `{"A": null}` gives `~ parameter A: x -> null`.
+- A JSON or YAML `true` or `false` gives the text `true` or `false`: `{"A": true}`, or
+  `A: true` in a YAML file, gives `~ parameter A: x -> true`. The Python openjd CLI gives
+  `True` and `False` (`openjd-model _create_job.py str(value)`).
 - The parse location is dropped. A malformed file (`{"A": ` in `bad.json`, or
   `A: [unclosed` in `bad.yaml`) reports `Job parameter file 'file://bad.json' should
   contain a dictionary.`. Malformed inline JSON (`{"A": }`) reports the generic
@@ -110,7 +123,7 @@ Known bugs in the shared parser. Each was run with `openjd diff t.yaml
 - An integer too large for 64 bits loses digits: `{"A": 123456789012345678901234567890}`
   gives `1.2345678901234568e+29`, from inline JSON, a JSON file or a YAML file.
 - A YAML file reads `007` and `010` as floats: `A: 007` gives `7.0`, and `A: 010` gives
-  `10.0`.
+  `10.0`. Python openjd and `deadline` read them as 7 and 8 (YAML 1.1).
 - `--new-parameter =v` names no parameter in its error. It reports `Validation error: new
   parameters: Job parameter values provided for parameters that are not defined in the
   template: ` with an empty name, then `Values missing for required job parameters: A`.

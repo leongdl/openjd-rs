@@ -76,9 +76,7 @@ This list is not exhaustive. Each entry was run against `openjd diff` with a tem
 whose parameter `A` is a STRING.
 
 - `file://~/p.json` does not expand `~`: `Provided parameter file '~/p.json' does not exist.`
-- JSON `null` becomes the text `null`: `{"A": null}` gives `~ parameter A: x -> null`, the
-  same as `A=null`.
-- Every value is passed as text. JSON `{"A": true}` gives `true`.
+- Every value other than null is passed as text. JSON `{"A": true}` gives `true`.
 - For an INT parameter `N`, a YAML file with `N: 007` fails with `Parameter 'N': Value
   '7.0' is not a valid integer or integer string.`, where `deadline` gives 7.
 - A malformed parameter file reports `Job parameter file 'file://bad.yaml' should contain
