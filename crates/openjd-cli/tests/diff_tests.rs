@@ -344,6 +344,8 @@ fn missing_file_names_the_path() {
         stderr(&o),
         format!("{DIFF_WARNING}ERROR: 'nope.yaml' does not exist.\n")
     );
+    assert_eq!(stdout(&o), "");
+    assert_eq!(o.status.code(), Some(1));
 }
 
 #[test]
@@ -1366,6 +1368,7 @@ fn verbose_json_includes_both_jobs() {
         None,
     );
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(stderr(&o), DIFF_WARNING);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(
         (

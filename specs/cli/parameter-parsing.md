@@ -57,6 +57,9 @@ Error messages match the Python CLI's format for consistency:
 - Bad format: `"Job parameter string ('<arg>') not formatted correctly. It must be key=value pairs, inline JSON, or a path to a JSON or YAML document prefixed with 'file://'."`
 - Non-dict file: `"Job parameter file '<arg>' should contain a dictionary."`
 - Non-dict JSON: `"Job parameter ('<arg>') must contain a dictionary mapping job parameters to their value."`
+  This is unreachable through the CLI today. Inline JSON is only tried when the argument
+  starts with `{` and ends with `}`, so any text that parses is an object; anything else
+  gets the bad-format message.
 - Oversized file: `"File '<path>' exceeds maximum size of <N> bytes."`
 
 ### File Size Limit

@@ -33,8 +33,8 @@ and M=crates/openjd-model/examples/template_diff:
   openjd diff $E/let_script_v1.yaml $E/let_script_v2.yaml
   openjd diff $E/extensions_v1.yaml $E/extensions_v2.yaml --plan
   openjd diff $M/render_v1.yaml $M/render_v2.yaml -p Scene=//srv/s --stat
-  openjd diff render.yaml -p file://params.json --new-parameter '{\"Frames\": \"1-200\"}'
-  openjd diff old.yaml - --output json --exit-code < new.yaml
+  openjd diff $E/frames.yaml -p file://$E/frames_params.json --new-parameter '{\"Frames\": \"1-200\"}'
+  openjd diff $E/let_script_v1.yaml - --output json --exit-code < $E/let_script_v2.yaml
 
 Every field the diff reports, with its output: specs/cli/diff-examples.md";
 

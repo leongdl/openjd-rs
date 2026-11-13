@@ -404,16 +404,18 @@ fn shown_as(id: &str, human: &str, pick: &str, doc: &serde_json::Value) -> Strin
     format!("{mark} {full}: {tail}")
 }
 
-/// Every file in `examples/diff/` except the README is read by a case, so
-/// a file nothing uses is noticed.
+/// Every file in `examples/diff/` except the README is read by a case or a
+/// help example, so a file nothing uses is noticed.
 fn assert_every_example_is_used() {
     let dir = root().join("crates/openjd-cli/examples/diff");
     let mut used = BTreeSet::new();
-    for command in CASES.iter().map(|c| c.command) {
-        for a in args(command) {
-            if let Some(name) = a.strip_prefix("crates/openjd-cli/examples/diff/") {
-                used.insert(name.to_string());
-            }
+    let help = help_examples()
+        .into_iter()
+        .flat_map(|h| h.args.into_iter().chain(h.stdin));
+    for a in CASES.iter().flat_map(|c| args(c.command)).chain(help) {
+        let a = a.strip_prefix("file://").unwrap_or(&a);
+        if let Some(name) = a.strip_prefix("crates/openjd-cli/examples/diff/") {
+            used.insert(name.to_string());
         }
     }
     let unused: Vec<String> = std::fs::read_dir(&dir)
@@ -537,14 +539,82 @@ and M=crates/openjd-model/examples/template_diff:
   openjd diff $E/let_script_v1.yaml $E/let_script_v2.yaml
   openjd diff $E/extensions_v1.yaml $E/extensions_v2.yaml --plan
   openjd diff $M/render_v1.yaml $M/render_v2.yaml -p Scene=//srv/s --stat
-  openjd diff render.yaml -p file://params.json --new-parameter '{\"Frames\": \"1-200\"}'
-  openjd diff old.yaml - --output json --exit-code < new.yaml
+  openjd diff $E/frames.yaml -p file://$E/frames_params.json --new-parameter '{\"Frames\": \"1-200\"}'
+  openjd diff $E/let_script_v1.yaml - --output json --exit-code < $E/let_script_v2.yaml
 
 Every field the diff reports, with its output: specs/cli/diff-examples.md
 ";
 
+/// One help example: its arguments after `openjd`, and the file `<` reads.
+struct HelpExample {
+    args: Vec<String>,
+    stdin: Option<String>,
+}
+
+/// The `openjd` lines of [`HELP_EXAMPLES`], read as a POSIX shell would:
+/// `$E/` and `$M/` expanded, words split on spaces outside single quotes,
+/// and `< file` taken as stdin.
+fn help_examples() -> Vec<HelpExample> {
+    HELP_EXAMPLES
+        .lines()
+        .filter_map(|l| l.strip_prefix("  openjd "))
+        .map(|line| {
+            let line = line
+                .replace("$E/", "crates/openjd-cli/examples/diff/")
+                .replace("$M/", "crates/openjd-model/examples/template_diff/");
+            let mut words = Vec::new();
+            let (mut word, mut quoted) = (String::new(), false);
+            for ch in line.chars() {
+                match ch {
+                    '\'' => quoted = !quoted,
+                    ' ' if !quoted => words.push(std::mem::take(&mut word)),
+                    _ => word.push(ch),
+                }
+            }
+            assert!(!quoted, "unclosed quote in help example: {line}");
+            words.push(word);
+            let stdin = match words.iter().position(|w| w == "<") {
+                Some(i) => {
+                    assert_eq!(i + 2, words.len(), "`<` must end the line: {line}");
+                    let file = words.pop();
+                    words.pop();
+                    file
+                }
+                None => None,
+            };
+            HelpExample { args: words, stdin }
+        })
+        .collect()
+}
+
+/// Run a help example from the repository root, checking that the only
+/// stderr is the unstable warning and that it exits 0, or 4 (differences)
+/// under `--exit-code`.
+fn run_help_example(example: &HelpExample) {
+    let stdin: std::process::Stdio = match &example.stdin {
+        Some(file) => std::fs::File::open(root().join(file))
+            .unwrap_or_else(|e| panic!("{file}: {e}"))
+            .into(),
+        None => std::process::Stdio::null(),
+    };
+    let o = Command::new(env!("CARGO_BIN_EXE_openjd"))
+        .args(&example.args)
+        .current_dir(root())
+        .stdin(stdin)
+        .output()
+        .unwrap();
+    let shown = format!("openjd {}", example.args.join(" "));
+    assert_eq!(String::from_utf8(o.stderr).unwrap(), WARNING, "{shown}");
+    let code = if example.args.iter().any(|a| a == "--exit-code") {
+        4
+    } else {
+        0
+    };
+    assert_eq!(o.status.code(), Some(code), "{shown}");
+}
+
 /// `--help` ends with the examples, the `about` says the command is
-/// unstable, and every example on the shipped files (`$E/`, `$M/`) runs.
+/// unstable, and every example runs on the shipped files.
 #[test]
 fn help_examples_use_the_shipped_files() {
     let help = |cmd: &str| {
@@ -563,17 +633,9 @@ fn help_examples_use_the_shipped_files() {
         "{diff}"
     );
     assert!(diff.ends_with(&format!("\n\n{HELP_EXAMPLES}")), "{diff}");
-    let mut ran = 0;
-    for line in HELP_EXAMPLES
-        .lines()
-        .filter_map(|l| l.strip_prefix("  openjd "))
-    {
-        if !line.contains("$E/") && !line.contains("$M/") {
-            continue;
-        }
-        let command = line.replace("$E/", "@").replace("$M/", "%");
-        run(&args(&command), WARNING);
-        ran += 1;
+    let examples = help_examples();
+    for example in &examples {
+        run_help_example(example);
     }
-    assert_eq!(ran, 5);
+    assert_eq!(examples.len(), 7);
 }

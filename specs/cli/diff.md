@@ -60,7 +60,27 @@ Each flag is repeatable, and a later value wins. A side's parameters are its `-p
 followed by its `--old-parameter` or `--new-parameter` values, so the side flag wins over
 `-p` wherever it appears on the command line. The old names `--job-param`, `--old-param`
 and `--new-param` are accepted as hidden aliases, so existing scripts keep working; `--help`
-lists only the new names. Each flag's help names the three forms with one example each.
+lists only the new names. The `-p` help names the three forms with one example each. The
+`--old-parameter` and `--new-parameter` help says `in the same forms as -p` and gives one
+`Key=Value` example.
+
+#### Differences from `deadline bundle submit -p`
+
+`diff`, `run` and `summary` share one parser, so these hold for all three. Each row was
+checked against `openjd diff` with a template whose parameter `A` is a STRING.
+
+| input | `openjd` behaviour |
+|---|---|
+| `file://~/p.json` | `~` is not expanded: `Provided parameter file '~/p.json' does not exist.` |
+| `{"A": null}` | `A` is the string `null`, the same as `A=null`. Known limitation. |
+| `A=v ` or ` A=v` | The whole argument is trimmed first, so the value is `v` and the name is `A`. |
+| `A b=v`, `=v` | Names are not checked when parsed. They fail later: `Job parameter values provided for parameters that are not defined in the template: A b`. |
+| `{"A": true}`, `{"A": 1.5}`, `{"A": {"k": [1, 2]}}` | A non-string JSON value becomes its JSON text: `true`, `1.5`, `{"k":[1,2]}`. |
+| a YAML file with `A: yes` | YAML is read as YAML 1.2, so `yes` stays the string `yes`. |
+| a YAML file with `A: 1.0e3` | The float becomes its JSON text, `1000.0`. |
+| a malformed file, `A: [unclosed` | `Job parameter file 'file://bad.yaml' should contain a dictionary.`, with no parse location. Known limitation. |
+
+The two known limitations are shared with `run` and `summary` and are not fixed here.
 
 Which library call runs:
 
