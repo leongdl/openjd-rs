@@ -69,7 +69,9 @@ name. An `INT` definition with `chunks` (which `create_job` never builds) writes
 
 ### Reading a built job
 
-`job_from_str` reads exactly this form, and only what `create_job` writes. Values are read
+`job_from_str` reads the form a built job writes. Two forms it does not write also read:
+an omitted optional key reads as `null`, and an integer amount (`min: 7`) reads as the float
+`7.0`. Every form listed below is rejected. Values are read
 strictly: a parameter value, a definition's `range` or `list` item, and a `resolvedSymTab`
 value must be the exact text a built job writes for the value it parses as, so `"TRUE"` is
 not the BOOL `true` and `" 1-4 "` is not the range `1-4`
@@ -104,6 +106,7 @@ final period. The reader makes these checks, and no others:
 | an empty list or map a template requires to be non-empty: `steps`, `jobEnvironments`, a step's `dependencies` and `stepEnvironments`, `anyOf`, `allOf`, `args`, `embeddedFiles` (step or environment), an environment's `variables` | `steps: must not be empty`, `steps[0].hostRequirements.attributes[0].anyOf: must not be empty`, … |
 | a literal `timeout` or `notifyPeriodInSeconds` that is not a positive integer (`"seven"`, `"0"`); a format string is resolved on the worker and not checked | `steps[0].script.actions.onRun.timeout: must be a positive integer` |
 | a number or bool where the document writes a string (`command: 7`, which the job types would read as `"7"`; YAML `letBindings: [7]`) | `steps[0].script.actions.onRun.command: expected a string`; `steps[0].script.letBindings[0]: expected a string` |
+| a string where the document writes a bool or a number, which YAML would read as one (`runnable: "TRUE"`; an amount `min: "01"`, `"0"`, `"+1"`, `"1e3"` or `"1.50"`); JSON rejects these when it deserializes | `steps[0].script.embeddedFiles[0].runnable: expected a boolean`; `steps[0].hostRequirements.amounts[0].min: expected a number` |
 | a `resolvedSymTab` that is not a list of `{name, type, value}` with unique names and a value of its type | `steps[0].resolvedSymTab[0]: missing field 'value'`, … |
 
 Not checked, because each needs symbol analysis of the scripts: a step with

@@ -973,7 +973,7 @@ own task ids. A `TaskOp` is a step's `TaskChange` with the new parameter space i
 against, so none of its methods takes an argument: `added_tasks` gives the tasks the change
 adds (for `All` and `Replace`, the whole new space in `create_job`'s order, one task per
 `CHUNK[INT]` value, so a host never enumerates a space), and the task change document
-lists those and, for `Boxes`, the removed sets (see
+holds the step's new space and lists those and, for `Boxes`, the removed sets (see
 [job-apply.md](job-apply.md#task-identity)). `OpTarget` is the owned form a `Refusal` and `ApplyError::Vetoed` carry. The
 `as_document` views write each object in its `JobDocument` form, in the host encoding of
 [host-support.md](host-support.md#host-encoding), and borrow the plan; `to_value` turns one

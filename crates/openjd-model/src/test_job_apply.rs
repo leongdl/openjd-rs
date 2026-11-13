@@ -1281,11 +1281,7 @@ impl<S: JobApplier<Error = String>> JobApplier for DynStore<S> {
     }
     fn tasks(&mut self, step: StepRef<'_>, op: &TaskOp<'_>) -> Result<(), BoxError> {
         self.record(
-            serde_json::json!({
-                "call": "tasks", "step": step,
-                "space": op.space.map(crate::job::apply::ToDocument::as_document),
-                "change": op.to_value()?,
-            }),
+            serde_json::json!({"call": "tasks", "step": step, "op": op.to_value()?}),
             true,
         )?;
         Ok(self.inner.tasks(step, op)?)
@@ -1360,7 +1356,9 @@ fn the_dyn_adaptor_logs_plain_data() {
         .map(ToString::to_string)
         .collect();
     let space = r#"{"combination":null,"taskParameterDefinitions":[{"name":"Frame","range":"1-4","type":"INT"}]}"#;
-    let change = r#"{"appended":[{"Frame":{"type":"INT","value":"3"}},{"Frame":{"type":"INT","value":"4"}}],"appendedCount":2,"change":"boxes","keptCount":2,"oldCount":2,"removed":[],"removedCount":0}"#;
+    let change = format!(
+        r#"{{"appended":[{{"Frame":{{"type":"INT","value":"3"}}}},{{"Frame":{{"type":"INT","value":"4"}}}}],"appendedCount":2,"change":"boxes","keptCount":2,"oldCount":2,"removed":[],"removedCount":0,"space":{space}}}"#
+    );
     let param = r#"{"change":"modify","new":{"name":"Frames","type":"STRING","value":"1-4"},"old":{"name":"Frames","type":"STRING","value":"1-2"}}"#;
     let step = r#"{"index":0,"name":"Render"}"#;
     assert_eq!(
@@ -1370,11 +1368,11 @@ fn the_dyn_adaptor_logs_plain_data() {
                 r#"{{"call":"check","op":{{"action":"parameter","kinds":["ParameterValue"],"op":{param}}}}}"#
             ),
             format!(
-                r#"{{"call":"check","op":{{"action":"tasks","kinds":["TaskAppend"],"space":{space},"step":{step},"tasks":{change}}}}}"#
+                r#"{{"call":"check","op":{{"action":"tasks","kinds":["TaskAppend"],"step":{step},"tasks":{change}}}}}"#
             ),
             r#"{"call":"begin"}"#.to_string(),
             format!(r#"{{"call":"parameter","op":{param}}}"#),
-            format!(r#"{{"call":"tasks","change":{change},"space":{space},"step":{step}}}"#),
+            format!(r#"{{"call":"tasks","op":{change},"step":{step}}}"#),
             r#"{"call":"commit"}"#.to_string(),
         ]
     );
@@ -1588,7 +1586,8 @@ fn ab_task(a: i64, b: &str) -> serde_json::Value {
     serde_json::json!({"A": {"type": "INT", "value": a.to_string()}, "B": {"type": "STRING", "value": b}})
 }
 
-/// The `Tasks` op of a plan, as its document.
+/// The `Tasks` op of a plan, as its document, with the task change's
+/// `space` checked against the new step's and then removed.
 fn tasks_document(a: &Job, b: &Job) -> serde_json::Value {
     let p = plan(a, b).unwrap();
     let op = p
@@ -1600,6 +1599,21 @@ fn tasks_document(a: &Job, b: &Job) -> serde_json::Value {
     let text = serde_json::to_string(&op.as_document()).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v, parsed, "to_value is the serialized document");
+    // The task change carries the step's new space, as `ToDocument` writes it.
+    let Action::Tasks(at, task_op) = &op.action else {
+        unreachable!("found by its action");
+    };
+    let space = b.steps[at.index]
+        .parameter_space
+        .as_ref()
+        .map(crate::job::apply::ToDocument::as_document);
+    let want = serde_json::to_value(space).unwrap();
+    assert_eq!(task_op.to_value().unwrap()["space"], want);
+    let mut v = v;
+    assert_eq!(
+        v["tasks"].as_object_mut().unwrap().remove("space"),
+        Some(want)
+    );
     v
 }
 
@@ -1638,6 +1652,25 @@ fn all_and_replace_documents_list_create_jobs_tasks() {
         }
         assert_eq!(v["tasks"]["taskCount"], order.len());
         assert_eq!(v["tasks"]["tasks"], serde_json::Value::Array(order));
+    }
+}
+
+#[test]
+fn a_step_without_a_space_has_one_task_with_no_parameters() {
+    let p_step = "  - name: P\n    script: {actions: {onRun: {command: p}}}\n";
+    let s_bare = "  - name: S\n    script: {actions: {onRun: {command: a}}}\n";
+    let za = |defs: &str| job(&za_step(defs), &[]);
+    let cases = [
+        // A step add (`All`), and a step's parameters removed (`Replace`).
+        (za(""), za(p_step), "all"),
+        (za(ZA_S), za(s_bare), "replace"),
+    ];
+    for (a, b, change) in &cases {
+        let v = tasks_document(a, b);
+        assert_eq!(
+            v["tasks"],
+            serde_json::json!({"change": change, "taskCount": 1, "tasks": [{}]})
+        );
     }
 }
 

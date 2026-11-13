@@ -2269,7 +2269,8 @@ struct BuiltStep {
 /// definition that is not in the host encoding, a value not in the exact
 /// form a built job writes (`"TRUE"` for a BOOL), a `resolvedSymTab` entry
 /// that is not the `{name, type, value}` a `SymbolTable` serializes to, a
-/// number or bool where the document writes a string, and the forms
+/// number or bool where the document writes a string (or a string where it
+/// writes a bool or a number), and the forms
 /// template validation rejects (empty names, unknown or repeated
 /// dependencies, empty host requirements, ...). `specs/model/host-support.md`,
 /// "Reading a built job", lists every check.
@@ -2296,8 +2297,8 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
     if let Some(path) = dropped_key(&input, &output, String::new()) {
         return Err(err(format!("{path}: unknown field")));
     }
-    if let Some(path) = coerced_scalar(&input, &output, String::new()) {
-        return Err(err(format!("{path}: expected a string")));
+    if let Some((path, kind)) = coerced_scalar(&input, &output, String::new()) {
+        return Err(err(format!("{path}: expected {kind}")));
     }
     check_symbol_tables(&job).map_err(err)?;
     check_created_forms(&job).map_err(err)?;
@@ -2624,11 +2625,13 @@ fn check_created_forms(job: &Job) -> Result<(), String> {
     Ok(())
 }
 
-/// The path of the first scalar in `input` that `output` writes as a
-/// string while `input` holds a number or a bool, or `None`. The job types
-/// read a number or a bool into a string field as its text (`command: 7`
-/// as `"7"`), and `create_job` never writes one there, so it is rejected.
-fn coerced_scalar(input: &Value, output: &Value, path: String) -> Option<String> {
+/// The path of the first scalar in `input` whose kind differs from the
+/// one `output` writes there, with the kind `output` writes, or `None`.
+/// The job types read a number or a bool into a string field as its text
+/// (`command: 7` as `"7"`), and the YAML reader reads a quoted scalar into
+/// a bool or number field (`runnable: "TRUE"`, `min: "01"`). `create_job`
+/// writes neither, so both are rejected.
+fn coerced_scalar(input: &Value, output: &Value, path: String) -> Option<(String, &'static str)> {
     match (input, output) {
         (Value::Object(i), Value::Object(o)) => i.iter().find_map(|(k, v)| {
             let written = o.get(k).or_else(|| {
@@ -2649,7 +2652,9 @@ fn coerced_scalar(input: &Value, output: &Value, path: String) -> Option<String>
             .zip(o)
             .enumerate()
             .find_map(|(n, (iv, ov))| coerced_scalar(iv, ov, format!("{path}[{n}]"))),
-        (Value::Number(_) | Value::Bool(_), Value::String(_)) => Some(path),
+        (Value::Number(_) | Value::Bool(_), Value::String(_)) => Some((path, "a string")),
+        (Value::String(_), Value::Bool(_)) => Some((path, "a boolean")),
+        (Value::String(_), Value::Number(_)) => Some((path, "a number")),
         _ => None,
     }
 }

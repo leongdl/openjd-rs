@@ -296,18 +296,21 @@ impl<'a> TaskOp<'a> {
         })
     }
 
-    /// The task change as plain data, every task named by its parameter
-    /// set ([`task_parameter_set_document`]). `All` and `Replace` are
+    /// The op as plain data: `"space"`, the step's new parameter space as
+    /// [`ToDocument`] writes it (`null` for no space), beside the task
+    /// change, every task named by its parameter set
+    /// ([`task_parameter_set_document`]). `All` and `Replace` are
     ///
     /// ```text
-    /// {"change": "all" | "replace", "taskCount": n, "tasks": [<task parameter set>, …]}
+    /// {"space": …, "change": "all" | "replace", "taskCount": n,
+    ///  "tasks": [<task parameter set>, …]}
     /// ```
     ///
     /// with `tasks` from [`added_tasks`](Self::added_tasks), so a host never
     /// enumerates the space. `Boxes` is
     ///
     /// ```text
-    /// {"change": "boxes", "oldCount": n, "keptCount": n,
+    /// {"space": …, "change": "boxes", "oldCount": n, "keptCount": n,
     ///  "appendedCount": n, "appended": [<task parameter set>, …],
     ///  "removedCount": n, "removed": [<task parameter set>, …]}
     /// ```
@@ -318,8 +321,7 @@ impl<'a> TaskOp<'a> {
     /// tasks the change adds and removes (for `All` and `Replace`, the whole
     /// new space); the lists are written as they are iterated, without
     /// first being collected. A Rust adaptor that would rather stream the
-    /// tasks calls [`added_tasks`](Self::added_tasks) itself. The space is
-    /// not in this document: [`PlannedOp::as_document`] writes it beside.
+    /// tasks calls [`added_tasks`](Self::added_tasks) itself.
     pub fn as_document(&self) -> impl Serialize + '_ {
         TaskOpDocument(self)
     }
@@ -356,6 +358,7 @@ impl Serialize for TaskOpDocument<'_, '_> {
     fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         let mut m = ser.serialize_map(None)?;
         let op = self.0;
+        m.serialize_entry("space", &op.space.map(SpaceDoc::new))?;
         let added = TaskList(|| op.added_tasks());
         match &op.change {
             TaskChange::All | TaskChange::Replace => {
@@ -589,10 +592,8 @@ impl PlannedOp<'_> {
     /// host: `{"kinds": [<kind name>, …], "action": "job" | "parameter" |
     /// "environment" | "step" | "tasks", …}`. `environment` adds `"index"`
     /// and `"op"`; `step` adds `"step"` (a [`StepRef`]) and `"op"`; `tasks`
-    /// adds `"step"`, `"space"` (the step's new parameter space, as
-    /// [`ToDocument`] writes it) and
-    /// `"tasks"` ([`TaskOp::as_document`]). `"op"` is
-    /// [`Op::as_document`].
+    /// adds `"step"` and `"tasks"` ([`TaskOp::as_document`], which holds the
+    /// step's new parameter space). `"op"` is [`Op::as_document`].
     pub fn as_document(&self) -> impl Serialize + '_ {
         PlannedOpDocument(self)
     }
@@ -632,7 +633,6 @@ impl Serialize for PlannedOpDocument<'_, '_> {
             Action::Tasks(step, op) => {
                 m.serialize_entry("action", "tasks")?;
                 m.serialize_entry("step", step)?;
-                m.serialize_entry("space", &op.space.map(SpaceDoc::new))?;
                 m.serialize_entry("tasks", &op.as_document())?;
             }
         }

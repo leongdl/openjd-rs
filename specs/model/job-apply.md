@@ -208,7 +208,8 @@ Every payload has a plain-data form that needs nothing outside these types:
 | `check` | `&PlannedOp` | `PlannedOp::as_document`: `{"kinds": [names], "action": "job" \| "parameter" \| "environment" \| "step" \| "tasks", …}` |
 | `job`, `parameter`, `environment`, `step` | `Op<'_, T>` | `Op::as_document`: `{"change": "add" \| "modify" \| "remove", "old"?: …, "new"?: …}` |
 | `step`, `tasks` | `StepRef` | `Serialize`: `{"name": …, "index": …}` |
-| `tasks` | `&TaskOp` | `TaskOp::as_document()`; its `space` through `ToDocument`, the `JobDocument` form |
+| `environment` | `usize` | the index, a number: the new list index for `Add` and `Modify`, the old one for `Remove`; the environment's name is inside the op (`new.name`, `old.name`) |
+| `tasks` | `&TaskOp` | `TaskOp::as_document()`: `{"space": …, "change": …, …}`, with `space` the step's new parameter space in its `JobDocument` form (`null` for none) |
 
 No document needs an argument: each is a method of the value the call receives.
 
@@ -219,10 +220,11 @@ sorted by name, typed values as `{type, value}`, and `taskParameterDefinitions` 
 definition order. `Op::Modify::node` is left out,
 because it indexes the plan's diff.
 
-`TaskOp::as_document()` names every task by its set, written by
+`TaskOp::as_document()` holds the step's new parameter space, so one call gives a host
+everything the step's tasks need, and names every task by its set, written by
 `task_parameter_set_document` (name to `{type, value}`, the value as text so a float keeps
 its literal), and holds no positions (see [task identity](#task-identity)). `Frames` `1-2`
-to `1-4` is
+to `1-4` is (`space` left out here and below)
 
 ```text
 {"change": "boxes", "oldCount": 2, "keptCount": 2,
@@ -241,7 +243,9 @@ and `1-4` to `3-6` removes `1` and `2` by value:
 `All` and `Replace` carry the step's whole new task list, from `TaskOp::added_tasks`:
 `{"change": "all" | "replace", "taskCount": n, "tasks": [<task parameter set>, …]}`. For
 `Frame` `CHUNK[INT]` `1-6` with `defaultTaskCount: 3` that is `"taskCount": 6` and
-`{"F": {"type": "CHUNK[INT]", "value": "1-1"}}` to `"6-6"`.
+`{"F": {"type": "CHUNK[INT]", "value": "1-1"}}` to `"6-6"`. The `tasks` counts of
+`openjd diff` and `TaskSummary` count what `StepParameterSpaceIterator` yields, which is
+chunks (2 here); see [template-diff.md](template-diff.md#steps-and-tasks).
 
 The document lists every task the change adds or removes, so for `All` and `Replace` it is
 linear in the step's task count: the same size as the task rows the host writes for them.
@@ -258,7 +262,8 @@ of every task. An adaptor written in Rust that would rather stream a large step 
 order is the same.
 
 Two orders a host must know. When only a step's tasks change, there is no `Step` op, so the
-host writes the step's new parameter space (`TaskOp::space`) from the `tasks` call. A reorder
+host writes the step's new parameter space (`TaskOp::space`, the document's `space`) from
+the `tasks` call. A reorder
 of the job environments both jobs share arrives as the `Job` modify op (kind `EnvReorder`),
 before the environment ops; a reorder of a step's environments arrives in its `Step`
 modify op.
@@ -283,7 +288,6 @@ alternative. The sketch below compiles against PyO3 0.25:
 ```rust
 use openjd_model::job::apply::{
     apply, AllowList, ApplyError, ApplyReport, JobApplier, Op, PlannedOp, StepRef, TaskOp,
-    ToDocument,
 };
 use openjd_model::job::{Environment, Job, JobParameter, Step};
 use pyo3::exceptions::PyValueError;
@@ -342,9 +346,8 @@ impl JobApplier for PyStore {
     }
     fn tasks(&mut self, step: StepRef<'_>, op: &TaskOp<'_>) -> PyResult<()> {
         // The change lists its tasks, in create_job's order for All and
-        // Replace, so Python never enumerates the space.
-        let space = op.space.map(ToDocument::as_document);
-        self.call("tasks", &[&step, &space, &op.as_document()])
+        // Replace, and the step's new space, so Python never enumerates it.
+        self.call("tasks", &[&step, &op.as_document()])
     }
 }
 

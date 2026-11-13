@@ -225,7 +225,10 @@ new-only steps. `status` is the step's status under the caller's options (one
 | step added or removed | `Added { count }` / `Removed { count }` |
 
 Counts are `u64` and count what `StepParameterSpaceIterator` yields (chunks, for a chunked
-step). Sums saturate at `u64::MAX` rather than overflow. When either side's parameter space
+step). The task change document of [job-apply.md](job-apply.md#host-adaptors) lists one task
+per `CHUNK[INT]` value instead, because a host creates tasks as CreateJob does, so for
+`1-20` with `defaultTaskCount: 10` this summary says 2 and that document lists 20.
+Sums saturate at `u64::MAX` rather than overflow. When either side's parameter space
 does not iterate (reachable only through an edited built job, for example an association
 whose members have different lengths), the step's `tasks_unknown` is `Some("cannot count tasks")`,
 its counts are 0 (`Replaced` with reason `cannot count tasks` when the space changed),

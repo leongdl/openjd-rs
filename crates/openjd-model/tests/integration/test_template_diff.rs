@@ -4290,6 +4290,10 @@ fn job_from_str_rejects_what_template_validation_rejects() {
             "steps[0].hostRequirements.amounts[0]: min (4) > max (2)",
         ),
         (
+            amount(json!(2.5), json!(2)),
+            "steps[0].hostRequirements.amounts[0]: min (2.5) > max (2)",
+        ),
+        (
             amount(json!(-1), Value::Null),
             "steps[0].hostRequirements.amounts[0].min: must be non-negative",
         ),
@@ -4307,6 +4311,13 @@ fn job_from_str_rejects_what_template_validation_rejects() {
         ),
         (
             set("/jobEnvironments/0/script/actions", json!({})),
+            "jobEnvironments[0].script.actions: must define at least one of onEnter or onExit",
+        ),
+        (
+            Box::new(|doc: &mut Value| {
+                doc["extensions"] = json!(["EXPR"]);
+                doc["jobEnvironments"][0]["script"]["actions"] = json!({});
+            }),
             "jobEnvironments[0].script.actions: must define at least one of onEnter or onExit",
         ),
         (
@@ -4371,6 +4382,13 @@ fn job_from_str_rejects_what_template_validation_rejects() {
         ),
         (
             set(
+                "/steps/0/parameterSpace/taskParameterDefinitions/0",
+                json!({"name": "F", "type": "FLOAT", "list": ["-0.0"]}),
+            ),
+            r#"steps[0].parameterSpace.taskParameterDefinitions[0].list[0]: "-0.0" is not in the form a built job writes ("0.0")"#,
+        ),
+        (
+            set(
                 "/steps/0/resolvedSymTab",
                 json!([{"name": "Param.B", "type": "bool", "value": "TRUE"}]),
             ),
@@ -4400,9 +4418,58 @@ fn job_from_str_rejects_what_template_validation_rejects() {
             .to_string(),
         "Validation error: not a built job: steps[0].script.letBindings[0]: expected a string"
     );
+    // YAML also reads a quoted scalar into a bool or number field; JSON
+    // rejects each in serde.
+    let amount_min = |min: &'static str| -> Edit {
+        set(
+            "/steps/0/hostRequirements",
+            json!({"amounts": [{"name": "amount.worker.vcpu", "min": min, "max": null}], "attributes": null}),
+        )
+    };
+    let yaml_cases: Vec<(Edit, &str)> = vec![
+        (
+            set(
+                "/steps/0/script/embeddedFiles",
+                json!([{"name": "F", "fileType": "TEXT", "data": "x", "runnable": "TRUE"}]),
+            ),
+            "steps[0].script.embeddedFiles[0].runnable: expected a boolean",
+        ),
+        (
+            amount_min("01"),
+            "steps[0].hostRequirements.amounts[0].min: expected a number",
+        ),
+        (
+            amount_min("0"),
+            "steps[0].hostRequirements.amounts[0].min: expected a number",
+        ),
+        (
+            amount_min("+1"),
+            "steps[0].hostRequirements.amounts[0].min: expected a number",
+        ),
+        (
+            amount_min("1e3"),
+            "steps[0].hostRequirements.amounts[0].min: expected a number",
+        ),
+        (
+            amount_min("1.50"),
+            "steps[0].hostRequirements.amounts[0].min: expected a number",
+        ),
+    ];
+    for (edit, want) in yaml_cases {
+        let mut doc = built_job_value();
+        edit(&mut doc);
+        let yaml = serde_saphyr::to_string(&doc).unwrap();
+        assert_eq!(
+            job_from_str(&yaml).unwrap_err().to_string(),
+            format!("Validation error: not a built job: {want}"),
+            "{yaml}"
+        );
+        assert!(job_from_str(&doc.to_string()).is_err(), "{want} (JSON)");
+    }
     // The forms template validation accepts still read back.
     let accepted: Vec<Edit> = vec![
         amount(json!(0), json!(4)),
+        amount(json!(2), json!(2)),
         amount(json!(2), Value::Null),
         attribute(Value::Null, json!(["linux"])),
         two_steps(json!([{"dependsOn": "S"}])),
