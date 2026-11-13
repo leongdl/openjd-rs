@@ -47,8 +47,8 @@ parameters. With two, `TEMPLATE` is the old side and `NEW_TEMPLATE` the new one.
 
 ### Parameters
 
-A parameter is given as for `deadline bundle submit -p`, in one of three forms, parsed by
-`run`'s `parse_cli_parameters` ([parameter-parsing.md](parameter-parsing.md)):
+`openjd diff` parses parameters exactly as `openjd run -p` does. The rules live in one
+place, [parameter-parsing.md](parameter-parsing.md). A parameter takes one of three forms:
 
 | form | example |
 |---|---|
@@ -57,30 +57,33 @@ A parameter is given as for `deadline bundle submit -p`, in one of three forms, 
 | inline JSON | `-p '{"Frames": "1-200"}'` |
 
 Each flag is repeatable, and a later value wins. A side's parameters are its `-p` values
-followed by its `--old-parameter` or `--new-parameter` values, so the side flag wins over
-`-p` wherever it appears on the command line. The old names `--job-param`, `--old-param`
-and `--new-param` are accepted as hidden aliases, so existing scripts keep working; `--help`
-lists only the new names. The `-p` help names the three forms with one example each. The
+followed by its `--old-parameter` or `--new-parameter` values. So the side flag wins over
+`-p`, wherever it appears on the command line.
+
+`--job-param` is a hidden alias of `-p`, because it is the long name `run` and `summary`
+use. `--old-param` and `--new-param` are hidden aliases of the side flags, because they
+are the earlier spellings. `--help` lists only `--parameter`, `--old-parameter` and
+`--new-parameter`. The `-p` help names the three forms with one example each. The
 `--old-parameter` and `--new-parameter` help says `in the same forms as -p` and gives one
 `Key=Value` example.
 
-#### Differences from `deadline bundle submit -p`
+The syntax follows `deadline bundle submit -p`, but the values it produces are not
+guaranteed to be identical.
 
-`diff`, `run` and `summary` share one parser, so these hold for all three. Each row was
-checked against `openjd diff` with a template whose parameter `A` is a STRING.
+#### Known differences
 
-| input | `openjd` behaviour |
-|---|---|
-| `file://~/p.json` | `~` is not expanded: `Provided parameter file '~/p.json' does not exist.` |
-| `{"A": null}` | `A` is the string `null`, the same as `A=null`. Known limitation. |
-| `A=v ` or ` A=v` | The whole argument is trimmed first, so the value is `v` and the name is `A`. |
-| `A b=v`, `=v` | Names are not checked when parsed. They fail later: `Job parameter values provided for parameters that are not defined in the template: A b`. |
-| `{"A": true}`, `{"A": 1.5}`, `{"A": {"k": [1, 2]}}` | A non-string JSON value becomes its JSON text: `true`, `1.5`, `{"k":[1,2]}`. |
-| a YAML file with `A: yes` | YAML is read as YAML 1.2, so `yes` stays the string `yes`. |
-| a YAML file with `A: 1.0e3` | The float becomes its JSON text, `1000.0`. |
-| a malformed file, `A: [unclosed` | `Job parameter file 'file://bad.yaml' should contain a dictionary.`, with no parse location. Known limitation. |
+This list is not exhaustive. Each entry was run against `openjd diff` with a template
+whose parameter `A` is a STRING.
 
-The two known limitations are shared with `run` and `summary` and are not fixed here.
+- `file://~/p.json` does not expand `~`: `Provided parameter file '~/p.json' does not exist.`
+- JSON `null` becomes the text `null`: `{"A": null}` gives `~ parameter A: x -> null`, the
+  same as `A=null`.
+- Every value is passed as text. JSON `{"A": true}` gives `true`, and a YAML file with
+  `A: 007` gives `7.0`.
+- A malformed parameter file reports `Job parameter file 'file://bad.yaml' should contain
+  a dictionary.`, without the parse location.
+- `-p =v` is accepted when parsed and fails later, naming no parameter:
+  `Job parameter values provided for parameters that are not defined in the template: `.
 
 Which library call runs:
 
@@ -164,9 +167,11 @@ listing, or `no changes`.
 
 Every human-readable form ends its diff with one `note: …` line per entry of
 `TemplateDiff::notes`: after the totals line, after the `--tasks` lines, or after
-`no changes`. A note says why job-layer origins are `[both]` (the new template does not
-build with the old parameters) or why a step's tasks are unknown (adaptive chunking, or a parameter space that does not
-iterate):
+`no changes`. A note says why job-layer origins are `[both]`: the new template does not
+build with the old parameters. A note also says why a step's tasks are unknown. Through
+the CLI that happens only with adaptive chunking. The other cause, a parameter space that
+does not iterate, needs an edited built job, which only the library's `diff_built_jobs`
+takes ([model/template-diff.md](../model/template-diff.md#steps-and-tasks)).
 
 ```
 $ openjd diff render_v1.yaml quality.yaml -p Scene=/s --new-parameter Quality=3
@@ -197,20 +202,13 @@ document is data rather than a command result: it has no `status` or
 | `--exit-code`, no differences | 0 |
 | `--exit-code`, differences | 4 |
 | any error (missing file, bad parameter, a template that does not build) | 1, with `ERROR: …` on stderr |
-| usage error (clap), including an unknown flag such as the removed `--jobs` | 2 |
+| usage error (clap), including an unknown flag | 2 |
 
 4 keeps "the inputs differ" apart from 1, which `openjd` already uses for every error,
 and from clap's 2. Errors name the path (`'nope.yaml' does not exist.`) or the input that
 failed: `old template: …` / `new template: …` for two templates, `old parameters: …` /
 `new parameters: …` for one template under two parameter sets, and `the template: …` when
 that one template does not decode.
-
-## Removed
-
-`openjd build` (print the job a template builds into) and `openjd diff --jobs` (diff two
-such jobs) are gone; both are clap usage errors (exit 2). The library keeps `create_job`,
-`JobDocument`, `job_from_str`, `job_digest` and `diff_built_jobs`. `--verbose` with
-`--output json` or `yaml` still includes the two jobs as `oldJob` and `newJob`.
 
 ## Not implemented
 

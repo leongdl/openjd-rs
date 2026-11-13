@@ -1282,8 +1282,9 @@ fn two_templates_with_side_parameters_and_stdin() {
     assert_ok(&o, &format!("t.yaml -> -\n{FRAMES_2_TO_3}"));
 }
 
-/// `--job-param`, `--old-param` and `--new-param` still work, and `--help`
-/// does not list them.
+/// `--job-param` (the long name `run` and `summary` use) and the earlier
+/// spellings `--old-param` and `--new-param` are accepted, and `--help` does
+/// not list them.
 #[test]
 fn old_parameter_flag_names_are_hidden_aliases() {
     let dir = frames_dir();

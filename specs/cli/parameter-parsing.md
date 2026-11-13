@@ -6,13 +6,14 @@ The CLI accepts parameters in several formats across multiple arguments. This do
 covers all parameter parsing functions in the CLI, their input formats, error handling,
 and the rationale for supporting each format.
 
-## Job Parameters (`-p` / `--parameter`)
+## Job Parameters (`-p`, `--job-param`, `--parameter`)
 
-`parse_cli_parameters()` in `run/params.rs` handles the `-p`/`--parameter` argument, which is
-used by the `summary`, `run` and `diff` commands (`diff` also parses `--old-parameter` and
-`--new-parameter` with it, and its `-p` long name is `--parameter`; see
-[diff.md](diff.md)). The values of each call are applied in order, so a later value wins. It accepts three input formats and returns
-a `HashMap<String, ExprValue>`.
+`parse_cli_parameters()` in `run/params.rs` parses job parameters for `run`, `summary` and
+`diff`. The short flag is `-p` in all three. The long flag is `--job-param` for `run` and
+`summary`, and `--parameter` for `diff`. `diff` also parses `--old-parameter` and
+`--new-parameter` with it (see [diff.md](diff.md)). The values of each call are applied in
+order, so a later value wins. It accepts three input formats and returns a
+`HashMap<String, ExprValue>`.
 
 ### Format 1: Key=Value Pairs
 
@@ -88,6 +89,29 @@ This means numeric JSON values like `{"Frames": 100}` become the string `"100"`.
 model crate's parameter preprocessing handles parsing this string into the correct type
 based on the parameter definition. This matches the Python CLI's behavior where all
 parameter values pass through as strings initially.
+
+### Known defects (shared by run, summary and diff)
+
+These are pre-existing parser bugs, not fixed here. Each was run with `openjd diff t.yaml
+--old-parameter A=x --new-parameter <input>`, where `A` is a STRING.
+
+- JSON `null` becomes the text `null`: `{"A": null}` gives `~ parameter A: x -> null`.
+- The parse location is dropped. A malformed file (`{"A": ` in `bad.json`, or
+  `A: [unclosed` in `bad.yaml`) reports `Job parameter file 'file://bad.json' should
+  contain a dictionary.`. Malformed inline JSON (`{"A": }`) reports the generic
+  `Job parameter string ('{"A": }') not formatted correctly. ...`.
+- A duplicate key in a YAML file (`A: a` then `A: b`) reports `Job parameter file
+  'file://dup.yaml' should contain a dictionary.`.
+- The `.json` extension is compared case-sensitively, so a `.JSON` file is read as YAML.
+  `{"A": "a", "A": "b"}` gives `b` from `dupj.json` and `should contain a dictionary` from
+  `dupj.JSON`.
+- `file://file://x.json` strips the prefix twice and reads `x.json`.
+- An integer too large for 64 bits loses digits: `{"A": 123456789012345678901234567890}`
+  gives `1.2345678901234568e+29`, from inline JSON, a JSON file or a YAML file.
+- A YAML file reads `007` and `010` as floats: `A: 007` gives `7.0`, and `A: 010` gives
+  `10.0`.
+- `-p =v` names no parameter in its error: `Job parameter values provided for parameters
+  that are not defined in the template: ` ends with an empty name.
 
 ## Task Parameters (`-t` / `--task-param`)
 

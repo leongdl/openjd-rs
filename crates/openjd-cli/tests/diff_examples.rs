@@ -551,23 +551,54 @@ struct HelpExample {
     stdin: Option<String>,
 }
 
-/// The `openjd` lines of [`HELP_EXAMPLES`], read as a POSIX shell would:
-/// `$E/` and `$M/` expanded, words split on spaces outside single quotes,
-/// and `< file` taken as stdin.
+/// The value the header of [`HELP_EXAMPLES`] gives `name`, as in
+/// `with E=crates/openjd-cli/examples/diff`.
+fn header_var(name: &str) -> String {
+    let prefix = format!("{name}=");
+    HELP_EXAMPLES
+        .lines()
+        .take_while(|l| !l.starts_with("  openjd "))
+        .flat_map(str::split_whitespace)
+        .find_map(|w| w.strip_prefix(&prefix))
+        .map(|v| v.trim_end_matches([':', ',', '.']).to_string())
+        .unwrap_or_else(|| panic!("the help header does not set {name}=: {HELP_EXAMPLES}"))
+}
+
+/// The `openjd` lines of [`HELP_EXAMPLES`], read as a POSIX shell would,
+/// for the subset the examples use: words split on spaces, single quotes,
+/// `$E` and `$M` (set by the header) expanded outside single quotes, and a
+/// trailing `< file` taken as stdin. Anything else shell-special panics.
 fn help_examples() -> Vec<HelpExample> {
+    let vars = [('E', header_var("E")), ('M', header_var("M"))];
+    for (name, dir) in &vars {
+        assert!(
+            root().join(dir).is_dir(),
+            "the help header's {name}={dir} is not a directory"
+        );
+    }
     HELP_EXAMPLES
         .lines()
         .filter_map(|l| l.strip_prefix("  openjd "))
         .map(|line| {
-            let line = line
-                .replace("$E/", "crates/openjd-cli/examples/diff/")
-                .replace("$M/", "crates/openjd-model/examples/template_diff/");
             let mut words = Vec::new();
             let (mut word, mut quoted) = (String::new(), false);
-            for ch in line.chars() {
+            let mut chars = line.chars().peekable();
+            while let Some(ch) = chars.next() {
                 match ch {
                     '\'' => quoted = !quoted,
-                    ' ' if !quoted => words.push(std::mem::take(&mut word)),
+                    _ if quoted => word.push(ch),
+                    ' ' => words.push(std::mem::take(&mut word)),
+                    '$' => {
+                        let name = chars.next();
+                        let ends = chars
+                            .peek()
+                            .is_none_or(|c| !c.is_alphanumeric() && *c != '_');
+                        let value = vars.iter().find(|(n, _)| ends && Some(*n) == name);
+                        let (_, value) =
+                            value.unwrap_or_else(|| panic!("only $E and $M are supported: {line}"));
+                        word.push_str(value);
+                    }
+                    '"' | '\\' | '`' => panic!("unsupported shell syntax {ch:?}: {line}"),
                     _ => word.push(ch),
                 }
             }
