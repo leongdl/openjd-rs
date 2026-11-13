@@ -145,7 +145,8 @@ pub fn build_job_symbol_table(job: &Job) -> Result<SerializedSymbolTable, ModelE
 /// change the diff ignores (a task parameter definition reorder under an
 /// explicit `combination`) also changes the digest. `==` jobs whose task
 /// parameter definitions are in a different order also digest differently,
-/// because definition order is task order. The document includes its
+/// because the document keeps definition order, which without an explicit
+/// `combination` is the product's dimension order. The document includes its
 /// `documentVersion`, so digests compare only within one version.
 pub fn job_digest(job: &Job) -> Result<String, ModelError> {
     let text = serde_json::to_vec(&JobDocument(job))
@@ -175,8 +176,9 @@ pub fn job_digest(job: &Job) -> Result<String, ModelError> {
 /// neither preprocessed again nor checked here: preprocessing could rewrite
 /// it (a Windows PATH on a POSIX host is relative), and the rewritten form
 /// could fail a constraint the stored value meets. It counts as supplied,
-/// so a required parameter is not missing. `create_job` checks it against
-/// the new template's constraints when the job is built.
+/// so a required parameter is not missing. It is checked, as stored,
+/// against every definition that declares it (the job template's and its
+/// environment templates') when the job is built from it.
 pub fn merge_parameters(
     stored: &JobParameterValues,
     requested: &JobParameterInputValues,

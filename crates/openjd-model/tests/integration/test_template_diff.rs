@@ -2160,7 +2160,7 @@ fn repeated_integer_values_are_not_a_run() {
 fn job_from_str_names_each_malformed_parameter() {
     let job = |param: &str| {
         format!(
-            r#"{{"documentVersion": 1, "name": "x", "steps": [], "parameters": {{"LI": {param}}}}}"#
+            r#"{{"documentVersion": 1, "name": "x", "steps": [{{"name": "S", "script": {{"actions": {{"onRun": {{"command": "c"}}}}}}}}], "parameters": {{"LI": {param}}}}}"#
         )
     };
     let cases = [
@@ -2233,7 +2233,7 @@ fn job_from_str_names_each_malformed_parameter() {
 fn job_from_str_rejects_a_value_that_is_not_of_the_parameter_type() {
     let job = |ty: &str, value: &str| {
         format!(
-            r#"{{"documentVersion": 1, "name": "x", "steps": [], "parameters": {{"P": {{"name": "P", "type": "{ty}", "value": {value}}}}}}}"#
+            r#"{{"documentVersion": 1, "name": "x", "steps": [{{"name": "S", "script": {{"actions": {{"onRun": {{"command": "c"}}}}}}}}], "parameters": {{"P": {{"name": "P", "type": "{ty}", "value": {value}}}}}}}"#
         )
     };
     let cases = [
@@ -2296,7 +2296,7 @@ note: {MID_NOTE}"
 fn job_from_str_reads_each_parameter_type_from_the_host_encoding() {
     let job = |ty: &str, value: &str| {
         format!(
-            r#"{{"documentVersion": 1, "name": "x", "steps": [], "parameters": {{"P": {{"name": "P", "type": "{ty}", "value": {value}}}}}}}"#
+            r#"{{"documentVersion": 1, "name": "x", "steps": [{{"name": "S", "script": {{"actions": {{"onRun": {{"command": "c"}}}}}}}}], "parameters": {{"P": {{"name": "P", "type": "{ty}", "value": {value}}}}}}}"#
         )
     };
     let cases = [
@@ -4078,4 +4078,130 @@ fn the_job_document_writes_and_requires_its_version() {
         job_from_str("[]").unwrap_err().to_string(),
         "Validation error: not a built job: expected an object"
     );
+}
+
+// ─── applier adaptor audit round 3 ──────────────────────────────────
+
+#[test]
+fn job_from_str_rejects_each_form_create_job_never_writes() {
+    use serde_json::{json, Value};
+    let attrs = |any: Value, all: Value| json!({"amounts": null, "attributes": [{"name": "attr.worker.os.family", "anyOf": any, "allOf": all}]});
+    let notify = |n: Value| json!({"mode": "NOTIFY_THEN_TERMINATE", "notifyPeriodInSeconds": n});
+    // (JSON pointer, value, error)
+    let cases: Vec<(&str, Value, &str)> = vec![
+        (
+            "/steps/0/parameterSpace/taskParameterDefinitions/0",
+            json!({"name": "F", "type": "INT", "list": []}),
+            "steps[0].parameterSpace.taskParameterDefinitions[0].list: must not be empty",
+        ),
+        ("/steps", json!([]), "steps: must not be empty"),
+        (
+            "/steps/0/dependencies",
+            json!([]),
+            "steps[0].dependencies: must not be empty",
+        ),
+        (
+            "/steps/0/stepEnvironments",
+            json!([]),
+            "steps[0].stepEnvironments: must not be empty",
+        ),
+        ("/jobEnvironments", json!([]), "jobEnvironments: must not be empty"),
+        (
+            "/steps/0/hostRequirements",
+            attrs(json!([]), Value::Null),
+            "steps[0].hostRequirements.attributes[0].anyOf: must not be empty",
+        ),
+        (
+            "/steps/0/hostRequirements",
+            attrs(Value::Null, json!([])),
+            "steps[0].hostRequirements.attributes[0].allOf: must not be empty",
+        ),
+        (
+            "/steps/0/script/actions/onRun/args",
+            json!([]),
+            "steps[0].script.actions.onRun.args: must not be empty",
+        ),
+        (
+            "/steps/0/script/embeddedFiles",
+            json!([]),
+            "steps[0].script.embeddedFiles: must not be empty",
+        ),
+        (
+            "/jobEnvironments/0/variables",
+            json!({}),
+            "jobEnvironments[0].variables: must not be empty",
+        ),
+        (
+            "/steps/0/script/actions/onRun/timeout",
+            json!("seven"),
+            "steps[0].script.actions.onRun.timeout: must be a positive integer",
+        ),
+        (
+            "/steps/0/script/actions/onRun/timeout",
+            json!("0"),
+            "steps[0].script.actions.onRun.timeout: must be a positive integer",
+        ),
+        (
+            "/jobEnvironments/0/script/actions/onEnter/timeout",
+            json!("-1"),
+            "jobEnvironments[0].script.actions.onEnter.timeout: must be a positive integer",
+        ),
+        (
+            "/steps/0/script/actions/onRun/cancelation",
+            notify(json!("seven")),
+            "steps[0].script.actions.onRun.cancelation.notifyPeriodInSeconds: must be a positive integer",
+        ),
+        (
+            "/steps/0/script/actions/onRun/cancelation",
+            notify(json!("0")),
+            "steps[0].script.actions.onRun.cancelation.notifyPeriodInSeconds: must be a positive integer",
+        ),
+        (
+            "/steps/0/script/actions/onRun/command",
+            json!(7),
+            "steps[0].script.actions.onRun.command: expected a string",
+        ),
+        (
+            "/steps/0/script/actions/onRun/timeout",
+            json!(60),
+            "steps[0].script.actions.onRun.timeout: expected a string",
+        ),
+        (
+            "/jobEnvironments/0/variables/A",
+            json!(true),
+            "jobEnvironments[0].variables.A: expected a string",
+        ),
+    ];
+    for (pointer, value, want) in cases {
+        let mut doc = built_job_value();
+        *doc.pointer_mut(pointer).unwrap() = value.clone();
+        let want = format!("Validation error: not a built job: {want}");
+        assert_eq!(
+            job_from_str(&doc.to_string()).unwrap_err().to_string(),
+            want,
+            "{pointer} = {value}"
+        );
+        let yaml = serde_saphyr::to_string(&doc).unwrap();
+        assert_eq!(
+            job_from_str(&yaml).unwrap_err().to_string(),
+            want,
+            "{pointer} = {value} (YAML)"
+        );
+    }
+    // The forms `create_job` does write still read back.
+    let mut doc = built_job_value();
+    for (pointer, value) in [
+        ("/steps/0/script/actions/onRun/timeout", json!("60")),
+        (
+            "/steps/0/script/actions/onRun/cancelation",
+            notify(json!("30")),
+        ),
+        (
+            "/jobEnvironments/0/script/actions/onEnter/timeout",
+            json!("{{Param.T}}"),
+        ),
+    ] {
+        *doc.pointer_mut(pointer).unwrap() = value;
+    }
+    job_from_str(&doc.to_string()).unwrap();
 }

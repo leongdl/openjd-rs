@@ -54,10 +54,12 @@ fn key(t: &TaskParameterSet) -> String {
     kv.join(",")
 }
 
+/// The tasks of a space in `create_job`'s order (one task per chunked
+/// value), as [`key`]s.
 fn tasks(space: Option<&StepParameterSpace>) -> Vec<String> {
     match space {
         None => vec![String::new()],
-        Some(s) => StepParameterSpaceIterator::new(s)
+        Some(s) => StepParameterSpaceIterator::new_with_chunk_override(s, Some(1))
             .unwrap()
             .map(|t| key(&t))
             .collect(),
@@ -65,7 +67,8 @@ fn tasks(space: Option<&StepParameterSpace>) -> Vec<String> {
 }
 
 /// An in-memory store. Like a real adapter it maps the new job's step
-/// indices to its own ids (here: names) once, up front.
+/// indices to its own ids (here: names) once, up front. Each task has a
+/// host id, and is matched by its parameter values, never by position.
 #[derive(Debug)]
 struct JobRebuilder {
     name: String,
@@ -74,7 +77,9 @@ struct JobRebuilder {
     params: BTreeMap<String, JobParameter>,
     envs: Vec<Environment>,
     steps: BTreeMap<String, Step>,
-    tasks: BTreeMap<String, Vec<String>>,
+    /// Per step, its tasks in store order: (host id, [`key`]).
+    tasks: BTreeMap<String, Vec<(u64, String)>>,
+    next_id: u64,
     /// Steps whose tasks were appended to or removed from: their store order
     /// is allowed to differ from the new iterator order.
     boxed: std::collections::BTreeSet<String>,
@@ -88,6 +93,20 @@ struct JobRebuilder {
 
 impl JobRebuilder {
     fn holding(old: &Job, new_names: Vec<String>) -> Self {
+        let mut next_id = 0;
+        let mut ids = |list: Vec<String>| -> Vec<(u64, String)> {
+            list.into_iter()
+                .map(|k| {
+                    next_id += 1;
+                    (next_id, k)
+                })
+                .collect()
+        };
+        let tasks = old
+            .steps
+            .iter()
+            .map(|s| (s.name.clone(), ids(tasks(s.parameter_space.as_ref()))))
+            .collect();
         Self {
             name: old.name.clone(),
             description: old.description.clone(),
@@ -103,16 +122,29 @@ impl JobRebuilder {
                 .iter()
                 .map(|s| (s.name.clone(), s.clone()))
                 .collect(),
-            tasks: old
-                .steps
-                .iter()
-                .map(|s| (s.name.clone(), tasks(s.parameter_space.as_ref())))
-                .collect(),
+            tasks,
+            next_id,
             boxed: Default::default(),
             new_names,
             order: old.steps.iter().map(|s| s.name.clone()).collect(),
             pending: Vec::new(),
         }
+    }
+
+    /// Every task's host id, by its [`key`].
+    fn ids(&self) -> BTreeMap<(String, String), u64> {
+        self.tasks
+            .iter()
+            .flat_map(|(step, list)| {
+                list.iter()
+                    .map(move |(id, k)| ((step.clone(), k.clone()), *id))
+            })
+            .collect()
+    }
+
+    /// Hold `new` from here on: the next plan's new job names these steps.
+    fn rename_for(&mut self, new: &Job) {
+        self.new_names = new.steps.iter().map(|s| s.name.clone()).collect();
     }
 
     fn assert_holds(&self, new: &Job) {
@@ -154,7 +186,7 @@ impl JobRebuilder {
                 "definition order of {}",
                 s.name
             );
-            let have = self.tasks[&s.name].clone();
+            let have: Vec<String> = self.tasks[&s.name].iter().map(|(_, k)| k.clone()).collect();
             let want = tasks(s.parameter_space.as_ref());
             if self.boxed.contains(&s.name) {
                 let (mut h, mut w) = (have, want);
@@ -321,26 +353,49 @@ impl JobApplier for JobRebuilder {
         if matches!(change, TaskChange::Boxes(_)) {
             self.boxed.insert(name.clone());
         }
+        let added: Vec<String> = change
+            .tasks(space)
+            .map_err(|e| e.to_string())?
+            .map(|t| key(&t))
+            .collect();
         let list = self.tasks.entry(name).or_default();
+        let fresh = |next_id: &mut u64| {
+            *next_id += 1;
+            *next_id
+        };
         match change {
             TaskChange::Boxes(d) => {
-                for b in &d.removed {
-                    for t in b.tasks().map_err(|e| e.to_string())? {
-                        let k = key(&t);
-                        let at = list
-                            .iter()
-                            .position(|x| *x == k)
-                            .ok_or("remove a missing task")?;
-                        list.remove(at);
-                    }
+                for (_, t) in d.removed().map_err(|e| e.to_string())? {
+                    let k = key(&t);
+                    let at = list
+                        .iter()
+                        .position(|(_, x)| *x == k)
+                        .ok_or("remove a missing task")?;
+                    list.remove(at);
                 }
-                for b in &d.added {
-                    for t in b.tasks().map_err(|e| e.to_string())? {
-                        list.push(key(&t));
+                for k in added {
+                    if list.iter().any(|(_, x)| *x == k) {
+                        return Err(format!("append an existing task {k}"));
                     }
+                    list.push((fresh(&mut self.next_id), k));
                 }
             }
-            TaskChange::All | TaskChange::Replace => *list = tasks(space),
+            // A task whose values the store already holds keeps its id.
+            TaskChange::All | TaskChange::Replace => {
+                let old: BTreeMap<String, u64> =
+                    list.iter().map(|(id, k)| (k.clone(), *id)).collect();
+                *list = added
+                    .into_iter()
+                    .map(|k| {
+                        (
+                            old.get(&k)
+                                .copied()
+                                .unwrap_or_else(|| fresh(&mut self.next_id)),
+                            k,
+                        )
+                    })
+                    .collect();
+            }
         }
         Ok(())
     }
@@ -1243,7 +1298,7 @@ impl<S: JobApplier<Error = String>> JobApplier for DynStore<S> {
             serde_json::json!({
                 "call": "tasks", "step": step,
                 "space": space.map(crate::job::apply::ToDocument::as_document),
-                "change": change.to_value()?,
+                "change": change.to_value(space)?,
             }),
             true,
         )?;
@@ -1507,81 +1562,18 @@ fn an_allow_list_reads_kind_names() {
 
 // ─── audit round 1 of the applier adaptor ───────────────────────────
 
-/// The tasks a host enumerates from a parameter-space document, with no
-/// help from openjd-rs: each definition's `range` (a range expression of
-/// `a`, `a-b` and `a-b:s` items) or `list`, rightmost fastest, in the
-/// document's list order. Each task as sorted `name=value` pairs.
-fn enumerate_document(space: &serde_json::Value) -> Vec<String> {
-    let expand = |text: &str| -> Vec<String> {
-        let mut out = Vec::new();
-        for item in text.split(',') {
-            let (span, step) = item.split_once(':').unwrap_or((item, "1"));
-            let step: i64 = step.parse().unwrap();
-            let (a, b) = match span.split_once('-') {
-                Some((a, b)) if !a.is_empty() => (a.parse::<i64>().unwrap(), b.parse().unwrap()),
-                _ => (span.parse().unwrap(), span.parse().unwrap()),
-            };
-            let mut v = a;
-            while v <= b {
-                out.push(v.to_string());
-                v += step;
-            }
-        }
-        out
-    };
-    let mut tasks: Vec<Vec<(String, String)>> = vec![Vec::new()];
-    for d in space["taskParameterDefinitions"].as_array().unwrap() {
-        let name = d["name"].as_str().unwrap().to_string();
-        let values: Vec<String> = match (d.get("range"), d.get("list")) {
-            (Some(r), _) => expand(r.as_str().unwrap()),
-            (_, Some(l)) => l
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_str().unwrap().to_string())
-                .collect(),
-            _ => panic!("no range or list: {d}"),
-        };
-        tasks = tasks
-            .into_iter()
-            .flat_map(|t| {
-                let name = &name;
-                values.iter().map(move |v| {
-                    let mut t = t.clone();
-                    t.push((name.clone(), v.clone()));
-                    t
-                })
-            })
-            .collect();
+/// `create_job`'s task order for a space, each task as its host document.
+fn create_job_order(space: Option<&StepParameterSpace>) -> Vec<serde_json::Value> {
+    match space {
+        None => vec![serde_json::json!({})],
+        Some(s) => StepParameterSpaceIterator::new_with_chunk_override(s, Some(1))
+            .unwrap()
+            .map(|t| crate::job::task_delta::task_parameter_set_document(&t))
+            .collect(),
     }
-    tasks
-        .into_iter()
-        .map(|mut t| {
-            t.sort();
-            t.iter()
-                .map(|(n, v)| format!("{n}={v}"))
-                .collect::<Vec<_>>()
-                .join(",")
-        })
-        .collect()
 }
 
-/// `create_job`'s task order for a space, as [`enumerate_document`] writes
-/// tasks.
-fn create_job_order(space: &StepParameterSpace) -> Vec<String> {
-    StepParameterSpaceIterator::new(space)
-        .unwrap()
-        .map(|t| {
-            let mut kv: Vec<String> = t
-                .iter()
-                .map(|(k, v)| format!("{k}={}", v.value.to_display_string()))
-                .collect();
-            kv.sort();
-            kv.join(",")
-        })
-        .collect()
-}
-
+/// A job with step `O` and then `defs` (more steps).
 fn za_step(defs: &str) -> String {
     format!(
         "specificationVersion: jobtemplate-2023-09\nname: ZA\nsteps:\n  - name: O\n    script: {{actions: {{onRun: {{command: o}}}}}}\n{defs}"
@@ -1590,39 +1582,264 @@ fn za_step(defs: &str) -> String {
 
 const ZA_S: &str = "  - name: S\n    parameterSpace:\n      taskParameterDefinitions:\n        - {name: Z, type: INT, range: \"1-2\"}\n        - {name: A, type: STRING, range: [x, w]}\n    script: {actions: {onRun: {command: a}}}\n";
 
+/// Step `S` over `A` (INT, range `a`) and `B` (STRING, list `b`), defined
+/// in that order, with `combination` lines when given.
+fn ab_s(a: &str, b: &str, combination: &str) -> String {
+    format!(
+        "  - name: S\n    parameterSpace:\n      taskParameterDefinitions:\n        - {{name: A, type: INT, range: \"{a}\"}}\n        - {{name: B, type: STRING, range: [{b}]}}\n{combination}    script: {{actions: {{onRun: {{command: a}}}}}}\n"
+    )
+}
+
+const B_TIMES_A: &str = "      combination: \"B * A\"\n";
+
+/// The job of [`za_step`] with step `S` from [`ab_s`].
+fn ab(a: &str, b: &str, combination: &str) -> Job {
+    job(&za_step(&ab_s(a, b, combination)), &[])
+}
+
+/// A task of an [`ab`] step, as its host document.
+fn ab_task(a: i64, b: &str) -> serde_json::Value {
+    serde_json::json!({"A": {"type": "INT", "value": a.to_string()}, "B": {"type": "STRING", "value": b}})
+}
+
+/// The `Tasks` op of a plan, as its document.
+fn tasks_document(a: &Job, b: &Job) -> serde_json::Value {
+    let p = plan(a, b).unwrap();
+    let op = p
+        .ops
+        .iter()
+        .find(|o| matches!(o.action, Action::Tasks { .. }))
+        .unwrap();
+    let v = op.to_value().unwrap();
+    let text = serde_json::to_string(&op.as_document()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v, parsed, "to_value is the serialized document");
+    v
+}
+
 #[test]
-fn a_host_enumerating_the_document_gets_create_jobs_task_order() {
+fn all_and_replace_documents_list_create_jobs_tasks() {
     let only_z = ZA_S.replace("        - {name: A, type: STRING, range: [x, w]}\n", "");
+    let za = |defs: &str| job(&za_step(defs), &[]);
+    let b_outer = vec![
+        ab_task(1, "x"),
+        ab_task(2, "x"),
+        ab_task(1, "q"),
+        ab_task(2, "q"),
+    ];
     let cases = [
-        // A step add (`All`), and a parameter added (`Replace`).
-        (job(&za_step(""), &[]), job(&za_step(ZA_S), &[]), "all"),
+        // A step add (`All`), and a parameter added (`Replace`), with
+        // definitions [Z, A].
+        (za(""), za(ZA_S), "all", None),
+        (za(&only_z), za(ZA_S), "replace", None),
+        // `combination: "B * A"` makes B the outer dimension, which
+        // definition order [A, B] does not say: a step add, and a
+        // dimension reorder.
+        (za(""), ab("1-2", "x, q", B_TIMES_A), "all", Some(&b_outer)),
         (
-            job(&za_step(&only_z), &[]),
-            job(&za_step(ZA_S), &[]),
+            ab("1-2", "x, q", ""),
+            ab("1-2", "x, q", B_TIMES_A),
             "replace",
+            Some(&b_outer),
         ),
     ];
-    for (a, b, change) in &cases {
-        let p = plan(a, b).unwrap();
-        let tasks = p
-            .ops
-            .iter()
-            .find(|o| matches!(o.action, Action::Tasks { .. }))
-            .unwrap();
-        let v = tasks.to_value().unwrap();
+    for (a, b, change, want) in &cases {
+        let v = tasks_document(a, b);
         assert_eq!(v["tasks"]["change"], *change);
-        let text = serde_json::to_string(&tasks.as_document()).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v, parsed, "to_value is the serialized document");
-        let want = create_job_order(b.steps[1].parameter_space.as_ref().unwrap());
-        assert_eq!(
-            want,
-            ["A=x,Z=1", "A=w,Z=1", "A=x,Z=2", "A=w,Z=2"],
-            "Z is the outer dimension"
-        );
-        assert_eq!(enumerate_document(&v["space"]), want);
-        assert_eq!(enumerate_document(&parsed["space"]), want);
+        let order = create_job_order(b.steps[1].parameter_space.as_ref());
+        if let Some(want) = want {
+            assert_eq!(&&order, want, "B is the outer dimension");
+        }
+        assert_eq!(v["tasks"]["taskCount"], order.len());
+        assert_eq!(v["tasks"]["tasks"], serde_json::Value::Array(order));
     }
+}
+
+/// A host store keyed by task VALUES that reads only the documents an
+/// adaptor hands it, as a store in another language would. Each task gets
+/// a host id when it is created; nothing is located by position.
+#[derive(Default)]
+struct ValueStore {
+    /// Per step name, its tasks: task document to host id.
+    tasks: BTreeMap<String, BTreeMap<String, u64>>,
+    next_id: u64,
+}
+
+impl ValueStore {
+    fn create(&mut self, step: &str, task: &serde_json::Value) -> Result<(), String> {
+        self.next_id += 1;
+        let list = self.tasks.entry(step.to_string()).or_default();
+        if list.insert(task.to_string(), self.next_id).is_some() {
+            return Err(format!("{step}: task {task} already exists"));
+        }
+        Ok(())
+    }
+
+    /// Each step's tasks, as `create_job` builds them for `job`, are
+    /// exactly the ones the store holds.
+    fn assert_holds(&self, job: &Job) {
+        let want: BTreeMap<String, std::collections::BTreeSet<String>> = job
+            .steps
+            .iter()
+            .map(|s| {
+                let set = create_job_order(s.parameter_space.as_ref())
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+                (s.name.clone(), set)
+            })
+            .collect();
+        let have: BTreeMap<String, std::collections::BTreeSet<String>> = self
+            .tasks
+            .iter()
+            .map(|(s, l)| (s.clone(), l.keys().cloned().collect()))
+            .collect();
+        assert_eq!(have, want);
+    }
+}
+
+impl JobApplier for ValueStore {
+    type Error = String;
+
+    fn job(&mut self, _: Op<'_, Job>) -> Result<(), String> {
+        Ok(())
+    }
+    fn parameter(&mut self, _: Op<'_, JobParameter>) -> Result<(), String> {
+        Ok(())
+    }
+    fn environment(&mut self, _: usize, _: Op<'_, Environment>) -> Result<(), String> {
+        Ok(())
+    }
+    fn step(&mut self, step: StepRef<'_>, op: Op<'_, Step>) -> Result<(), String> {
+        if matches!(op, Op::Remove { .. }) {
+            self.tasks.remove(step.name);
+        }
+        Ok(())
+    }
+    fn tasks(
+        &mut self,
+        step: StepRef<'_>,
+        space: Option<&StepParameterSpace>,
+        change: &TaskChange,
+    ) -> Result<(), String> {
+        let doc = change.to_value(space).map_err(|e| e.to_string())?;
+        let list = |key: &str| -> Vec<serde_json::Value> {
+            doc[key].as_array().cloned().unwrap_or_default()
+        };
+        match doc["change"].as_str() {
+            Some("boxes") => {
+                let held = self.tasks.entry(step.name.to_string()).or_default();
+                for t in list("removed") {
+                    held.remove(&t.to_string())
+                        .ok_or_else(|| format!("{}: no task {t} to remove", step.name))?;
+                }
+                for t in list("appended") {
+                    self.create(step.name, &t)?;
+                }
+            }
+            Some("all" | "replace") => {
+                // A task whose values the store already holds keeps its id.
+                let held = self.tasks.remove(step.name).unwrap_or_default();
+                let mut next = BTreeMap::new();
+                for t in list("tasks") {
+                    let k = t.to_string();
+                    let id = match held.get(&k) {
+                        Some(id) => *id,
+                        None => {
+                            self.next_id += 1;
+                            self.next_id
+                        }
+                    };
+                    if next.insert(k, id).is_some() {
+                        return Err(format!("{}: task {t} is listed twice", step.name));
+                    }
+                }
+                self.tasks.insert(step.name.to_string(), next);
+            }
+            other => return Err(format!("unknown change {other:?}")),
+        }
+        Ok(())
+    }
+}
+
+/// Apply `jobs[0] -> jobs[1] -> …` to one store, as a host applies
+/// successive updates to a stored job, and check after each that it holds
+/// exactly the new tasks and that every kept task kept its id.
+fn chain(jobs: &[Job]) {
+    let mut values = ValueStore::default();
+    for s in &jobs[0].steps {
+        for t in create_job_order(s.parameter_space.as_ref()) {
+            values.create(&s.name, &t).unwrap();
+        }
+    }
+    let mut rebuilt = JobRebuilder::holding(&jobs[0], Vec::new());
+    for pair in jobs.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        let p = plan(a, b).unwrap();
+        let policy = AllowList::of(p.kinds());
+        let before = values.tasks.clone();
+        // Through the reference adaptor, as a foreign store is reached.
+        let mut adaptor = DynStore::new(std::mem::take(&mut values));
+        let store: &mut dyn JobApplier<Error = BoxError> = &mut adaptor;
+        apply(a, b, &policy, store).unwrap();
+        values = adaptor.inner;
+        values.assert_holds(b);
+        for (step, list) in &values.tasks {
+            for (task, id) in list {
+                if let Some(old) = before.get(step).and_then(|l| l.get(task)) {
+                    assert_eq!(id, old, "{step}: {task} kept its id");
+                }
+            }
+        }
+        // The Rust store, through the same chain.
+        let before = rebuilt.ids();
+        rebuilt.rename_for(b);
+        apply(a, b, &policy, &mut rebuilt).unwrap();
+        rebuilt.assert_holds(b);
+        for (task, id) in rebuilt.ids() {
+            if let Some(old) = before.get(&task) {
+                assert_eq!(id, *old, "{task:?} kept its id");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_value_keyed_store_applies_chained_updates() {
+    let frames = |f: &str| job(MORE_FRAMES, &[("Frames", f)]);
+    // Append, then remove the original tasks.
+    chain(&[frames("1-2"), frames("1-4"), frames("3-4")]);
+    // Remove, then append on both sides.
+    chain(&[frames("1-4"), frames("3-4"), frames("1-6")]);
+    // A product whose combination reorders the dimensions: B is outer.
+    chain(&[
+        ab("1-2", "x, q", B_TIMES_A),
+        ab("1-3", "x, q", B_TIMES_A),
+        ab("1-3", "q, z", B_TIMES_A),
+        ab("2-3", "q, z, w", B_TIMES_A),
+    ]);
+    // Every update above is a `Boxes` change.
+    for (a, b) in [
+        (frames("1-4"), frames("3-4")),
+        (ab("1-3", "x, q", B_TIMES_A), ab("1-3", "q, z", B_TIMES_A)),
+    ] {
+        assert_eq!(tasks_document(&a, &b)["tasks"]["change"], "boxes");
+    }
+}
+
+#[test]
+fn a_boxes_document_names_tasks_by_their_values() {
+    let frames = |f: &str| job(MORE_FRAMES, &[("Frames", f)]);
+    let v = tasks_document(&frames("1-4"), &frames("3-6"));
+    let f = |n: i64| serde_json::json!({"Frame": {"type": "INT", "value": n.to_string()}});
+    assert_eq!(
+        v["tasks"],
+        serde_json::json!({
+            "change": "boxes", "oldCount": 4, "keptCount": 2,
+            "appendedCount": 2, "appended": [f(5), f(6)],
+            "removedCount": 2, "removed": [f(1), f(2)],
+        })
+    );
 }
 
 const MANY: &str = r#"

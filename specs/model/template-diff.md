@@ -32,7 +32,8 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError>;
   and every change has origin `Job`, because the cause is not known.
 - `job_from_str` reads a job back from its `JobDocument` (JSON when the first
   non-whitespace character is `{`, YAML otherwise), as `openjd build` prints it. Its
-  `documentVersion` must be 1.
+  `documentVersion` must be `JobDocument::VERSION` (1). It rejects the forms `create_job`
+  never writes ([host-support.md](host-support.md#host-encoding) lists them).
   Parameters and parameter spaces must be in the
   [host encoding](host-support.md#host-encoding), which also lists their errors; the rest of
   the document is the job types' serde form. Unknown fields are rejected at every
@@ -161,7 +162,8 @@ Template-layer changes are always `Template`. For job-layer changes in `diff_tem
    PATH directories. A `Decoded` source has no document, so it never takes this shortcut;
    step 3 gives the same answer at the cost of one more build.
 3. Otherwise build `mid`, the new template with the old parameters and the new side's
-   limits. A change whose key
+   limits (old stored values are merged as `merge_parameters` merges them with nothing
+   requested; see [host-support.md](host-support.md#building-from-stored-values)). A change whose key
    appears in `diff_jobs(old, mid)` only is `Template`, in `diff_jobs(mid, new)` only is
    `Parameters`, and in both or neither is `Both`. The key of a field change is
    `(path, field)`; the key of a whole-node change is `(path, status)`, the status being
@@ -294,7 +296,7 @@ environment's `variables` sorted by name, and parameters and parameter spaces in
 [host encoding](host-support.md#host-encoding). `create_job` fills `Job::parameters` from a
 `HashMap` and `Environment::variables` is a `HashMap`, so the plain serde form of a job
 with more than one of either differs from run to run. Task parameter definitions are a
-list in definition order, which is task order. Every other map in a `Job` is already ordered: resolved symbol
+list in definition order, which is also task order unless an explicit `combination` reorders the dimensions. Every other map in a `Job` is already ordered: resolved symbol
 tables are lists sorted by name. `TemplateDiff` writes `oldJob` and `newJob` as
 `JobDocument`s, so its serde form is deterministic. `openjd build` prints the same form,
 and `job_from_str` reads it back.

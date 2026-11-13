@@ -132,13 +132,13 @@ impl ProductDelta {
             .fold(0u64, u64::saturating_add)
     }
 
-    /// The new tasks, in the order a host assigns them indices `old.len()`,
-    /// `old.len() + 1`, …: each box of [`added`](Self::added) in turn
-    /// (dimension `k = 0, 1, …`, where box `k` holds the tasks whose first
-    /// value not in the old space is in dimension `k`), and each box
-    /// rightmost parameter fastest. This is not the new space's iteration
-    /// order, and it depends only on the two spaces, so every plan of the
-    /// same pair yields the same sequence.
+    /// The new tasks, in the order a host creates them: each box of
+    /// [`added`](Self::added) in turn (dimension `k = 0, 1, …`, where box
+    /// `k` holds the tasks whose first value not in the old space is in
+    /// dimension `k`), and each box rightmost parameter fastest. This is not
+    /// the new space's iteration order, and it depends only on the two
+    /// spaces, so every plan of the same pair yields the same sequence. A
+    /// task is named by its parameter set; the host chooses its id.
     pub fn appended(&self) -> Result<impl Iterator<Item = TaskParameterSet> + '_, ModelError> {
         let boxes = self
             .added
@@ -158,10 +158,13 @@ impl ProductDelta {
             .fold(0u64, u64::saturating_add)
     }
 
-    /// The tasks only in the old space, each with its index in the old
-    /// space (its index at job creation, as [`TaskBox::index_of`] on
-    /// [`old`](Self::old)), in ascending index order. Streams: memory is
-    /// linear in the number of dimensions, not in the number of tasks.
+    /// The tasks only in the old space, each with its row-major index in the
+    /// old space ([`TaskBox::index_of`] on [`old`](Self::old)), in ascending
+    /// index order. A host identifies a removed task by its parameter set.
+    /// The index is only a hint: it is the task's index at job creation, so
+    /// it locates the task only while the stored job has never been
+    /// updated. Streams: memory is linear in the number of dimensions, not
+    /// in the number of tasks.
     pub fn removed(
         &self,
     ) -> Result<impl Iterator<Item = (u64, TaskParameterSet)> + '_, ModelError> {

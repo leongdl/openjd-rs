@@ -860,7 +860,7 @@ pub fn preprocess_job_parameters(
     environment_templates: &[EnvironmentTemplate],
     path_options: &PathParameterOptions<'_>,
 ) -> Result<JobParameterValues, ModelError> {
-    preprocess_job_parameters_besides(
+    preprocess_job_parameters_except(
         job_template,
         input_values,
         environment_templates,
@@ -872,7 +872,7 @@ pub fn preprocess_job_parameters(
 /// [`preprocess_job_parameters`] for the parameters `supplied` does not
 /// name. A parameter it names counts as given: it gets no default and is
 /// not missing, and its value is neither checked nor returned.
-pub(crate) fn preprocess_job_parameters_besides(
+pub(crate) fn preprocess_job_parameters_except(
     job_template: &JobTemplate,
     input_values: &JobParameterInputValues,
     environment_templates: &[EnvironmentTemplate],

@@ -38,7 +38,7 @@ use openjd_expr::{ExprType, ExprValue};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
 
-use crate::create_job::{merge_job_parameter_definitions, preprocess_job_parameters_besides};
+use crate::create_job::{merge_job_parameter_definitions, preprocess_job_parameters_except};
 use crate::error::ModelError;
 use crate::job::apply::{plan, ApplyPlan};
 use crate::job::diff::{diff_jobs, diff_steps, DiffNode, DiffOptions, DiffStatus, DiffTree};
@@ -198,14 +198,15 @@ impl TemplateInput {
     /// the values a host stored when it created the job, without
     /// preprocessing them again. A second pass resolves PATH values against
     /// this side's directories and the host's path format, so it can change
-    /// a stored value; these values reach `create_job` as given, which still
-    /// checks them against the template's constraints.
+    /// a stored value; these values reach `create_job` as given. When the
+    /// side is built, each is checked as given against every definition that
+    /// declares it, in the job template and its environment templates.
     ///
     /// They replace the values set with [`param`](Self::param) and
     /// [`params`](Self::params), which the build then ignores. They include
     /// any environment templates' parameters, so the side's
-    /// [`environment`](Self::environment)s are decoded but not used for
-    /// parameters. Unstable.
+    /// [`environment`](Self::environment)s supply no defaults, only the
+    /// constraints the values are checked against. Unstable.
     #[must_use]
     pub fn preprocessed(mut self, values: JobParameterValues) -> Self {
         self.preprocessed = Some(values);
@@ -377,7 +378,10 @@ fn load(input: &TemplateInput) -> Result<Loaded, ModelError> {
 fn build(loaded: &Loaded, values: Values<'_>, limits: &CallerLimits) -> Result<Job, ModelError> {
     let preprocessed;
     let values = match values {
-        Values::Preprocessed(v) => v,
+        Values::Preprocessed(v) => {
+            check_preprocessed(loaded, v)?;
+            v
+        }
         Values::Input(params) => {
             preprocessed = preprocess(loaded, params)?;
             &preprocessed
@@ -388,6 +392,21 @@ fn build(loaded: &Loaded, values: Values<'_>, limits: &CallerLimits) -> Result<J
         .default_validation_context()
         .with_caller_limits(limits.clone());
     create_job(&loaded.template, values, &ctx)
+}
+
+/// Check preprocessed values against every definition that declares them,
+/// in the job template and its environment templates (`create_job` checks
+/// only the job template's). Values are checked as given, never
+/// preprocessed again, so a stored Windows PATH is checked as stored.
+fn check_preprocessed(loaded: &Loaded, values: &JobParameterValues) -> Result<(), ModelError> {
+    for def in merge_job_parameter_definitions(&loaded.template, &loaded.environments)? {
+        if let Some(v) = values.get(&def.name) {
+            if v.param_type == def.param_type {
+                def.check_constraints(&v.value)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `preprocess_job_parameters` for a side's template, environments and
@@ -410,7 +429,7 @@ fn typed_values(
     kept: JobParameterValues,
     inputs: &JobParameterInputValues,
 ) -> Result<JobParameterValues, ModelError> {
-    let mut values = preprocess_job_parameters_besides(
+    let mut values = preprocess_job_parameters_except(
         &loaded.template,
         inputs,
         &loaded.environments,
@@ -450,19 +469,16 @@ fn keepable(
 
 /// The values of the origin split's middle job: the new template with the
 /// old side's values. Old input values are preprocessed against the new
-/// template. Old stored values the new template keeps are used as stored;
-/// the rest (retyped or undeclared) are preprocessed as inputs.
+/// template. Old stored values are merged as [`host::merge_parameters`]
+/// merges them with nothing requested: those the new template keeps are
+/// used as stored, retyped and undeclared ones are left out, and the rest
+/// take the new template's defaults.
 fn middle_values(old: &TemplateInput, new: &Loaded) -> Result<JobParameterValues, ModelError> {
-    let Some(stored) = &old.preprocessed else {
-        return typed_values(new, JobParameterValues::new(), &old.parameters);
-    };
-    let kept = keepable(new, stored, &JobParameterInputValues::new())?;
-    let rest: JobParameterInputValues = stored
-        .iter()
-        .filter(|(k, _)| !kept.contains_key(*k))
-        .map(|(k, v)| (k.clone(), v.value.clone()))
-        .collect();
-    typed_values(new, kept, &rest)
+    let none = JobParameterInputValues::new();
+    match &old.preprocessed {
+        None => typed_values(new, JobParameterValues::new(), &old.parameters),
+        Some(stored) => typed_values(new, keepable(new, stored, &none)?, &none),
+    }
 }
 
 /// Prefix an error with the input that failed (`old template`, `new
@@ -2247,11 +2263,15 @@ struct BuiltStep {
 
 /// Read a [`Job`] back from the JSON or YAML that `openjd build` prints
 /// (its [`JobDocument`]). JSON when the first non-whitespace character is
-/// `{`, YAML otherwise. The document's `documentVersion` must be 1, the one
-/// [`JobDocument`] writes. Unknown fields are rejected at every level, and so
-/// are a parameter or task parameter definition that is not in the host
-/// encoding and a `resolvedSymTab` entry that is not the
-/// `{name, type, value}` a `SymbolTable` serializes to.
+/// `{`, YAML otherwise. The document's `documentVersion` must be
+/// [`JobDocument::VERSION`], the one [`JobDocument`] writes. Unknown fields
+/// are rejected at every level, and so are a parameter or task parameter
+/// definition that is not in the host encoding, a `resolvedSymTab` entry
+/// that is not the `{name, type, value}` a `SymbolTable` serializes to, a
+/// number or bool where the document writes a string, and the forms
+/// template validation rules out (an empty list a template requires to be
+/// non-empty, a literal `timeout` or `notifyPeriodInSeconds` that is not a
+/// positive integer).
 ///
 /// Unstable: see the module docs.
 pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
@@ -2275,27 +2295,29 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
     if let Some(path) = dropped_key(&input, &output, String::new()) {
         return Err(err(format!("{path}: unknown field")));
     }
+    if let Some(path) = coerced_scalar(&input, &output, String::new()) {
+        return Err(err(format!("{path}: expected a string")));
+    }
     check_symbol_tables(&job).map_err(err)?;
+    check_created_forms(&job).map_err(err)?;
     Ok(job)
 }
 
-/// The `documentVersion` [`JobDocument`] writes, and the only one
-/// [`job_from_str`] reads.
-const DOCUMENT_VERSION: u64 = 1;
-
 /// Check the document is an object whose `documentVersion` is
-/// [`DOCUMENT_VERSION`].
+/// [`JobDocument::VERSION`].
 fn check_document_version(input: &Value) -> Result<(), String> {
     let Some(m) = input.as_object() else {
         return Err("expected an object".into());
     };
     match m.get("documentVersion") {
-        Some(v) if v.as_u64() == Some(DOCUMENT_VERSION) => Ok(()),
+        Some(v) if v.as_u64() == Some(JobDocument::VERSION) => Ok(()),
         Some(v) => Err(format!(
-            "documentVersion: {v} is not supported; the supported version is {DOCUMENT_VERSION}"
+            "documentVersion: {v} is not supported; the supported version is {}",
+            JobDocument::VERSION
         )),
         None => Err(format!(
-            "missing field 'documentVersion'; the supported version is {DOCUMENT_VERSION}"
+            "missing field 'documentVersion'; the supported version is {}",
+            JobDocument::VERSION
         )),
     }
 }
@@ -2366,6 +2388,136 @@ fn check_symbol_table(
         .to_symtab(PathFormat::Posix)
         .map(drop)
         .map_err(|e| format!("{path}: {e}"))
+}
+
+/// `Err("{path}: must not be empty")` for a list that is present and empty:
+/// template validation rejects one, so `create_job` never writes it.
+fn non_empty<T>(list: &Option<Vec<T>>, path: impl FnOnce() -> String) -> Result<(), String> {
+    match list {
+        Some(v) if v.is_empty() => Err(format!("{}: must not be empty", path())),
+        _ => Ok(()),
+    }
+}
+
+/// A literal `timeout` or `notifyPeriodInSeconds` must be a positive
+/// integer, as template validation requires; a format string is resolved
+/// on the worker and is not checked here.
+fn positive_integer(
+    value: &Option<FormatString>,
+    path: impl FnOnce() -> String,
+) -> Result<(), String> {
+    match value {
+        Some(v) if v.is_literal() && !v.raw().trim().parse::<i64>().is_ok_and(|n| n > 0) => {
+            Err(format!("{}: must be a positive integer", path()))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn check_action(a: &crate::job::Action, path: &str) -> Result<(), String> {
+    use crate::job::CancelationMode;
+    non_empty(&a.args, || format!("{path}.args"))?;
+    positive_integer(&a.timeout, || format!("{path}.timeout"))?;
+    match &a.cancelation {
+        Some(
+            CancelationMode::NotifyThenTerminate {
+                notify_period_in_seconds,
+            }
+            | CancelationMode::DeferredMode {
+                notify_period_in_seconds,
+                ..
+            },
+        ) => positive_integer(notify_period_in_seconds, || {
+            format!("{path}.cancelation.notifyPeriodInSeconds")
+        }),
+        _ => Ok(()),
+    }
+}
+
+fn check_environment(e: &Environment, path: &str) -> Result<(), String> {
+    if e.variables.as_ref().is_some_and(|v| v.is_empty()) {
+        return Err(format!("{path}.variables: must not be empty"));
+    }
+    if let Some(script) = &e.script {
+        non_empty(&script.embedded_files, || {
+            format!("{path}.script.embeddedFiles")
+        })?;
+        for (name, a) in script.actions.iter_named() {
+            check_action(a, &format!("{path}.script.actions.{name}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn check_environments(envs: &Option<Vec<Environment>>, path: &str) -> Result<(), String> {
+    non_empty(envs, || path.to_string())?;
+    for (j, e) in envs.iter().flatten().enumerate() {
+        check_environment(e, &format!("{path}[{j}]"))?;
+    }
+    Ok(())
+}
+
+/// Reject the forms template validation rules out, so `create_job` never
+/// writes them: an empty list where a template requires a non-empty one,
+/// and a literal `timeout` or `notifyPeriodInSeconds` that is not a
+/// positive integer.
+fn check_created_forms(job: &Job) -> Result<(), String> {
+    if job.steps.is_empty() {
+        return Err("steps: must not be empty".into());
+    }
+    check_environments(&job.job_environments, "jobEnvironments")?;
+    for (i, s) in job.steps.iter().enumerate() {
+        let at = format!("steps[{i}]");
+        non_empty(&s.dependencies, || format!("{at}.dependencies"))?;
+        check_environments(&s.step_environments, &format!("{at}.stepEnvironments"))?;
+        non_empty(&s.script.embedded_files, || {
+            format!("{at}.script.embeddedFiles")
+        })?;
+        check_action(
+            &s.script.actions.on_run,
+            &format!("{at}.script.actions.onRun"),
+        )?;
+        let attributes = s
+            .host_requirements
+            .as_ref()
+            .and_then(|h| h.attributes.as_ref());
+        for (k, a) in attributes.into_iter().flatten().enumerate() {
+            let attr = format!("{at}.hostRequirements.attributes[{k}]");
+            non_empty(&a.any_of, || format!("{attr}.anyOf"))?;
+            non_empty(&a.all_of, || format!("{attr}.allOf"))?;
+        }
+    }
+    Ok(())
+}
+
+/// The path of the first scalar in `input` that `output` writes as a
+/// string while `input` holds a number or a bool, or `None`. The job types
+/// read a number or a bool into a string field as its text (`command: 7`
+/// as `"7"`), and `create_job` never writes one there, so it is rejected.
+fn coerced_scalar(input: &Value, output: &Value, path: String) -> Option<String> {
+    match (input, output) {
+        (Value::Object(i), Value::Object(o)) => i.iter().find_map(|(k, v)| {
+            let written = o.get(k).or_else(|| {
+                ALIASES
+                    .iter()
+                    .find(|(alias, _)| alias == k)
+                    .and_then(|(_, name)| o.get(*name))
+            })?;
+            let key_path = if path.is_empty() {
+                k.clone()
+            } else {
+                format!("{path}.{k}")
+            };
+            coerced_scalar(v, written, key_path)
+        }),
+        (Value::Array(i), Value::Array(o)) => i
+            .iter()
+            .zip(o)
+            .enumerate()
+            .find_map(|(n, (iv, ov))| coerced_scalar(iv, ov, format!("{path}[{n}]"))),
+        (Value::Number(_) | Value::Bool(_), Value::String(_)) => Some(path),
+        _ => None,
+    }
 }
 
 // Objects in a job document, as paths with each list index written `[]`
@@ -2540,11 +2692,17 @@ fn step_from_built(s: BuiltStep, i: usize) -> Result<Step, String> {
 ///   `specs/model/host-support.md`, with no cached sizes or Rust variant
 ///   names.
 ///
-/// The definitions are a list in definition order, which is task order, so
+/// The definitions are a list in definition order, which the job keeps, so
 /// the document means the same as a `serde_json::Value`. [`job_from_str`]
 /// reads it back.
 #[derive(Debug, Clone, Copy)]
 pub struct JobDocument<'a>(pub &'a Job);
+
+impl JobDocument<'_> {
+    /// The `documentVersion` every job document writes, and the only one
+    /// [`job_from_str`] reads. Digests compare only within one version.
+    pub const VERSION: u64 = 1;
+}
 
 impl Serialize for JobDocument<'_> {
     fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
@@ -2559,7 +2717,7 @@ impl Serialize for JobDocument<'_> {
             job_environments,
         } = self.0;
         DocJob {
-            document_version: DOCUMENT_VERSION,
+            document_version: JobDocument::VERSION,
             name,
             description,
             extensions,

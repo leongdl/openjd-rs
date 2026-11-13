@@ -785,9 +785,9 @@ pub enum job::task_delta::TaskDelta {
 pub struct job::task_delta::ProductDelta { pub old: TaskBox, pub kept: TaskBox, pub added: Vec<TaskBox>, pub removed: Vec<TaskBox> }
 impl ProductDelta {
     pub fn appended_count(&self) -> u64;   // saturating
-    pub fn appended(&self) -> Result<impl Iterator<Item = TaskParameterSet> + '_, ModelError>;   // host index order old.len()..
+    pub fn appended(&self) -> Result<impl Iterator<Item = TaskParameterSet> + '_, ModelError>;   // the order a host creates them in
     pub fn removed_count(&self) -> u64;    // saturating
-    pub fn removed(&self) -> Result<impl Iterator<Item = (u64, TaskParameterSet)> + '_, ModelError>;   // (old index, task), ascending
+    pub fn removed(&self) -> Result<impl Iterator<Item = (u64, TaskParameterSet)> + '_, ModelError>;   // (creation index, task), ascending; the index is a hint valid only for a never-updated job
 }
 pub fn job::task_delta::task_parameter_set_document(set: &TaskParameterSet) -> serde_json::Value;   // {name: {type, value as text}}, sorted
 
@@ -802,9 +802,11 @@ impl TaskBox {
 ```
 
 `appended` yields the `added` boxes in turn, each rightmost parameter fastest: the order a
-host assigns indices `old.len()..`, which is not the new space's iteration order.
-`removed` merges the `removed` boxes into ascending old index. Both fail only when a
-box's iterator cannot be built. See [job-apply.md](job-apply.md#task-order).
+host creates them in, which is not the new space's iteration order.
+`removed` merges the `removed` boxes into ascending old index; the index is a hint, valid
+only while the stored job has never been updated, since a host names a task by its
+parameter set. Both fail only when a
+box's iterator cannot be built. See [job-apply.md](job-apply.md#task-identity).
 
 ### Template Diff (unstable)
 
@@ -818,6 +820,7 @@ pub fn job::template_diff::diff_built_jobs(old: Job, new: Job, options: &DiffOpt
 pub fn job::template_diff::job_from_str(text: &str) -> Result<Job, ModelError>;   // JSON or YAML JobDocument
 pub struct job::template_diff::JobDocument<'a>(pub &'a Job);   // Serialize: "documentVersion": 1, then the Job serde form, parameters and environment variables sorted,
                                                                  // parameters and parameter spaces in the host encoding; Debug, Clone, Copy
+impl JobDocument<'_> { pub const VERSION: u64 = 1; }   // the documentVersion every job document writes and job_from_str reads
 
 pub enum job::template_diff::TemplateSource { Path(PathBuf), Text(String), Value(serde_json::Value), Decoded(Box<JobTemplate>) }
 impl TemplateSource { pub fn guess(s: &str) -> Self; }   // Path if s names an existing file, else Text
@@ -910,8 +913,11 @@ impl<T: ToDocument> Op<'_, T> {
 pub trait job::apply::ToDocument { fn as_document(&self) -> impl Serialize + '_; }   // for Job, Step, Environment, JobParameter, StepParameterSpace
 pub enum job::apply::TaskChange { Boxes(Box<ProductDelta>), All, Replace }
 impl TaskChange {
-    pub fn as_document(&self) -> impl Serialize + '_;   // {"change": "all" | "replace" | "boxes", …}
-    pub fn to_value(&self) -> Result<serde_json::Value, ModelError>;
+    pub fn tasks<'s>(&'s self, space: Option<&'s StepParameterSpace>)
+        -> Result<impl Iterator<Item = TaskParameterSet> + 's, ModelError>;   // the tasks added, in create_job's order for All/Replace
+    pub fn task_count(&self, space: Option<&StepParameterSpace>) -> Result<u64, ModelError>;
+    pub fn as_document<'s>(&'s self, space: Option<&'s StepParameterSpace>) -> impl Serialize + 's;   // tasks named by value, no positions
+    pub fn to_value(&self, space: Option<&StepParameterSpace>) -> Result<serde_json::Value, ModelError>;
 }
 #[non_exhaustive] pub enum job::apply::MutationKind { JobMetadata, JobExtensions, ParameterValue, ParameterAdd, ParameterRemove,
     EnvVariables, EnvScript, EnvMetadata, EnvSymbols, EnvAdd, EnvRemove, EnvReorder, StepMetadata, StepScript,
@@ -961,7 +967,11 @@ pub trait job::apply::JobApplier {   // object safe
 ```
 
 `StepRef` names a step by name and index, so a store keyed by name needs no job to resolve
-the index. `OpTarget` is the owned form a `Refusal` and `ApplyError::Vetoed` carry. The
+the index. A task is named by its parameter set, never by a position, so a host keeps its
+own task ids: `TaskChange::tasks` gives the tasks a change adds (for `All` and `Replace`,
+the whole new space in `create_job`'s order, so a host never enumerates a space), and the
+task change document lists those and, for `Boxes`, the removed sets (see
+[job-apply.md](job-apply.md#task-identity)). `OpTarget` is the owned form a `Refusal` and `ApplyError::Vetoed` carry. The
 `as_document` views write each object in its `JobDocument` form, in the host encoding of
 [host-support.md](host-support.md#host-encoding), and borrow the plan; `to_value` turns one
 into the same document as a `serde_json::Value` (every order in it is a list order, so key

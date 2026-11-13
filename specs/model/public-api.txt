@@ -273,8 +273,10 @@ pub openjd_model::job::apply::TaskChange::All
 pub openjd_model::job::apply::TaskChange::Boxes(alloc::boxed::Box<openjd_model::job::task_delta::ProductDelta>)
 pub openjd_model::job::apply::TaskChange::Replace
 impl openjd_model::job::apply::TaskChange
-pub fn openjd_model::job::apply::TaskChange::as_document(&self) -> impl serde_core::ser::Serialize + '_
-pub fn openjd_model::job::apply::TaskChange::to_value(&self) -> core::result::Result<serde_json::value::Value, openjd_model::error::ModelError>
+pub fn openjd_model::job::apply::TaskChange::as_document<'s>(&'s self, core::option::Option<&'s openjd_model::job::StepParameterSpace>) -> impl serde_core::ser::Serialize + 's
+pub fn openjd_model::job::apply::TaskChange::task_count(&self, core::option::Option<&openjd_model::job::StepParameterSpace>) -> core::result::Result<u64, openjd_model::error::ModelError>
+pub fn openjd_model::job::apply::TaskChange::tasks<'s>(&'s self, core::option::Option<&'s openjd_model::job::StepParameterSpace>) -> core::result::Result<impl core::iter::traits::iterator::Iterator<Item = openjd_model::types::TaskParameterSet> + 's, openjd_model::error::ModelError>
+pub fn openjd_model::job::apply::TaskChange::to_value(&self, core::option::Option<&openjd_model::job::StepParameterSpace>) -> core::result::Result<serde_json::value::Value, openjd_model::error::ModelError>
 impl core::clone::Clone for openjd_model::job::apply::TaskChange
 pub fn openjd_model::job::apply::TaskChange::clone(&self) -> openjd_model::job::apply::TaskChange
 impl core::cmp::PartialEq for openjd_model::job::apply::TaskChange
@@ -826,6 +828,8 @@ impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::Dif
 impl serde_core::ser::Serialize for openjd_model::job::template_diff::DiffStat
 pub fn openjd_model::job::template_diff::DiffStat::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub struct openjd_model::job::template_diff::JobDocument<'a>(pub &'a openjd_model::job::Job)
+impl openjd_model::job::template_diff::JobDocument<'_>
+pub const openjd_model::job::template_diff::JobDocument<'_>::VERSION: u64
 impl serde_core::ser::Serialize for openjd_model::job::template_diff::JobDocument<'_>
 pub fn openjd_model::job::template_diff::JobDocument<'_>::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'a> core::clone::Clone for openjd_model::job::template_diff::JobDocument<'a>

@@ -735,3 +735,163 @@ fn a_range_flagged_contiguous_writes_its_canonical_text() {
     assert_eq!(doc, serde_json::to_value(JobDocument(&a)).unwrap());
     assert_eq!(job_digest(&a).unwrap(), job_digest(&b).unwrap());
 }
+
+const PNX: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: PN
+parameterDefinitions:
+  - {name: P, type: PATH}
+  - {name: Count, type: INT}
+  - {name: X, type: STRING, default: s}
+steps:
+  - name: A
+    script: {actions: {onRun: {command: a, args: ["{{RawParam.P}}", "{{Param.Count}}"]}}}
+"#;
+
+#[test]
+fn the_middle_job_is_built_as_merge_parameters_builds() {
+    // The new template drops `X`, or retypes it with a default; the host
+    // merges the stored values with `Count` requested, as an update does.
+    // Before, the middle job preprocessed the stored `X` against the new
+    // template, failed, and marked every job change `both`.
+    let dropped = PNX.replace("  - {name: X, type: STRING, default: s}\n", "");
+    let retyped = PNX.replace(
+        "{name: X, type: STRING, default: s}",
+        "{name: X, type: INT, default: 3}",
+    );
+    let count = "~ parameters[Count].value: 1 -> 2  [parameters]";
+    let symtab = "~ steps[A].resolvedSymTab: Param.Count=1, RawParam.P=/w/out -> \
+                  Param.Count=2, RawParam.P=/w/out  [parameters]";
+    let cases = [
+        (
+            &dropped,
+            vec![
+                "- parameterDefinitions[X]: {default: s, type: STRING}  [template]",
+                count,
+                "- parameters[X]: s  [template]",
+                symtab,
+            ],
+        ),
+        (
+            &retyped,
+            vec![
+                "~ parameterDefinitions[X].default: s -> 3  [template]",
+                "~ parameterDefinitions[X].type: STRING -> INT  [template]",
+                count,
+                "~ parameters[X].type: STRING -> INT  [template]",
+                "~ parameters[X].value: \"s\" (STRING) -> 3 (INT)  [template]",
+                symtab,
+            ],
+        ),
+    ];
+    for (new_template, want) in cases {
+        assert_ne!(new_template, PNX);
+        let stored = stored_as(PNX, &[("P", "/w/out"), ("Count", "1")], PathFormat::Posix);
+        let requested: JobParameterInputValues =
+            [("Count".to_string(), ExprValue::String("2".into()))]
+                .into_iter()
+                .collect();
+        let merged = merge_parameters(&stored, &requested, &text(new_template)).unwrap();
+        let d = diff_templates(
+            &text(PNX).preprocessed(stored),
+            &text(new_template).preprocessed(merged),
+            &DiffOptions::default(),
+        )
+        .unwrap();
+        let got: Vec<String> = d.changes.iter().map(ToString::to_string).collect();
+        assert_eq!(got, want, "{new_template}");
+        assert!(d.notes.is_empty(), "{:?}", d.notes);
+    }
+}
+
+#[test]
+fn a_preprocessed_side_and_an_input_side_never_count_as_the_same_parameters() {
+    // Both sides give `Out` the text `out`, but the input side preprocesses
+    // it against the working directory, so the parameters did change.
+    let stored: JobParameterValues = [(
+        "Out".to_string(),
+        JobParameterValue {
+            param_type: JobParameterType::Path,
+            value: ExprValue::String("out".into()),
+        },
+    )]
+    .into_iter()
+    .collect();
+    let d = diff_templates(
+        &text(OUT).param("Out", "out"),
+        &text(OUT).preprocessed(stored),
+        &DiffOptions::default(),
+    )
+    .unwrap();
+    let got: Vec<String> = d.changes.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        got,
+        [
+            format!("~ parameters[Out].value: {CWD}{SEP}out -> out  [parameters]"),
+            format!("~ steps[A].resolvedSymTab: RawParam.Out={CWD}{SEP}out -> RawParam.Out=out  [parameters]"),
+        ]
+    );
+}
+
+const Q_JOB: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: Q
+steps:
+  - name: A
+    script: {actions: {onRun: {command: a}}}
+"#;
+
+const Q_ENV: &str = r#"
+specificationVersion: environment-2023-09
+parameterDefinitions:
+  - {name: Q, type: STRING, allowedValues: [a, b]}
+environment:
+  name: E
+  variables: {Q: "{{Param.Q}}"}
+"#;
+
+#[test]
+fn a_kept_value_only_an_environment_template_declares_is_checked() {
+    let side = || text(Q_JOB).environment(TemplateSource::Text(Q_ENV.to_string()));
+    let stored: JobParameterValues = [(
+        "Q".to_string(),
+        JobParameterValue {
+            param_type: JobParameterType::String,
+            value: ExprValue::String("c".into()),
+        },
+    )]
+    .into_iter()
+    .collect();
+    let merged = merge_parameters(&stored, &JobParameterInputValues::new(), &side()).unwrap();
+    assert_eq!(sorted(&merged), ["Q=STRING:c"]);
+    let err = side().preprocessed(merged.clone()).build().unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: Parameter 'Q': value 'c' is not in allowed values"
+    );
+    let err = diff_templates(
+        &side().preprocessed(merged.clone()),
+        &side().preprocessed(merged),
+        &DiffOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: old template: Parameter 'Q': value 'c' is not in allowed values"
+    );
+    // A value the environment template allows builds.
+    let mut ok = stored;
+    ok.get_mut("Q").unwrap().value = ExprValue::String("b".into());
+    assert!(side().preprocessed(ok).build().is_ok());
+}
+
+#[test]
+fn a_null_step_environments_list_is_no_step_environments() {
+    let document = doc("steps: [{name: S, stepEnvironments: null}]");
+    let fragment = template_step_fragment(&document, "S").unwrap();
+    assert!(fragment.step_environments.is_empty());
+    assert_eq!(
+        fragment.step.to_string(),
+        r#"{"name":"S","stepEnvironments":null}"#
+    );
+}

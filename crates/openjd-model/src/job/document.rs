@@ -349,6 +349,12 @@ pub(crate) fn definition_from_document(
         ));
     }
     keys(m, path, &allowed, &required)?;
+    if m.get("list")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty)
+    {
+        return Err(format!("{path}.list: must not be empty"));
+    }
     let name = if with_name {
         Some(string(m, "name", path)?.to_string())
     } else {

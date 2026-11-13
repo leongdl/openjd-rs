@@ -146,26 +146,48 @@ works. `Refused` displays as its refusal, `Vetoed` as `{target}: {error}`, `Stor
 or the `ModelError`; a store error appears in the message only, since `E` need not be an
 `Error`.
 
-## Task order
+## Task identity
 
-A `TaskChange::Boxes` keeps the kept tasks at their old indices. The host gives the new
-tasks indices `old.len()`, `old.len() + 1`, … in `ProductDelta::appended` order: the
+A task is identified by its parameter values: its task parameter set, written as
+`task_parameter_set_document` writes it (name to `{type, value}`). A task id is materialized
+state, so it is the host's: openjd-rs never asks a host to compute a task's position or to
+trust one. A host already stores each task's parameter set, so it maps a set to its own
+task, and it gives each new task an id of its choosing.
+
+A `TaskChange` names every task it touches by its set:
+
+- `Boxes`: remove the tasks of `ProductDelta::removed`, then add those of
+  `ProductDelta::appended`. Every other task is kept, with its id.
+- `All` (a step add) and `Replace`: the step's tasks become exactly those of
+  `TaskChange::tasks(space)`. A host may keep a stored task whose set is in the list, with
+  its id, and removes the rest.
+
+`TaskChange::tasks(space)` yields the tasks a change adds, in a deterministic order. For
+`All` and `Replace` it is every task of the step's new space in `create_job`'s order:
+`StepParameterSpaceIterator` with the chunk override `create_job` counts tasks with
+(`Some(1)`, one task per chunked value), or one task with no parameters for a step without
+a space. A host never enumerates a space itself: a `combination` reorders dimensions
+(`combination: "B * A"` with definitions `[A, B]` makes `B` the outer dimension), so
+definition order alone is not task order. For `Boxes` it is `ProductDelta::appended`: the
 `added` boxes in turn, each rightmost parameter fastest. Box `k` holds the new tasks whose
 first value missing from the old space is in dimension `k` (in iteration order), so the
 order groups tasks by that dimension and is not the new space's iteration order. For
 `Frame` `1-2` × `Cam` `[a, b]` to `1-3` × `[b, c]`:
 
-| host index | task | box |
+| order | task | box |
 |---|---|---|
-| 4 | `Frame=3, Cam=b` | 0 |
-| 5 | `Frame=3, Cam=c` | 0 |
-| 6 | `Frame=1, Cam=c` | 1 |
-| 7 | `Frame=2, Cam=c` | 1 |
+| 1 | `Frame=3, Cam=b` | 0 |
+| 2 | `Frame=3, Cam=c` | 0 |
+| 3 | `Frame=1, Cam=c` | 1 |
+| 4 | `Frame=2, Cam=c` | 1 |
 
-`ProductDelta::removed` yields each removed task with its old index (its index at job
-creation), ascending, merging the `removed` boxes as it goes. Both orders depend only on
-the two parameter spaces, so every plan of the same jobs, in any process, yields the same
-sequences. `appended_count` and `removed_count` give the sizes without iterating.
+`ProductDelta::removed` yields each removed task in ascending order of its index in the old
+space, merging the `removed` boxes as it goes, and returns that index beside it. The index
+is only a hint: it is the task's index at job creation, so it locates the task only while
+the stored job has never been updated. The task change document does not carry it. Both
+orders depend only on the two parameter spaces, so every plan of the same jobs, in any
+process, yields the same sequences. `appended_count`, `removed_count` and
+`TaskChange::task_count` give the sizes without iterating.
 
 ## Host adaptors
 
@@ -182,38 +204,56 @@ Every payload has a plain-data form that needs nothing outside these types:
 | `job`, `parameter`, `environment`, `step` | `Op<'_, T>` | `Op::as_document`: `{"change": "add" \| "modify" \| "remove", "old"?: …, "new"?: …}` |
 | `step`, `tasks` | `StepRef` | `Serialize`: `{"name": …, "index": …}` |
 | `tasks` | `Option<&StepParameterSpace>` | `ToDocument`, the `JobDocument` form |
-| `tasks` | `&TaskChange` | `TaskChange::as_document` |
+| `tasks` | `&TaskChange` | `TaskChange::as_document(space)` |
 
 Objects inside an op (`Job`, `Step`, `Environment`, `JobParameter`, `StepParameterSpace`,
 through `ToDocument`) are written as `JobDocument` writes them, in the
 [host encoding](host-support.md#host-encoding): `parameters` and environment `variables`
 sorted by name, typed values as `{type, value}`, and `taskParameterDefinitions` a list in
 definition order. `Op::Modify::node` is left out,
-because it indexes the plan's diff. `TaskChange::as_document` is `{"change": "all"}`,
-`{"change": "replace"}` (the host enumerates the new space for both, as at job creation),
-or
+because it indexes the plan's diff.
+
+`TaskChange::as_document(space)` names every task by its set, written by
+`task_parameter_set_document` (name to `{type, value}`, the value as text so a float keeps
+its literal), and holds no positions (see [task identity](#task-identity)). `Frames` `1-2`
+to `1-4` is
 
 ```text
-{"change": "boxes", "oldCount": 2, "keptCount": 2, "appendedCount": 2,
- "appended": [{"Frame": {"type": "INT", "value": "3"}}, …], "removedCount": 0, "removed": []}
+{"change": "boxes", "oldCount": 2, "keptCount": 2,
+ "appendedCount": 2, "appended": [{"Frame": {"type": "INT", "value": "3"}}, {"Frame": {"type": "INT", "value": "4"}}],
+ "removedCount": 0, "removed": []}
 ```
 
-with `appended` in [task order](#task-order) and `removed` as ascending old indices. A task
-is written by `task_parameter_set_document`: name to `{type, value}`, the value as text so a
-float keeps its literal. The document lists every changed task, so its size is linear in
-them.
+and `1-4` to `3-6` removes `1` and `2` by value:
+
+```text
+{"change": "boxes", "oldCount": 4, "keptCount": 2,
+ "appendedCount": 2, "appended": [{"Frame": {"type": "INT", "value": "5"}}, {"Frame": {"type": "INT", "value": "6"}}],
+ "removedCount": 2, "removed": [{"Frame": {"type": "INT", "value": "1"}}, {"Frame": {"type": "INT", "value": "2"}}]}
+```
+
+`All` and `Replace` carry the step's whole new task list, from `TaskChange::tasks`:
+`{"change": "all" | "replace", "taskCount": n, "tasks": [<task parameter set>, …]}`.
+
+The document lists every task the change adds or removes, so for `All` and `Replace` it is
+linear in the step's task count: the same size as the task rows the host writes for them.
+The lists are serialized as they are iterated, not collected first, but a consumer that
+parses the whole document (JSON text into Python, a `serde_json::Value`) holds it all at
+once. That is the trade-off of a self-contained document: a host reads one value and never
+calls back into openjd-rs. An adaptor written in Rust that would rather stream a large
+step calls `TaskChange::tasks(space)` and `task_count` itself and hands the host the tasks
+in batches; the order is the same.
 
 `as_document` returns a `Serialize` view that borrows the plan; `to_value` is the same
 document as a `serde_json::Value`. Every order in a document is a list order, so the two
-agree, and a host may read either into maps that do not keep key order. A host that
-enumerates a space for `All` or `Replace` from `taskParameterDefinitions`, rightmost
-fastest, gets `create_job`'s task order.
+agree, and a host may read either into maps that do not keep key order.
 
 The reference adaptor is `DynStore` in `test_job_apply.rs`. It is used through
 `&mut dyn JobApplier<Error = Box<dyn Error + Send + Sync>>`, appends one
 `serde_json::Value` per call (`{"call": "step", "step": …, "op": …}`), and forwards the call
 to an inner store. The tests replay the oracle cases through it, assert the whole log for
-one case, and resume after an injected write failure.
+one case, resume after an injected write failure, and drive `ValueStore`, a store keyed by
+task values that reads only the task change documents, through chained updates.
 
 A PyO3 adaptor (in openjd-model-for-python, not here) has the same shape: a struct holding
 a `Py<PyAny>`, the Python store object, whose trait methods take the GIL and call the
@@ -287,8 +327,11 @@ impl JobApplier for PyStore {
         space: Option<&StepParameterSpace>,
         change: &TaskChange,
     ) -> PyResult<()> {
+        // The change lists its tasks, in create_job's order for All and
+        // Replace, so Python never enumerates the space.
+        let tasks = change.as_document(space);
         let space = space.map(ToDocument::as_document);
-        self.call("tasks", &[&step, &space, &change.as_document()])
+        self.call("tasks", &[&step, &space, &tasks])
     }
 }
 
@@ -314,32 +357,40 @@ write, as for any store.
 ## Tests
 
 `crates/openjd-model/src/test_job_apply.rs`. `JobRebuilder` is an in-memory store that,
-like a real adapter, maps new step indices to its own ids once. It rejects:
+like a real adapter, maps new step indices to its own ids once. It gives each task a host
+id and matches tasks by their values, never by position. It rejects:
 - a step whose dependency is missing;
 - the removal of a step that still has dependents;
 - an environment insert past the end of the list;
 - a modify at the wrong index;
-- an added step placed past the end of the list. It places adds by index on `commit`.
+- an added step placed past the end of the list. It places adds by index on `commit`;
+- the removal of a task it does not hold, and the append of one it does.
 
 The oracle: after `apply(a, b)` the store holds `b`. That covers parameters, steps by
 name and in order, and job environments in order. It also covers each step's task-definition order
 where that decides task order (no `combination`), and its task list. The task list is
-compared in order, except after a `Boxes` op, where appends are expected to land after
-the old tasks.
+compared in order, except after a `Boxes` op, where it is compared as a set.
 It is run in both directions for the example templates, for parameter-only changes,
 for job-environment inserts, moves and deletes, for a symbol-table-only step change,
 for a definition reorder, and for step graphs where topological order differs from index
 order (adds and removes). Other tests cover plan order and kinds, policy refusal with zero
 writes, store veto, resuming after a failed write, repeated names, and `combination: "*"`.
 Every kind is produced by some test, and for each one a policy that allows every other kind
-in that plan refuses it with no writes. The adaptor tests above cover the dyn path; others
-assert each refusal message in full, every kind's name round trip, that `MutationKind::ALL`
-lists every variant (an exhaustive match whose arms index a fixed list by constant,
-so a new variant fails to compile, or fails the test, until `ALL` lists it), `AllowList::from_names`, that each op's document equals the matching part of the
-`JobDocument`, one whole `check` document for a job, an environment and a step op, that a
-host enumerating a step add's and a `Replace`'s space from the document (definitions `[Z, A]`)
-gets `create_job`'s task order, that 20 plans of independently rebuilt jobs are equal, and
-that resuming after a failed write with a plan of rebuilt jobs leaves the store holding the
-new job.
+in that plan refuses it with no writes.
+
+`ValueStore` is a store keyed by task values that reads only the task change documents,
+through `DynStore`. It and `JobRebuilder` apply chained updates to one stored job (append
+then remove, remove then append, and a product under `combination: "B * A"` changed three
+times); after each update both hold exactly the new job's tasks, and every kept task keeps
+its id. The adaptor tests above cover the dyn path; others assert each refusal message in
+full, every kind's name round trip, that `MutationKind::ALL` lists every variant (an
+exhaustive match whose arms index a fixed list by constant, so a new variant fails to
+compile, or fails the test, until `ALL` lists it), `AllowList::from_names`, that each op's
+document equals the matching part of the `JobDocument`, one whole `check` document for a
+job, an environment and a step op, a whole `Boxes` document with appends and removals, that
+the `All` and `Replace` documents list `create_job`'s tasks (definitions `[Z, A]`, and
+`combination: "B * A"` for a step add and a dimension reorder), that 20 plans of
+independently rebuilt jobs are equal, and that resuming after a failed write with a plan of
+rebuilt jobs leaves the store holding the new job.
 `test_task_delta.rs` checks `appended` and `removed` against enumeration for every product
 case, and `removed`'s old indices for three dimensions.

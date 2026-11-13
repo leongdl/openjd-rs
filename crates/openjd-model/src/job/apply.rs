@@ -33,7 +33,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::str::FromStr;
 
-use serde::ser::{Error as _, SerializeMap};
+use serde::ser::{Error as _, SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
 
 use crate::error::ModelError;
@@ -46,6 +46,8 @@ use crate::job::task_delta::{task_delta, task_parameter_set_document, ProductDel
 use crate::job::template_diff::{DocEnvironment, DocStep, JobDocument};
 use crate::job::{Environment, Job, JobParameter, Step, StepParameterSpace};
 use crate::step_dependency_graph::StepDependencyGraph;
+use crate::step_param_space::StepParameterSpaceIterator;
+use crate::types::TaskParameterSet;
 
 /// Index of a step: into `new.steps`, or into `old.steps` for a removal.
 pub type StepIndex = usize;
@@ -95,7 +97,7 @@ impl fmt::Display for OpTarget {
 /// A model type with a plain-data form: the form [`JobDocument`] writes it
 /// in. `parameters` and environment `variables` are sorted by name, typed
 /// values are in the host encoding, and `taskParameterDefinitions` is a list
-/// in definition order (which is task order), so no part of the document
+/// in definition order, so no part of the document
 /// depends on the order of an object's keys. See `specs/model/host-support.md`.
 pub trait ToDocument {
     /// The document view. It borrows `self` and serializes on demand.
@@ -219,70 +221,153 @@ impl<T: ToDocument> Serialize for OpDocument<'_, T> {
 }
 
 /// How a step's tasks change.
+///
+/// A task is identified by its parameter values, never by a position: ids
+/// are the host's. A host maps each task parameter set to its own task, and
+/// gives each new task an id of its choosing. See "Task identity" in
+/// `specs/model/job-apply.md`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskChange {
-    /// Product space: keep `kept`, append `added`, delete `removed`. The
-    /// host's order for both is [`ProductDelta::appended`] and
-    /// [`ProductDelta::removed`].
+    /// Product space: keep the tasks in `kept`, add those in `added`, delete
+    /// those in `removed`, each named by its parameter set. The order of
+    /// the additions is [`ProductDelta::appended`].
     Boxes(Box<ProductDelta>),
-    /// A newly added step: all tasks of its space, store indices from 0.
+    /// A newly added step: every task of its space, from [`tasks`](Self::tasks).
     All,
     /// No per-task mapping (association, chunking, a parameter added or
-    /// removed, ...): replace every task.
+    /// removed, ...): the step's tasks become exactly those of its new
+    /// space, from [`tasks`](Self::tasks).
     Replace,
 }
 
 impl TaskChange {
-    /// The change as plain data. `All` is `{"change": "all"}` and `Replace`
-    /// is `{"change": "replace"}`: the host enumerates the new space for
-    /// those, as at job creation. `Boxes` is
+    /// The tasks this change adds, in the order a host creates them. For
+    /// `All` and `Replace`, every task of `space` (the step's new parameter
+    /// space) in `create_job`'s order: [`StepParameterSpaceIterator`] with
+    /// the chunk override `create_job` counts tasks with (`Some(1)`, one
+    /// task per chunked value), and one task with no parameters when
+    /// `space` is `None`. For `Boxes`, [`ProductDelta::appended`]; `space`
+    /// is not read. A host never enumerates a space itself: a `combination`
+    /// reorders dimensions, so definition order alone is not task order.
+    pub fn tasks<'s>(
+        &'s self,
+        space: Option<&'s StepParameterSpace>,
+    ) -> Result<impl Iterator<Item = TaskParameterSet> + 's, ModelError> {
+        let tasks: Box<dyn Iterator<Item = TaskParameterSet> + 's> = match (self, space) {
+            (TaskChange::Boxes(d), _) => Box::new(d.appended()?),
+            (TaskChange::All | TaskChange::Replace, None) => {
+                Box::new(std::iter::once(TaskParameterSet::new()))
+            }
+            (TaskChange::All | TaskChange::Replace, Some(s)) => Box::new(
+                StepParameterSpaceIterator::new_with_chunk_override(s, Some(CREATE_JOB_CHUNKS))?,
+            ),
+        };
+        Ok(tasks)
+    }
+
+    /// The number of tasks [`tasks`](Self::tasks) yields, without iterating.
+    pub fn task_count(&self, space: Option<&StepParameterSpace>) -> Result<u64, ModelError> {
+        Ok(match (self, space) {
+            (TaskChange::Boxes(d), _) => d.appended_count(),
+            (TaskChange::All | TaskChange::Replace, None) => 1,
+            (TaskChange::All | TaskChange::Replace, Some(s)) => {
+                StepParameterSpaceIterator::new_with_chunk_override(s, Some(CREATE_JOB_CHUNKS))?
+                    .len()
+            }
+        })
+    }
+
+    /// The change as plain data, every task named by its parameter set
+    /// ([`task_parameter_set_document`]). `space` is the step's new
+    /// parameter space, as [`JobApplier::tasks`] receives it. `All` and
+    /// `Replace` are
+    ///
+    /// ```text
+    /// {"change": "all" | "replace", "taskCount": n, "tasks": [<task parameter set>, …]}
+    /// ```
+    ///
+    /// with `tasks` from [`tasks`](Self::tasks), so a host never enumerates
+    /// the space. `Boxes` is
     ///
     /// ```text
     /// {"change": "boxes", "oldCount": n, "keptCount": n,
     ///  "appendedCount": n, "appended": [<task parameter set>, …],
-    ///  "removedCount": n, "removed": [<old index>, …]}
+    ///  "removedCount": n, "removed": [<task parameter set>, …]}
     /// ```
     ///
-    /// with `appended` in [`ProductDelta::appended`] order, so the i-th
-    /// entry takes index `oldCount + i`, and `removed` ascending. A task
-    /// parameter set is written as
-    /// [`task_parameter_set_document`]. Every task is written, so the
-    /// document's size is linear in the number of tasks that change.
-    pub fn as_document(&self) -> impl Serialize + '_ {
-        TaskChangeDocument(self)
+    /// with `appended` in [`ProductDelta::appended`] order and `removed` in
+    /// [`ProductDelta::removed`] order. The document holds no positions.
+    /// Every listed task is written, so its size is linear in the number of
+    /// tasks the change adds and removes (for `All` and `Replace`, the whole
+    /// new space); the lists are written as they are iterated, without
+    /// first being collected. A Rust adaptor that would rather stream the
+    /// tasks calls [`tasks`](Self::tasks) itself.
+    pub fn as_document<'s>(&'s self, space: Option<&'s StepParameterSpace>) -> impl Serialize + 's {
+        TaskChangeDocument {
+            change: self,
+            space,
+        }
     }
 
     /// [`as_document`](Self::as_document) as a `serde_json::Value`.
-    pub fn to_value(&self) -> Result<serde_json::Value, ModelError> {
-        to_json_value(self.as_document(), "task change")
+    pub fn to_value(
+        &self,
+        space: Option<&StepParameterSpace>,
+    ) -> Result<serde_json::Value, ModelError> {
+        to_json_value(self.as_document(space), "task change")
     }
 }
 
-struct TaskChangeDocument<'a>(&'a TaskChange);
+/// The chunk override `create_job` counts a step's tasks with.
+const CREATE_JOB_CHUNKS: u64 = 1;
+
+struct TaskChangeDocument<'a> {
+    change: &'a TaskChange,
+    space: Option<&'a StepParameterSpace>,
+}
+
+/// A list of task parameter sets, written as it is iterated.
+struct TaskList<F>(F);
+
+impl<F, I> Serialize for TaskList<F>
+where
+    F: Fn() -> Result<I, ModelError>,
+    I: Iterator<Item = TaskParameterSet>,
+{
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        let mut seq = ser.serialize_seq(None)?;
+        for t in (self.0)().map_err(S::Error::custom)? {
+            seq.serialize_element(&task_parameter_set_document(&t))?;
+        }
+        seq.end()
+    }
+}
 
 impl Serialize for TaskChangeDocument<'_> {
     fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         let mut m = ser.serialize_map(None)?;
-        match self.0 {
-            TaskChange::All => m.serialize_entry("change", "all")?,
-            TaskChange::Replace => m.serialize_entry("change", "replace")?,
+        let (change, space) = (self.change, self.space);
+        let added = TaskList(|| change.tasks(space));
+        match change {
+            TaskChange::All | TaskChange::Replace => {
+                let name = if matches!(change, TaskChange::All) {
+                    "all"
+                } else {
+                    "replace"
+                };
+                m.serialize_entry("change", name)?;
+                let count = change.task_count(space).map_err(S::Error::custom)?;
+                m.serialize_entry("taskCount", &count)?;
+                m.serialize_entry("tasks", &added)?;
+            }
             TaskChange::Boxes(d) => {
                 m.serialize_entry("change", "boxes")?;
                 m.serialize_entry("oldCount", &d.old.len())?;
                 m.serialize_entry("keptCount", &d.kept.len())?;
                 m.serialize_entry("appendedCount", &d.appended_count())?;
-                let appended: Vec<serde_json::Value> = d
-                    .appended()
-                    .map_err(S::Error::custom)?
-                    .map(|t| task_parameter_set_document(&t))
-                    .collect();
-                m.serialize_entry("appended", &appended)?;
+                m.serialize_entry("appended", &added)?;
                 m.serialize_entry("removedCount", &d.removed_count())?;
-                let removed: Vec<u64> = d
-                    .removed()
-                    .map_err(S::Error::custom)?
-                    .map(|(i, _)| i)
-                    .collect();
+                let removed = TaskList(|| Ok(d.removed()?.map(|(_, t)| t)));
                 m.serialize_entry("removed", &removed)?;
             }
         }
@@ -550,7 +635,7 @@ impl Serialize for PlannedOpDocument<'_, '_> {
                 m.serialize_entry("action", "tasks")?;
                 m.serialize_entry("step", step)?;
                 m.serialize_entry("space", &space.map(SpaceDoc::new))?;
-                m.serialize_entry("tasks", &change.as_document())?;
+                m.serialize_entry("tasks", &change.as_document(*space))?;
             }
         }
         m.end()
@@ -677,7 +762,9 @@ pub trait JobApplier {
     /// A step, including its step environments. `Modify` carries the whole
     /// new step; a step whose only change is its tasks gets no step op.
     fn step(&mut self, step: StepRef<'_>, op: Op<'_, Step>) -> Result<(), Self::Error>;
-    /// A step's tasks.
+    /// A step's tasks. `change` names tasks by their parameter values, never
+    /// by position; [`TaskChange::tasks`] gives the tasks it adds. The host
+    /// maps them to its own task ids.
     fn tasks(
         &mut self,
         step: StepRef<'_>,
