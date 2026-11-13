@@ -565,9 +565,10 @@ fn header_var(name: &str) -> String {
 }
 
 /// The `openjd` lines of [`HELP_EXAMPLES`], read as a POSIX shell would,
-/// for the subset the examples use: words split on spaces, single quotes,
-/// `$E` and `$M` (set by the header) expanded outside single quotes, and a
-/// trailing `< file` taken as stdin. Anything else shell-special panics.
+/// for the subset the examples use. Inside single quotes every character is
+/// literal. Outside them, words split on spaces, `$E` and `$M` (set by the
+/// header) expand, a trailing `< file` is taken as stdin, and only ASCII
+/// alphanumerics and `/-_.=:,+@%` are literal; any other character panics.
 fn help_examples() -> Vec<HelpExample> {
     let vars = [('E', header_var("E")), ('M', header_var("M"))];
     for (name, dir) in &vars {
@@ -598,8 +599,9 @@ fn help_examples() -> Vec<HelpExample> {
                             value.unwrap_or_else(|| panic!("only $E and $M are supported: {line}"));
                         word.push_str(value);
                     }
-                    '"' | '\\' | '`' => panic!("unsupported shell syntax {ch:?}: {line}"),
-                    _ => word.push(ch),
+                    '<' if word.is_empty() && chars.peek() == Some(&' ') => word.push(ch),
+                    _ if ch.is_ascii_alphanumeric() || "/-_.=:,+@%".contains(ch) => word.push(ch),
+                    _ => panic!("unsupported shell syntax {ch:?}: {line}"),
                 }
             }
             assert!(!quoted, "unclosed quote in help example: {line}");

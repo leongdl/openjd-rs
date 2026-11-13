@@ -78,12 +78,14 @@ whose parameter `A` is a STRING.
 - `file://~/p.json` does not expand `~`: `Provided parameter file '~/p.json' does not exist.`
 - JSON `null` becomes the text `null`: `{"A": null}` gives `~ parameter A: x -> null`, the
   same as `A=null`.
-- Every value is passed as text. JSON `{"A": true}` gives `true`, and a YAML file with
-  `A: 007` gives `7.0`.
+- Every value is passed as text. JSON `{"A": true}` gives `true`.
+- For an INT parameter `N`, a YAML file with `N: 007` fails with `Parameter 'N': Value
+  '7.0' is not a valid integer or integer string.`, where `deadline` gives 7.
 - A malformed parameter file reports `Job parameter file 'file://bad.yaml' should contain
   a dictionary.`, without the parse location.
-- `-p =v` is accepted when parsed and fails later, naming no parameter:
-  `Job parameter values provided for parameters that are not defined in the template: `.
+- The parser accepts `-p =v`; building the job then fails with an error that names no
+  parameter: `Job parameter values provided for parameters that are not defined in the
+  template: `.
 
 Which library call runs:
 

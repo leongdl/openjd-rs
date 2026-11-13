@@ -10,7 +10,8 @@ and the rationale for supporting each format.
 
 `parse_cli_parameters()` in `run/params.rs` parses job parameters for `run`, `summary` and
 `diff`. The short flag is `-p` in all three. The long flag is `--job-param` for `run` and
-`summary`, and `--parameter` for `diff`. `diff` also parses `--old-parameter` and
+`summary`, with `--parameter` as a hidden alias. The long flag is `--parameter` for `diff`,
+with `--job-param` as a hidden alias. `diff` also parses `--old-parameter` and
 `--new-parameter` with it (see [diff.md](diff.md)). The values of each call are applied in
 order, so a later value wins. It accepts three input formats and returns a
 `HashMap<String, ExprValue>`.
@@ -92,7 +93,7 @@ parameter values pass through as strings initially.
 
 ### Known defects (shared by run, summary and diff)
 
-These are pre-existing parser bugs, not fixed here. Each was run with `openjd diff t.yaml
+Known bugs in the shared parser. Each was run with `openjd diff t.yaml
 --old-parameter A=x --new-parameter <input>`, where `A` is a STRING.
 
 - JSON `null` becomes the text `null`: `{"A": null}` gives `~ parameter A: x -> null`.
@@ -110,8 +111,9 @@ These are pre-existing parser bugs, not fixed here. Each was run with `openjd di
   gives `1.2345678901234568e+29`, from inline JSON, a JSON file or a YAML file.
 - A YAML file reads `007` and `010` as floats: `A: 007` gives `7.0`, and `A: 010` gives
   `10.0`.
-- `-p =v` names no parameter in its error: `Job parameter values provided for parameters
-  that are not defined in the template: ` ends with an empty name.
+- `--new-parameter =v` names no parameter in its error. It reports `Validation error: new
+  parameters: Job parameter values provided for parameters that are not defined in the
+  template: ` with an empty name, then `Values missing for required job parameters: A`.
 
 ## Task Parameters (`-t` / `--task-param`)
 
