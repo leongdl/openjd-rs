@@ -12,9 +12,10 @@ use std::path::PathBuf;
 /// Parse job parameters from CLI `--job-param` / `-p` arguments.
 ///
 /// Supports `Key=Value`, `file://path` (JSON/YAML), and inline JSON `{...}`.
-/// Later arguments win. A JSON or YAML null removes the parameter, so the
-/// template default applies, as deadline's job bundle parameter handling does.
-/// deadline's `-p` rejects a top-level null instead.
+/// Later arguments win. A null value, such as `{"A": null}` inline or in a
+/// JSON file, removes the parameter, so the template default applies, as
+/// deadline's job bundle parameter handling does. deadline's `-p` rejects a
+/// null value instead. A file that is only `null` is rejected.
 pub fn parse_cli_parameters(
     args: &[String],
 ) -> Result<HashMap<String, openjd_expr::ExprValue>, Box<dyn std::error::Error>> {

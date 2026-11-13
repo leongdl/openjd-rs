@@ -1591,3 +1591,29 @@ fn old_side_null_overrides_p() {
     );
     assert_ok(&o, &a_changes_b_given("dflt", "x"));
 }
+
+/// A null for a parameter that only the environment template defines means
+/// not given, so the environment's default applies.
+#[test]
+fn null_environment_parameter_uses_the_default() {
+    let o = openjd_in(
+        &templates(),
+        &[
+            "diff",
+            "simple_with_j_param.yaml",
+            "-p",
+            "J=1",
+            "--old-parameter",
+            "EnvParam=x",
+            "--new-parameter",
+            r#"{"EnvParam": null}"#,
+            "--environment",
+            "env_with_param.yaml",
+        ],
+        None,
+    );
+    assert_ok(
+        &o,
+        "simple_with_j_param.yaml: old parameters -> new parameters\n~ parameter EnvParam: x -> DefaultForEnvParam  [parameters]\n\n0 steps changed. Tasks: 1 kept, 0 added, 0 removed.\n",
+    );
+}

@@ -752,6 +752,40 @@ steps:
 
     const TWO_SUMMARY: &str = "\n--- Summary for 'T' ---\n\nParameters:\n  - A (STRING): dflt\n  - B (STRING): given\n\nTotal steps: 1\nTotal tasks: 1\nTotal environments: 0\n\n--- Steps in 'T' ---\n\n1. 'S' (1 total Tasks)\n\n\n";
 
+    const TWO_DEFAULTS_SUMMARY: &str = "\n--- Summary for 'T' ---\n\nParameters:\n  - A (STRING): dflt\n  - B (STRING): bd\n\nTotal steps: 1\nTotal tasks: 1\nTotal environments: 0\n\n--- Steps in 'T' ---\n\n1. 'S' (1 total Tasks)\n\n\n";
+
+    /// Two nulls in one argument remove both parameters.
+    #[test]
+    fn summary_two_nulls_in_one_argument() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("t2.yaml"), TWO).unwrap();
+        let t2 = path(dir.path(), "t2.yaml");
+        let (code, stdout, stderr) = run_cli(&[
+            "summary",
+            &t2,
+            "-p",
+            "A=1",
+            "-p",
+            "B=2",
+            "-p",
+            r#"{"A": null, "B": null}"#,
+        ]);
+        assert_eq!((code, stderr.as_str()), (0, ""));
+        assert_eq!(stdout, TWO_DEFAULTS_SUMMARY);
+    }
+
+    /// A null for a parameter other than `A` removes that parameter.
+    #[test]
+    fn summary_null_for_b_uses_its_default() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("t2.yaml"), TWO).unwrap();
+        let t2 = path(dir.path(), "t2.yaml");
+        let (code, stdout, stderr) =
+            run_cli(&["summary", &t2, "-p", "B=2", "-p", r#"{"B": null}"#]);
+        assert_eq!((code, stderr.as_str()), (0, ""));
+        assert_eq!(stdout, TWO_DEFAULTS_SUMMARY);
+    }
+
     /// A null removes only its own parameter, so `B` keeps its given value.
     #[test]
     fn summary_null_leaves_other_parameters() {
@@ -828,6 +862,39 @@ mod run_with_env {
         assert!(stdout.contains("DoTask Jvalue"), "stdout: {stdout}");
         assert!(
             stdout.contains("EnvWithParam Exit EnvParamValue"),
+            "stdout: {stdout}"
+        );
+    }
+
+    /// A null for a parameter that only the environment template defines
+    /// means not given, so the environment's default applies.
+    #[test]
+    fn test_run_job_with_env_null_env_param_uses_the_default() {
+        let tdir = templates_dir();
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            tdir.join("simple_with_j_param.yaml").to_str().unwrap(),
+            "-p",
+            "J=Jvalue",
+            "-p",
+            "EnvParam=EnvParamValue",
+            "-p",
+            r#"{"EnvParam": null}"#,
+            "--env",
+            tdir.join("env_with_param.yaml").to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "should succeed. stderr: {stderr}");
+        assert!(
+            stdout.contains("EnvWithParam Enter DefaultForEnvParam"),
+            "stdout: {stdout}"
+        );
+        assert!(stdout.contains("DoTask Jvalue"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("EnvWithParam Exit DefaultForEnvParam"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            !stdout.contains("EnvWithParam Enter null"),
             "stdout: {stdout}"
         );
     }
