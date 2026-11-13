@@ -809,6 +809,87 @@ steps:
         assert_eq!((code, stderr.as_str()), (0, ""));
         assert_eq!(stdout, TWO_SUMMARY);
     }
+
+    /// A later value overrides an earlier null, so the null does not stick.
+    #[test]
+    fn summary_value_after_a_null_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = path(dir.path(), "t.yaml");
+        setup(dir.path());
+        for later in [r#"{"A": "1"}"#, "A=1"] {
+            let (code, stdout, stderr) =
+                run_cli(&["summary", &t, "-p", r#"{"A": null}"#, "-p", later]);
+            assert_eq!((code, stderr.as_str()), (0, ""), "{later}");
+            assert_eq!(stdout, summary_of("1"), "{later}");
+        }
+    }
+
+    /// A null for a parameter the template does not define gives no value, so
+    /// it is ignored, while a value for it is an error.
+    #[test]
+    fn summary_null_for_an_undefined_parameter_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = path(dir.path(), "t.yaml");
+        setup(dir.path());
+        let (code, stdout, stderr) = run_cli(&["summary", &t, "-p", r#"{"Z": null}"#]);
+        assert_eq!((code, stderr.as_str()), (0, ""));
+        assert_eq!(stdout, summary_of("dflt"));
+        let (code, stdout, stderr) = run_cli(&["summary", &t, "-p", r#"{"Z": "1"}"#]);
+        assert_eq!((code, stdout.as_str()), (1, ""));
+        assert_eq!(
+            stderr,
+            "ERROR: Validation error: Job parameter values provided for parameters that are not defined in the template: Z\n"
+        );
+    }
+
+    /// `run` also ignores a null for a parameter the template does not define.
+    #[test]
+    fn run_null_for_an_undefined_parameter_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = path(dir.path(), "t.yaml");
+        setup(dir.path());
+        let (code, stdout, stderr) = run_cli(&["run", &t, "-p", r#"{"Z": null}"#]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(stdout.contains("DoTask dflt"), "stdout: {stdout}");
+    }
+
+    /// The JSON string `"null"` is text, not a null.
+    #[test]
+    fn summary_json_string_null_is_the_text_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = path(dir.path(), "t.yaml");
+        setup(dir.path());
+        let (code, stdout, stderr) = run_cli(&["summary", &t, "-p", r#"{"A": "null"}"#]);
+        assert_eq!((code, stderr.as_str()), (0, ""));
+        assert_eq!(stdout, summary_of("null"));
+    }
+
+    /// Only a top-level null removes a parameter; a null nested in an object
+    /// stays part of the value's JSON text.
+    #[test]
+    fn summary_nested_null_is_kept_in_the_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = path(dir.path(), "t.yaml");
+        setup(dir.path());
+        let (code, stdout, stderr) = run_cli(&["summary", &t, "-p", r#"{"A": {"x": null}}"#]);
+        assert_eq!((code, stderr.as_str()), (0, ""));
+        assert_eq!(stdout, summary_of(r#"{"x":null}"#));
+    }
+
+    /// YAML 1.2 Core also spells null as `Null` and `NULL`.
+    #[test]
+    fn summary_yaml_null_spellings_use_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = path(dir.path(), "t.yaml");
+        setup(dir.path());
+        for (name, text) in [("cap.yaml", "A: Null\n"), ("upper.yaml", "A: NULL\n")] {
+            std::fs::write(dir.path().join(name), text).unwrap();
+            let file = format!("file://{}", dir.path().join(name).display());
+            let (code, stdout, stderr) = run_cli(&["summary", &t, "-p", "A=1", "-p", &file]);
+            assert_eq!((code, stderr.as_str()), (0, ""), "{text}");
+            assert_eq!(stdout, summary_of("dflt"), "{text}");
+        }
+    }
 }
 
 // ============================================================

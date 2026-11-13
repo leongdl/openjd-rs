@@ -67,8 +67,8 @@ are the earlier spellings. `--help` lists only `--parameter`, `--old-parameter` 
 `--old-parameter` and `--new-parameter` help says `in the same forms as -p` and gives one
 `Key=Value` example.
 
-The syntax follows `deadline bundle submit -p`, but the values it produces are not
-guaranteed to be identical.
+The syntax follows `deadline bundle submit -p` on deadline-cloud mainline (release 0.60.11
+accepts only Key=Value), but the values it produces are not guaranteed to be identical.
 
 #### Known differences
 
@@ -78,7 +78,8 @@ whose parameter `A` is a STRING.
 - `file://~/p.json` does not expand `~`: `Provided parameter file '~/p.json' does not exist.`
 - A null value, such as `{"A": null}` inline or in a JSON file, means not given, so the
   template default applies. `deadline bundle submit -p '{"A": null}'` instead fails with
-  `Parameter A has no value.` openjd-rs follows deadline's job bundle parameter handling here
+  `Parameter A has no value.` (deadline-cloud mainline; release 0.60.11 accepts only
+  Key=Value). openjd-rs follows deadline's job bundle parameter handling here
   (see [parameter-parsing.md](parameter-parsing.md)). A file that is only `null` fails with
   `Job parameter file 'file://p.json' should contain a dictionary.`
 - Every value other than null is passed as text. JSON `{"A": true}` gives `true`.

@@ -15,7 +15,7 @@ use std::path::PathBuf;
 /// Later arguments win. A null value, such as `{"A": null}` inline or in a
 /// JSON file, removes the parameter, so the template default applies, as
 /// deadline's job bundle parameter handling does. deadline's `-p` rejects a
-/// null value instead. A file that is only `null` is rejected.
+/// null (deadline-cloud mainline). A file that is only `null` is rejected.
 pub fn parse_cli_parameters(
     args: &[String],
 ) -> Result<HashMap<String, openjd_expr::ExprValue>, Box<dyn std::error::Error>> {

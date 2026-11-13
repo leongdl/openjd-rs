@@ -22,7 +22,8 @@ that is only `null` is rejected with `Job parameter file 'file://p.json' should 
 dictionary.` This matches deadline-cloud's job bundle parameter handling
 (`apply_job_parameters` in `job_bundle/parameters.py`), which skips a None value so the
 template default applies. It does not match `deadline bundle submit -p`, which rejects a null
-value with `Parameter A has no value.` The null removes the parameter from the map, and it
+value with `Parameter A has no value.` (deadline-cloud mainline; release 0.60.11 accepts only
+Key=Value). The null removes the parameter from the map, and it
 still takes part in "later wins": `-p A=1 -p '{"A": null}'` leaves `A` unset, so the template
 default applies. With no default, building the job fails with `Values missing for required
 job parameters: A`. A null for a parameter the template does not define is ignored, with no
@@ -136,7 +137,8 @@ Known bugs in the shared parser. Each was run with `openjd diff t.yaml
   `10.0`. Python openjd and `deadline` read them as 7 and 8 (YAML 1.1).
 - `--new-parameter =v` names no parameter in its error. It reports `Validation error: new
   parameters: Job parameter values provided for parameters that are not defined in the
-  template: ` with an empty name, then `Values missing for required job parameters: A`.
+  template: ` with an empty name. When `A` has no default, a second line follows:
+  `Values missing for required job parameters: A`.
 
 ## Task Parameters (`-t` / `--task-param`)
 

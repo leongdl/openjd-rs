@@ -1484,6 +1484,27 @@ fn null_after_a_value_uses_the_default() {
     assert_ok(&o, &a_changes("dflt", "2"));
 }
 
+/// A value after a null on one side wins, so the null does not stick.
+#[test]
+fn value_after_a_null_wins() {
+    let dir = null_dir();
+    let o = openjd_in(
+        dir.path(),
+        &[
+            "diff",
+            "t.yaml",
+            "--old-parameter",
+            "A=x",
+            "--new-parameter",
+            r#"{"A": null}"#,
+            "--new-parameter",
+            r#"{"A": "2"}"#,
+        ],
+        None,
+    );
+    assert_ok(&o, &a_changes("x", "2"));
+}
+
 #[test]
 fn null_parameter_with_no_default_is_a_missing_value() {
     let dir = null_dir();
