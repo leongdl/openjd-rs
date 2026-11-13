@@ -7,8 +7,7 @@
 //! Every case runs the real binary from the repository root on the files in
 //! `crates/openjd-cli/examples/diff/` (and the model's
 //! `examples/template_diff/`), and the gallery is compared with the checked-in
-//! file. `UPDATE_DIFF_EXAMPLES=1` rewrites it, and the two built jobs the
-//! `--jobs` case reads, instead of comparing.
+//! file. `UPDATE_DIFF_EXAMPLES=1` rewrites it instead of comparing.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -18,21 +17,6 @@ use std::process::Command;
 const GALLERY: &str = "specs/cli/diff-examples.md";
 const UPDATE: &str = "UPDATE_DIFF_EXAMPLES";
 const WARNING: &str = "warning: 'openjd diff' is unstable; its flags and output may change.\n";
-const BUILD_WARNING: &str =
-    "warning: 'openjd build' is unstable; its flags and output may change.\n";
-
-/// The two jobs of the `--jobs` case, and the `openjd build` arguments that
-/// print them.
-const BUILT_JOBS: &[(&str, &str)] = &[
-    (
-        "crates/openjd-cli/examples/diff/frames_1_100.json",
-        "build crates/openjd-cli/examples/diff/frames.yaml -p Frames=1-100",
-    ),
-    (
-        "crates/openjd-cli/examples/diff/frames_1_200.json",
-        "build crates/openjd-cli/examples/diff/frames.yaml -p Frames=1-200",
-    ),
-];
 
 struct Case {
     group: &'static str,
@@ -124,13 +108,13 @@ const CASES: &[Case] = &[
     case(DEFS, "param_def_list_list_item", "parameter `item.item.*` (LIST[LIST[INT]])", "The inner lists of a `LIST[LIST[INT]]` parameter allow larger values.",
         "diff @list_list_item_v1.yaml @list_list_item_v2.yaml", "item.item.maxValue"),
     rich(case(VALUES, "param_value", "parameter value", "One template, `Frames` 1-100 on the old side and 1-200 on the new.",
-        "diff @frames.yaml --old-param Frames=1-100 --new-param Frames=1-200", "~ parameter Frames")),
+        "diff @frames.yaml --old-parameter Frames=1-100 --new-parameter Frames=1-200", "~ parameter Frames")),
     case(VALUES, "param_value_path", "`PATH` parameter value",
         "A `PATH` parameter changes; the step sees it as `RawParam.Scene` in its resolved symbol table.",
-        "diff %render_v1.yaml --old-param Scene=//srv/a --new-param Scene=//srv/b", "RawParam.Scene"),
+        "diff %render_v1.yaml --old-parameter Scene=//srv/a --new-parameter Scene=//srv/b", "RawParam.Scene"),
     case(VALUES, "param_value_env", "parameter read by a job environment",
         "A job environment's variable reads the parameter, so the environment's symbol table changes.",
-        "diff @env_param.yaml --old-param Tool=v1 --new-param Tool=v2", "jobEnvironments[Tools].resolvedSymTab"),
+        "diff @env_param.yaml --old-parameter Tool=v1 --new-parameter Tool=v2", "jobEnvironments[Tools].resolvedSymTab"),
     case(ENVS, "env_added", "job environment added", "A job environment is added.",
         "diff @env_added_v1.yaml @env_added_v2.yaml", "+ jobEnvironments[Tools]"),
     case(ENVS, "env_removed", "job environment removed", "The job environment is removed.",
@@ -247,13 +231,10 @@ const CASES: &[Case] = &[
         "diff @runtime_session_dir_v1.yaml @runtime_session_dir_v2.yaml", "onRun.args"),
     case(ORIGIN, "origin_both", "origin `both`",
         "The template appends frame 50 to the range and the new parameters extend `Frames`, so the range change has both causes.",
-        "diff @origin_both_v1.yaml @origin_both_v2.yaml --new-param Frames=1-20", "[both]"),
+        "diff @origin_both_v1.yaml @origin_both_v2.yaml --new-parameter Frames=1-20", "[both]"),
     case(ORIGIN, "origin_mid_fails", "origin `both`, with a note",
         "The new template needs a parameter the old side does not supply, so the split cannot be computed.",
-        "diff @origin_mid_fails_v1.yaml @origin_mid_fails_v2.yaml --new-param Quality=3", "+ parameter Quality"),
-    case(FORMS, "jobs", "built jobs (`--jobs`)",
-        "Two jobs that `openjd build` printed from `frames.yaml` with `Frames=1-100` and `Frames=1-200`. Every origin is `job`.",
-        "diff --jobs @frames_1_100.json @frames_1_200.json", "~ parameter Frames"),
+        "diff @origin_mid_fails_v1.yaml @origin_mid_fails_v2.yaml --new-parameter Quality=3", "+ parameter Quality"),
     case(FORMS, "step_filter", "`--step`", "Two steps change; `--step Composite` keeps one of them.",
         "diff @two_steps_v1.yaml @two_steps_v2.yaml --step Composite", "onRun.command"),
     case(FORMS, "stat", "`--stat`", "The `eye_added` case, one line per step.",
@@ -272,11 +253,11 @@ const NOT_COVERED: &[(&str, &str)] = &[
     ),
     (
         "`<collection>.duplicates`",
-        "Template validation rejects repeated names; only a hand-edited built job has them, and `--plan` rejects them.",
+        "Template validation rejects repeated names, so a template diff never has them; only a hand-edited built job given to the library's `diff_built_jobs` does, and `plan` rejects it.",
     ),
     (
         "an empty list versus none, other than `hostRequirements.amounts` and `attributes`",
-        "Template validation rejects an empty `parameterDefinitions`, `jobEnvironments`, `stepEnvironments`, `dependencies`, `taskParameterDefinitions`, `embeddedFiles` or `args`, so only a hand-edited built job has one. An empty `amounts` or `attributes` is accepted beside the other, as `host_amounts_empty` shows.",
+        "Template validation rejects an empty `parameterDefinitions`, `jobEnvironments`, `stepEnvironments`, `dependencies`, `taskParameterDefinitions`, `embeddedFiles` or `args`, so only a hand-edited built job given to `diff_built_jobs` has one. An empty `amounts` or `attributes` is accepted beside the other, as `host_amounts_empty` shows.",
     ),
     (
         "embedded file `type`",
@@ -423,25 +404,16 @@ fn shown_as(id: &str, human: &str, pick: &str, doc: &serde_json::Value) -> Strin
     format!("{mark} {full}: {tail}")
 }
 
-/// Every file in `examples/diff/` except the README is read by a case or
-/// is one of [`BUILT_JOBS`], so a file nothing uses is noticed.
+/// Every file in `examples/diff/` except the README is read by a case, so
+/// a file nothing uses is noticed.
 fn assert_every_example_is_used() {
     let dir = root().join("crates/openjd-cli/examples/diff");
     let mut used = BTreeSet::new();
-    let commands = CASES
-        .iter()
-        .map(|c| c.command)
-        .chain(BUILT_JOBS.iter().map(|(_, command)| *command));
-    for command in commands {
+    for command in CASES.iter().map(|c| c.command) {
         for a in args(command) {
             if let Some(name) = a.strip_prefix("crates/openjd-cli/examples/diff/") {
                 used.insert(name.to_string());
             }
-        }
-    }
-    for (file, _) in BUILT_JOBS {
-        if let Some(name) = file.strip_prefix("crates/openjd-cli/examples/diff/") {
-            used.insert(name.to_string());
         }
     }
     let unused: Vec<String> = std::fs::read_dir(&dir)
@@ -453,7 +425,7 @@ fn assert_every_example_is_used() {
         .collect();
     assert!(
         unused.is_empty(),
-        "files in {} that no case or BUILT_JOBS entry uses: {unused:?}",
+        "files in {} that no case uses: {unused:?}",
         dir.display()
     );
 }
@@ -553,11 +525,6 @@ fn check_or_update(path: &Path, actual: &str, update: bool) {
 fn diff_examples_gallery_is_up_to_date() {
     let update = std::env::var(UPDATE).is_ok_and(|v| v == "1");
     assert_every_example_is_used();
-    // The built jobs first: the `--jobs` case reads them.
-    for (file, command) in BUILT_JOBS {
-        let job = run(&args(command), BUILD_WARNING);
-        check_or_update(&root().join(file), &job, update);
-    }
     check_or_update(&root().join(GALLERY), &gallery(), update);
 }
 
@@ -565,20 +532,19 @@ fn diff_examples_gallery_is_up_to_date() {
 const HELP_EXAMPLES: &str = "\
 Examples, from the openjd-rs repository root with E=crates/openjd-cli/examples/diff
 and M=crates/openjd-model/examples/template_diff:
-  openjd diff $E/frames.yaml --old-param Frames=1-100 --new-param Frames=1-200
+  openjd diff $E/frames.yaml --old-parameter Frames=1-100 --new-parameter Frames=1-200
   openjd diff $M/render_v1.yaml $M/render_v2.yaml -p Scene=//srv/s
   openjd diff $E/let_script_v1.yaml $E/let_script_v2.yaml
   openjd diff $E/extensions_v1.yaml $E/extensions_v2.yaml --plan
-  openjd build $E/frames.yaml -p Frames=1-100 > old.json
-  openjd diff --jobs old.json $E/frames_1_200.json --plan
   openjd diff $M/render_v1.yaml $M/render_v2.yaml -p Scene=//srv/s --stat
+  openjd diff render.yaml -p file://params.json --new-parameter '{\"Frames\": \"1-200\"}'
   openjd diff old.yaml - --output json --exit-code < new.yaml
 
 Every field the diff reports, with its output: specs/cli/diff-examples.md
 ";
 
 /// `--help` ends with the examples, the `about` says the command is
-/// unstable, and every example that names only shipped files runs.
+/// unstable, and every example on the shipped files (`$E/`, `$M/`) runs.
 #[test]
 fn help_examples_use_the_shipped_files() {
     let help = |cmd: &str| {
@@ -592,22 +558,17 @@ fn help_examples_use_the_shipped_files() {
     let diff = help("diff");
     assert!(
         diff.starts_with(
-            "Diff two templates, one template under two parameter sets, or two built jobs (unstable)\n"
+            "Diff two templates, or one template under two parameter sets (unstable)\n"
         ),
         "{diff}"
     );
     assert!(diff.ends_with(&format!("\n\n{HELP_EXAMPLES}")), "{diff}");
-    let build = help("build");
-    assert!(
-        build.starts_with("Print the job a template builds into, as JSON or YAML (unstable)\n"),
-        "{build}"
-    );
     let mut ran = 0;
     for line in HELP_EXAMPLES
         .lines()
         .filter_map(|l| l.strip_prefix("  openjd "))
     {
-        if line.contains("old.") {
+        if !line.contains("$E/") && !line.contains("$M/") {
             continue;
         }
         let command = line.replace("$E/", "@").replace("$M/", "%");
