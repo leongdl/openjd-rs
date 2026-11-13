@@ -210,6 +210,19 @@ fn storage_type(t: JobParameterType) -> ExprType {
     }
 }
 
+/// `Err` unless `given` is exactly `written`, the form a host document
+/// writes the value it was read as: the reader takes only that form, so
+/// `"TRUE"` is not read as the BOOL `true`, nor `" 1-4 "` as the range
+/// `1-4`.
+fn canonical_form(given: &Value, written: &Value, path: &str) -> Result<(), String> {
+    if given == written {
+        return Ok(());
+    }
+    Err(format!(
+        "{path}: {given} is not in the form a built job writes ({written})"
+    ))
+}
+
 /// The parameter stored under `key`, from its document. `path` names it in
 /// errors.
 pub(crate) fn parameter_from_document(
@@ -237,6 +250,7 @@ pub(crate) fn parameter_from_document(
     let value =
         ExprValue::from_transport_value(&m["value"], &storage_type(param_type), PathFormat::Posix)
             .map_err(|e| format!("{path}.value: {e}"))?;
+    canonical_form(&m["value"], &transport(&value), &format!("{path}.value"))?;
     Ok(JobParameter {
         name: name.to_string(),
         param_type,
@@ -261,19 +275,28 @@ fn int_range(m: &Map<String, Value>, path: &str) -> Result<TaskParamRange<i64>, 
         let text = r
             .as_str()
             .ok_or_else(|| format!("{path}.range: expected a string"))?;
-        return text
+        let range = text
             .parse::<RangeExpr>()
-            .map(TaskParamRange::RangeExpr)
-            .map_err(|e| format!("{path}.range: {e}"));
+            .map_err(|e| format!("{path}.range: {e}"))?;
+        canonical_form(
+            r,
+            &Value::String(canonical(&range)),
+            &format!("{path}.range"),
+        )?;
+        return Ok(TaskParamRange::RangeExpr(range));
     }
     texts(&m["list"], &format!("{path}.list"))?
         .into_iter()
         .enumerate()
         .map(|(i, s)| {
-            s.parse::<i64>()
-                .map_err(|_| format!("{path}.list[{i}]: '{s}' is not an INT"))
+            let at = format!("{path}.list[{i}]");
+            let n = s
+                .parse::<i64>()
+                .map_err(|_| format!("{at}: '{s}' is not an INT"))?;
+            canonical_form(&Value::from(s), &Value::String(n.to_string()), &at)?;
+            Ok(n)
         })
-        .collect::<Result<_, _>>()
+        .collect::<Result<_, String>>()
         .map(TaskParamRange::List)
 }
 
@@ -385,7 +408,14 @@ pub(crate) fn definition_from_document(
                         &ExprType::FLOAT,
                         PathFormat::Posix,
                     ) {
-                        Ok(ExprValue::Float(f)) => Ok(f),
+                        Ok(ExprValue::Float(f)) => {
+                            canonical_form(
+                                &Value::from(s),
+                                &Value::String(f.to_display_string()),
+                                &format!("{at}[{i}]"),
+                            )?;
+                            Ok(f)
+                        }
                         _ => Err(format!("{at}[{i}]: '{s}' is not a FLOAT")),
                     }
                 })
@@ -441,6 +471,12 @@ pub(crate) fn space_from_document(v: &Value, path: &str) -> Result<StepParameter
         return Err(format!(
             "{path}.combination: '{unknown}' is not a task parameter of the step"
         ));
+    }
+    if let Some(c) = &combination {
+        let names = task_parameter_definitions.keys().cloned().collect();
+        if let Some(e) = crate::template::validate_v2023_09::combination_error(c, &names) {
+            return Err(format!("{path}.combination: {e}"));
+        }
     }
     Ok(StepParameterSpace {
         task_parameter_definitions,

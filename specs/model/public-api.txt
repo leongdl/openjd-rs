@@ -150,10 +150,7 @@ pub openjd_model::job::apply::Action::Environment(usize, openjd_model::job::appl
 pub openjd_model::job::apply::Action::Job(openjd_model::job::apply::Op<'a, openjd_model::job::Job>)
 pub openjd_model::job::apply::Action::Parameter(openjd_model::job::apply::Op<'a, openjd_model::job::JobParameter>)
 pub openjd_model::job::apply::Action::Step(openjd_model::job::apply::StepRef<'a>, openjd_model::job::apply::Op<'a, openjd_model::job::Step>)
-pub openjd_model::job::apply::Action::Tasks
-pub openjd_model::job::apply::Action::Tasks::change: openjd_model::job::apply::TaskChange
-pub openjd_model::job::apply::Action::Tasks::space: core::option::Option<&'a openjd_model::job::StepParameterSpace>
-pub openjd_model::job::apply::Action::Tasks::step: openjd_model::job::apply::StepRef<'a>
+pub openjd_model::job::apply::Action::Tasks(openjd_model::job::apply::StepRef<'a>, openjd_model::job::apply::TaskOp<'a>)
 impl<'a> core::clone::Clone for openjd_model::job::apply::Action<'a>
 pub fn openjd_model::job::apply::Action<'a>::clone(&self) -> openjd_model::job::apply::Action<'a>
 impl<'a> core::cmp::PartialEq for openjd_model::job::apply::Action<'a>
@@ -272,11 +269,6 @@ pub enum openjd_model::job::apply::TaskChange
 pub openjd_model::job::apply::TaskChange::All
 pub openjd_model::job::apply::TaskChange::Boxes(alloc::boxed::Box<openjd_model::job::task_delta::ProductDelta>)
 pub openjd_model::job::apply::TaskChange::Replace
-impl openjd_model::job::apply::TaskChange
-pub fn openjd_model::job::apply::TaskChange::as_document<'s>(&'s self, core::option::Option<&'s openjd_model::job::StepParameterSpace>) -> impl serde_core::ser::Serialize + 's
-pub fn openjd_model::job::apply::TaskChange::task_count(&self, core::option::Option<&openjd_model::job::StepParameterSpace>) -> core::result::Result<u64, openjd_model::error::ModelError>
-pub fn openjd_model::job::apply::TaskChange::tasks<'s>(&'s self, core::option::Option<&'s openjd_model::job::StepParameterSpace>) -> core::result::Result<impl core::iter::traits::iterator::Iterator<Item = openjd_model::types::TaskParameterSet> + 's, openjd_model::error::ModelError>
-pub fn openjd_model::job::apply::TaskChange::to_value(&self, core::option::Option<&openjd_model::job::StepParameterSpace>) -> core::result::Result<serde_json::value::Value, openjd_model::error::ModelError>
 impl core::clone::Clone for openjd_model::job::apply::TaskChange
 pub fn openjd_model::job::apply::TaskChange::clone(&self) -> openjd_model::job::apply::TaskChange
 impl core::cmp::PartialEq for openjd_model::job::apply::TaskChange
@@ -370,6 +362,21 @@ impl<'a> core::marker::Copy for openjd_model::job::apply::StepRef<'a>
 impl<'a> core::marker::StructuralPartialEq for openjd_model::job::apply::StepRef<'a>
 impl<'a> serde_core::ser::Serialize for openjd_model::job::apply::StepRef<'a>
 pub fn openjd_model::job::apply::StepRef<'a>::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct openjd_model::job::apply::TaskOp<'a>
+pub openjd_model::job::apply::TaskOp::change: openjd_model::job::apply::TaskChange
+pub openjd_model::job::apply::TaskOp::space: core::option::Option<&'a openjd_model::job::StepParameterSpace>
+impl<'a> openjd_model::job::apply::TaskOp<'a>
+pub fn openjd_model::job::apply::TaskOp<'a>::added_count(&self) -> core::result::Result<u64, openjd_model::error::ModelError>
+pub fn openjd_model::job::apply::TaskOp<'a>::added_tasks(&self) -> core::result::Result<impl core::iter::traits::iterator::Iterator<Item = openjd_model::types::TaskParameterSet> + use<'_, 'a>, openjd_model::error::ModelError>
+pub fn openjd_model::job::apply::TaskOp<'a>::as_document(&self) -> impl serde_core::ser::Serialize + '_
+pub fn openjd_model::job::apply::TaskOp<'a>::to_value(&self) -> core::result::Result<serde_json::value::Value, openjd_model::error::ModelError>
+impl<'a> core::clone::Clone for openjd_model::job::apply::TaskOp<'a>
+pub fn openjd_model::job::apply::TaskOp<'a>::clone(&self) -> openjd_model::job::apply::TaskOp<'a>
+impl<'a> core::cmp::PartialEq for openjd_model::job::apply::TaskOp<'a>
+pub fn openjd_model::job::apply::TaskOp<'a>::eq(&self, &openjd_model::job::apply::TaskOp<'a>) -> bool
+impl<'a> core::fmt::Debug for openjd_model::job::apply::TaskOp<'a>
+pub fn openjd_model::job::apply::TaskOp<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::StructuralPartialEq for openjd_model::job::apply::TaskOp<'a>
 pub struct openjd_model::job::apply::UnknownMutationKind(pub alloc::string::String)
 impl core::clone::Clone for openjd_model::job::apply::UnknownMutationKind
 pub fn openjd_model::job::apply::UnknownMutationKind::clone(&self) -> openjd_model::job::apply::UnknownMutationKind
@@ -391,7 +398,7 @@ pub fn openjd_model::job::apply::JobApplier::environment(&mut self, usize, openj
 pub fn openjd_model::job::apply::JobApplier::job(&mut self, openjd_model::job::apply::Op<'_, openjd_model::job::Job>) -> core::result::Result<(), Self::Error>
 pub fn openjd_model::job::apply::JobApplier::parameter(&mut self, openjd_model::job::apply::Op<'_, openjd_model::job::JobParameter>) -> core::result::Result<(), Self::Error>
 pub fn openjd_model::job::apply::JobApplier::step(&mut self, openjd_model::job::apply::StepRef<'_>, openjd_model::job::apply::Op<'_, openjd_model::job::Step>) -> core::result::Result<(), Self::Error>
-pub fn openjd_model::job::apply::JobApplier::tasks(&mut self, openjd_model::job::apply::StepRef<'_>, core::option::Option<&openjd_model::job::StepParameterSpace>, &openjd_model::job::apply::TaskChange) -> core::result::Result<(), Self::Error>
+pub fn openjd_model::job::apply::JobApplier::tasks(&mut self, openjd_model::job::apply::StepRef<'_>, &openjd_model::job::apply::TaskOp<'_>) -> core::result::Result<(), Self::Error>
 pub trait openjd_model::job::apply::MutationPolicy
 pub fn openjd_model::job::apply::MutationPolicy::allows(&self, &openjd_model::job::apply::PlannedOp<'_>) -> core::result::Result<(), openjd_model::job::apply::Refusal>
 impl openjd_model::job::apply::MutationPolicy for openjd_model::job::apply::AllowList

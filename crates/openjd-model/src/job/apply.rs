@@ -27,7 +27,8 @@
 //! through an adaptor that forwards each call to another language. The
 //! trait is object safe, every call names its step ([`StepRef`]), and every
 //! payload has a plain-data form ([`Op::as_document`],
-//! [`TaskChange::as_document`], [`PlannedOp::as_document`]).
+//! [`TaskOp::as_document`], [`PlannedOp::as_document`]), none needing an
+//! argument.
 
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
@@ -232,42 +233,60 @@ pub enum TaskChange {
     /// those in `removed`, each named by its parameter set. The order of
     /// the additions is [`ProductDelta::appended`].
     Boxes(Box<ProductDelta>),
-    /// A newly added step: every task of its space, from [`tasks`](Self::tasks).
+    /// A newly added step: every task of its space, from
+    /// [`TaskOp::added_tasks`].
     All,
     /// No per-task mapping (association, chunking, a parameter added or
     /// removed, ...): the step's tasks become exactly those of its new
-    /// space, from [`tasks`](Self::tasks).
+    /// space, from [`TaskOp::added_tasks`].
     Replace,
 }
 
-impl TaskChange {
-    /// The tasks this change adds, in the order a host creates them. For
-    /// `All` and `Replace`, every task of `space` (the step's new parameter
-    /// space) in `create_job`'s order: [`StepParameterSpaceIterator`] with
-    /// the chunk override `create_job` counts tasks with (`Some(1)`, one
-    /// task per chunked value), and one task with no parameters when
-    /// `space` is `None`. For `Boxes`, [`ProductDelta::appended`]; `space`
-    /// is not read. A host never enumerates a space itself: a `combination`
-    /// reorders dimensions, so definition order alone is not task order.
-    pub fn tasks<'s>(
-        &'s self,
-        space: Option<&'s StepParameterSpace>,
-    ) -> Result<impl Iterator<Item = TaskParameterSet> + 's, ModelError> {
-        let tasks: Box<dyn Iterator<Item = TaskParameterSet> + 's> = match (self, space) {
-            (TaskChange::Boxes(d), _) => Box::new(d.appended()?),
-            (TaskChange::All | TaskChange::Replace, None) => {
-                Box::new(std::iter::once(TaskParameterSet::new()))
-            }
-            (TaskChange::All | TaskChange::Replace, Some(s)) => Box::new(
-                StepParameterSpaceIterator::new_with_chunk_override(s, Some(CREATE_JOB_CHUNKS))?,
-            ),
-        };
+/// A step's task change with the step's new parameter space: what
+/// [`JobApplier::tasks`] receives. Its [`added_tasks`](Self::added_tasks)
+/// and [`as_document`](Self::as_document) need nothing else.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskOp<'a> {
+    /// The step's new parameter space; `None` is one task with no
+    /// parameters.
+    pub space: Option<&'a StepParameterSpace>,
+    /// How the step's tasks change.
+    pub change: TaskChange,
+}
+
+impl<'a> TaskOp<'a> {
+    /// The tasks this op adds, in the order a host creates them. For `All`
+    /// and `Replace`, every task of the new space in `create_job`'s order:
+    /// [`StepParameterSpaceIterator`] with the chunk override `create_job`
+    /// counts tasks with (`Some(1)`: a `CHUNK[INT]` dimension gives one
+    /// task per value, as CreateJob creates them), and one task with no
+    /// parameters when `space` is `None`. For `Boxes`,
+    /// [`ProductDelta::appended`]. A host never enumerates a space itself:
+    /// a `combination` reorders dimensions, so definition order alone is
+    /// not task order.
+    pub fn added_tasks(
+        &self,
+    ) -> Result<impl Iterator<Item = TaskParameterSet> + use<'_, 'a>, ModelError> {
+        let tasks: Box<dyn Iterator<Item = TaskParameterSet> + '_> =
+            match (&self.change, self.space) {
+                (TaskChange::Boxes(d), _) => Box::new(d.appended()?),
+                (TaskChange::All | TaskChange::Replace, None) => {
+                    Box::new(std::iter::once(TaskParameterSet::new()))
+                }
+                (TaskChange::All | TaskChange::Replace, Some(s)) => {
+                    Box::new(StepParameterSpaceIterator::new_with_chunk_override(
+                        s,
+                        Some(CREATE_JOB_CHUNKS),
+                    )?)
+                }
+            };
         Ok(tasks)
     }
 
-    /// The number of tasks [`tasks`](Self::tasks) yields, without iterating.
-    pub fn task_count(&self, space: Option<&StepParameterSpace>) -> Result<u64, ModelError> {
-        Ok(match (self, space) {
+    /// The number of tasks [`added_tasks`](Self::added_tasks) yields,
+    /// without iterating.
+    pub fn added_count(&self) -> Result<u64, ModelError> {
+        Ok(match (&self.change, self.space) {
             (TaskChange::Boxes(d), _) => d.appended_count(),
             (TaskChange::All | TaskChange::Replace, None) => 1,
             (TaskChange::All | TaskChange::Replace, Some(s)) => {
@@ -277,17 +296,15 @@ impl TaskChange {
         })
     }
 
-    /// The change as plain data, every task named by its parameter set
-    /// ([`task_parameter_set_document`]). `space` is the step's new
-    /// parameter space, as [`JobApplier::tasks`] receives it. `All` and
-    /// `Replace` are
+    /// The task change as plain data, every task named by its parameter
+    /// set ([`task_parameter_set_document`]). `All` and `Replace` are
     ///
     /// ```text
     /// {"change": "all" | "replace", "taskCount": n, "tasks": [<task parameter set>, …]}
     /// ```
     ///
-    /// with `tasks` from [`tasks`](Self::tasks), so a host never enumerates
-    /// the space. `Boxes` is
+    /// with `tasks` from [`added_tasks`](Self::added_tasks), so a host never
+    /// enumerates the space. `Boxes` is
     ///
     /// ```text
     /// {"change": "boxes", "oldCount": n, "keptCount": n,
@@ -301,30 +318,22 @@ impl TaskChange {
     /// tasks the change adds and removes (for `All` and `Replace`, the whole
     /// new space); the lists are written as they are iterated, without
     /// first being collected. A Rust adaptor that would rather stream the
-    /// tasks calls [`tasks`](Self::tasks) itself.
-    pub fn as_document<'s>(&'s self, space: Option<&'s StepParameterSpace>) -> impl Serialize + 's {
-        TaskChangeDocument {
-            change: self,
-            space,
-        }
+    /// tasks calls [`added_tasks`](Self::added_tasks) itself. The space is
+    /// not in this document: [`PlannedOp::as_document`] writes it beside.
+    pub fn as_document(&self) -> impl Serialize + '_ {
+        TaskOpDocument(self)
     }
 
     /// [`as_document`](Self::as_document) as a `serde_json::Value`.
-    pub fn to_value(
-        &self,
-        space: Option<&StepParameterSpace>,
-    ) -> Result<serde_json::Value, ModelError> {
-        to_json_value(self.as_document(space), "task change")
+    pub fn to_value(&self) -> Result<serde_json::Value, ModelError> {
+        to_json_value(self.as_document(), "task change")
     }
 }
 
 /// The chunk override `create_job` counts a step's tasks with.
 const CREATE_JOB_CHUNKS: u64 = 1;
 
-struct TaskChangeDocument<'a> {
-    change: &'a TaskChange,
-    space: Option<&'a StepParameterSpace>,
-}
+struct TaskOpDocument<'a, 'b>(&'a TaskOp<'b>);
 
 /// A list of task parameter sets, written as it is iterated.
 struct TaskList<F>(F);
@@ -343,20 +352,20 @@ where
     }
 }
 
-impl Serialize for TaskChangeDocument<'_> {
+impl Serialize for TaskOpDocument<'_, '_> {
     fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         let mut m = ser.serialize_map(None)?;
-        let (change, space) = (self.change, self.space);
-        let added = TaskList(|| change.tasks(space));
-        match change {
+        let op = self.0;
+        let added = TaskList(|| op.added_tasks());
+        match &op.change {
             TaskChange::All | TaskChange::Replace => {
-                let name = if matches!(change, TaskChange::All) {
+                let name = if matches!(op.change, TaskChange::All) {
                     "all"
                 } else {
                     "replace"
                 };
                 m.serialize_entry("change", name)?;
-                let count = change.task_count(space).map_err(S::Error::custom)?;
+                let count = op.added_count().map_err(S::Error::custom)?;
                 m.serialize_entry("taskCount", &count)?;
                 m.serialize_entry("tasks", &added)?;
             }
@@ -541,15 +550,8 @@ pub enum Action<'a> {
     Environment(usize, Op<'a, Environment>),
     /// A step, including its step environments.
     Step(StepRef<'a>, Op<'a, Step>),
-    /// A step's tasks. `space` is the step's new parameter space.
-    Tasks {
-        /// The step, in `new.steps`.
-        step: StepRef<'a>,
-        /// The new parameter space; `None` is one task with no parameters.
-        space: Option<&'a StepParameterSpace>,
-        /// The change.
-        change: TaskChange,
-    },
+    /// A step's tasks: the step, in `new.steps`, and its [`TaskOp`].
+    Tasks(StepRef<'a>, TaskOp<'a>),
 }
 
 /// One op in an [`ApplyPlan`].
@@ -576,7 +578,7 @@ impl PlannedOp<'_> {
             Action::Job(_) => OpTarget::Job,
             Action::Parameter(o) => OpTarget::Parameter(op_name(o, |p| &p.name)),
             Action::Environment(_, o) => OpTarget::Environment(op_name(o, |e| &e.name)),
-            Action::Step(s, _) | Action::Tasks { step: s, .. } => OpTarget::Step {
+            Action::Step(s, _) | Action::Tasks(s, _) => OpTarget::Step {
                 name: s.name.to_string(),
                 index: s.index,
             },
@@ -589,7 +591,7 @@ impl PlannedOp<'_> {
     /// and `"op"`; `step` adds `"step"` (a [`StepRef`]) and `"op"`; `tasks`
     /// adds `"step"`, `"space"` (the step's new parameter space, as
     /// [`ToDocument`] writes it) and
-    /// `"tasks"` ([`TaskChange::as_document`]). `"op"` is
+    /// `"tasks"` ([`TaskOp::as_document`]). `"op"` is
     /// [`Op::as_document`].
     pub fn as_document(&self) -> impl Serialize + '_ {
         PlannedOpDocument(self)
@@ -627,15 +629,11 @@ impl Serialize for PlannedOpDocument<'_, '_> {
                 m.serialize_entry("step", s)?;
                 m.serialize_entry("op", &o.as_document())?;
             }
-            Action::Tasks {
-                step,
-                space,
-                change,
-            } => {
+            Action::Tasks(step, op) => {
                 m.serialize_entry("action", "tasks")?;
                 m.serialize_entry("step", step)?;
-                m.serialize_entry("space", &space.map(SpaceDoc::new))?;
-                m.serialize_entry("tasks", &change.as_document(*space))?;
+                m.serialize_entry("space", &op.space.map(SpaceDoc::new))?;
+                m.serialize_entry("tasks", &op.as_document())?;
             }
         }
         m.end()
@@ -762,15 +760,12 @@ pub trait JobApplier {
     /// A step, including its step environments. `Modify` carries the whole
     /// new step; a step whose only change is its tasks gets no step op.
     fn step(&mut self, step: StepRef<'_>, op: Op<'_, Step>) -> Result<(), Self::Error>;
-    /// A step's tasks. `change` names tasks by their parameter values, never
-    /// by position; [`TaskChange::tasks`] gives the tasks it adds. The host
-    /// maps them to its own task ids.
-    fn tasks(
-        &mut self,
-        step: StepRef<'_>,
-        space: Option<&StepParameterSpace>,
-        change: &TaskChange,
-    ) -> Result<(), Self::Error>;
+    /// A step's tasks. `op.change` names tasks by their parameter values,
+    /// never by position; [`TaskOp::added_tasks`] gives the tasks it adds.
+    /// The host maps them to its own task ids. A step whose only change is
+    /// its tasks gets no step op, so the host writes `op.space` as the
+    /// step's parameter space here.
+    fn tasks(&mut self, step: StepRef<'_>, op: &TaskOp<'_>) -> Result<(), Self::Error>;
     /// Before the first write.
     fn begin(&mut self) -> Result<(), Self::Error> {
         Ok(())
@@ -896,11 +891,7 @@ pub fn execute<A: JobApplier + ?Sized>(
             Action::Parameter(o) => store.parameter(*o),
             Action::Environment(i, o) => store.environment(*i, *o),
             Action::Step(s, o) => store.step(*s, *o),
-            Action::Tasks {
-                step,
-                space,
-                change,
-            } => store.tasks(*step, *space, change),
+            Action::Tasks(step, op) => store.tasks(*step, op),
         }
         .map_err(wrap(i))?;
     }
@@ -1212,11 +1203,13 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
                 });
                 ops.push(PlannedOp {
                     kinds: task_kinds(&TaskChange::All),
-                    action: Action::Tasks {
-                        step: at,
-                        space: s.parameter_space.as_ref(),
-                        change: TaskChange::All,
-                    },
+                    action: Action::Tasks(
+                        at,
+                        TaskOp {
+                            space: s.parameter_space.as_ref(),
+                            change: TaskChange::All,
+                        },
+                    ),
                 });
             }
             DiffStatus::Modified => {
@@ -1255,11 +1248,13 @@ pub fn plan<'a>(old: &'a Job, new: &'a Job) -> Result<ApplyPlan<'a>, ModelError>
                 if let Some(change) = change {
                     ops.push(PlannedOp {
                         kinds: task_kinds(&change),
-                        action: Action::Tasks {
-                            step: at,
-                            space: s.parameter_space.as_ref(),
-                            change,
-                        },
+                        action: Action::Tasks(
+                            at,
+                            TaskOp {
+                                space: s.parameter_space.as_ref(),
+                                change,
+                            },
+                        ),
                     });
                 }
             }

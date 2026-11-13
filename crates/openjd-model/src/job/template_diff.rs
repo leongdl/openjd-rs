@@ -2266,12 +2266,13 @@ struct BuiltStep {
 /// `{`, YAML otherwise. The document's `documentVersion` must be
 /// [`JobDocument::VERSION`], the one [`JobDocument`] writes. Unknown fields
 /// are rejected at every level, and so are a parameter or task parameter
-/// definition that is not in the host encoding, a `resolvedSymTab` entry
+/// definition that is not in the host encoding, a value not in the exact
+/// form a built job writes (`"TRUE"` for a BOOL), a `resolvedSymTab` entry
 /// that is not the `{name, type, value}` a `SymbolTable` serializes to, a
 /// number or bool where the document writes a string, and the forms
-/// template validation rules out (an empty list a template requires to be
-/// non-empty, a literal `timeout` or `notifyPeriodInSeconds` that is not a
-/// positive integer).
+/// template validation rejects (empty names, unknown or repeated
+/// dependencies, empty host requirements, ...). `specs/model/host-support.md`,
+/// "Reading a built job", lists every check.
 ///
 /// Unstable: see the module docs.
 pub fn job_from_str(text: &str) -> Result<Job, ModelError> {
@@ -2381,8 +2382,16 @@ fn check_symbol_table(
             return Err(format!("{at}.name: '{name}' is repeated"));
         }
         let ty = ExprType::parse(string("type")?).map_err(|e| format!("{at}.type: {e}"))?;
-        ExprValue::from_transport_value(&m["value"], &ty, PathFormat::Posix)
+        let value = ExprValue::from_transport_value(&m["value"], &ty, PathFormat::Posix)
             .map_err(|e| format!("{at}.value: {e}"))?;
+        // Only the form a `SymbolTable` writes: `"TRUE"` is not a BOOL here.
+        let written = value.transport_value();
+        if m["value"] != written {
+            return Err(format!(
+                "{at}.value: {} is not in the form a built job writes ({written})",
+                m["value"]
+            ));
+        }
     }
     table
         .to_symtab(PathFormat::Posix)
@@ -2434,14 +2443,23 @@ fn check_action(a: &crate::job::Action, path: &str) -> Result<(), String> {
     }
 }
 
-fn check_environment(e: &Environment, path: &str) -> Result<(), String> {
+fn check_environment(e: &Environment, path: &str, wrap_actions: bool) -> Result<(), String> {
     if e.variables.as_ref().is_some_and(|v| v.is_empty()) {
         return Err(format!("{path}.variables: must not be empty"));
     }
     if let Some(script) = &e.script {
-        non_empty(&script.embedded_files, || {
-            format!("{path}.script.embeddedFiles")
-        })?;
+        if !script.actions.has_any_action() {
+            return Err(format!(
+                "{path}.script.actions: {}",
+                if wrap_actions {
+                    "must define at least one of onEnter or onExit, or the complete set of wrap \
+                     hooks (onWrapEnvEnter, onWrapTaskRun, and onWrapEnvExit together)"
+                } else {
+                    "must define at least one of onEnter or onExit"
+                }
+            ));
+        }
+        check_embedded_files(&script.embedded_files, &format!("{path}.script"))?;
         for (name, a) in script.actions.iter_named() {
             check_action(a, &format!("{path}.script.actions.{name}"))?;
         }
@@ -2449,42 +2467,158 @@ fn check_environment(e: &Environment, path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn check_environments(envs: &Option<Vec<Environment>>, path: &str) -> Result<(), String> {
+/// A script's `embeddedFiles`: non-empty, and every file has non-empty
+/// `data`. `path` names the script.
+fn check_embedded_files(
+    files: &Option<Vec<crate::job::EmbeddedFile>>,
+    path: &str,
+) -> Result<(), String> {
+    let at = format!("{path}.embeddedFiles");
+    non_empty(files, || at.clone())?;
+    for (k, f) in files.iter().flatten().enumerate() {
+        match &f.data {
+            None => {
+                return Err(format!(
+                    "{at}[{k}]: embedded file '{}' is missing 'data' field",
+                    f.name
+                ))
+            }
+            Some(d) if d.raw().is_empty() => {
+                return Err(format!("{at}[{k}].data: must not be empty"))
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn check_environments(
+    envs: &Option<Vec<Environment>>,
+    path: &str,
+    wrap_actions: bool,
+) -> Result<(), String> {
     non_empty(envs, || path.to_string())?;
     for (j, e) in envs.iter().flatten().enumerate() {
-        check_environment(e, &format!("{path}[{j}]"))?;
+        check_environment(e, &format!("{path}[{j}]"), wrap_actions)?;
+    }
+    Ok(())
+}
+
+/// The checks template validation makes on host requirements, with its
+/// messages. `path` names the step's `hostRequirements`.
+fn check_host_requirements(h: &crate::job::HostRequirements, path: &str) -> Result<(), String> {
+    let some = |l: Option<usize>| l.is_some_and(|n| n > 0);
+    if !some(h.amounts.as_ref().map(Vec::len)) && !some(h.attributes.as_ref().map(Vec::len)) {
+        return Err(format!(
+            "{path}: must have at least one of amounts or attributes"
+        ));
+    }
+    for (k, a) in h.amounts.iter().flatten().enumerate() {
+        let at = format!("{path}.amounts[{k}]");
+        match (a.min, a.max) {
+            (None, None) => return Err(format!("{at}: must have at least one of min or max")),
+            (Some(min), _) if min < 0.0 => return Err(format!("{at}.min: must be non-negative")),
+            (_, Some(max)) if max <= 0.0 => return Err(format!("{at}.max: must be positive")),
+            (Some(min), Some(max)) if min > max => {
+                return Err(format!("{at}: min ({min}) > max ({max})"))
+            }
+            _ => {}
+        }
+    }
+    for (k, a) in h.attributes.iter().flatten().enumerate() {
+        let at = format!("{path}.attributes[{k}]");
+        if a.any_of.is_none() && a.all_of.is_none() {
+            return Err(format!("{at}: must have at least one of anyOf or allOf"));
+        }
+        non_empty(&a.any_of, || format!("{at}.anyOf"))?;
+        non_empty(&a.all_of, || format!("{at}.allOf"))?;
+    }
+    Ok(())
+}
+
+/// The job-level checks: a non-empty `name`, and an `extensions` list
+/// that is non-empty with no repeats.
+fn check_job_fields(job: &Job) -> Result<(), String> {
+    if job.name.is_empty() {
+        return Err("name: must not be empty".into());
+    }
+    if let Some(exts) = &job.extensions {
+        if exts.is_empty() {
+            return Err("extensions: if provided, must be a non-empty list".into());
+        }
+        let mut seen = HashSet::new();
+        if let Some(e) = exts.iter().find(|e| !seen.insert(*e)) {
+            return Err(format!(
+                "extensions: Duplicate values for extension name are not allowed. \
+                 Duplicate values: {}",
+                e.as_str()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Step names are non-empty and unique, and each step's dependencies name
+/// another step of the job, once each.
+fn check_steps_and_dependencies(job: &Job) -> Result<(), String> {
+    let names: HashSet<&str> = job.steps.iter().map(|s| s.name.as_str()).collect();
+    let mut seen = HashSet::new();
+    for (i, s) in job.steps.iter().enumerate() {
+        let at = format!("steps[{i}]");
+        if s.name.is_empty() {
+            return Err(format!("{at}.name: must not be empty"));
+        }
+        if !seen.insert(s.name.as_str()) {
+            return Err(format!("{at}.name: duplicate step name: '{}'", s.name));
+        }
+        non_empty(&s.dependencies, || format!("{at}.dependencies"))?;
+        let mut deps = HashSet::new();
+        for (j, d) in s.dependencies.iter().flatten().enumerate() {
+            let dep = format!("{at}.dependencies[{j}]");
+            let on = d.depends_on.as_str();
+            if on == s.name {
+                return Err(format!("{dep}: cannot depend on itself"));
+            }
+            if !names.contains(on) {
+                return Err(format!("{dep}: dependency '{on}' not found"));
+            }
+            if !deps.insert(on) {
+                return Err(format!("{dep}: duplicate dependency '{on}'"));
+            }
+        }
     }
     Ok(())
 }
 
 /// Reject the forms template validation rules out, so `create_job` never
-/// writes them: an empty list where a template requires a non-empty one,
-/// and a literal `timeout` or `notifyPeriodInSeconds` that is not a
-/// positive integer.
+/// writes them. Each check, and its message, is listed in
+/// `specs/model/host-support.md`, "Reading a built job".
 fn check_created_forms(job: &Job) -> Result<(), String> {
+    check_job_fields(job)?;
     if job.steps.is_empty() {
         return Err("steps: must not be empty".into());
     }
-    check_environments(&job.job_environments, "jobEnvironments")?;
+    check_steps_and_dependencies(job)?;
+    let wrap_actions = job
+        .extensions
+        .iter()
+        .flatten()
+        .any(|e| *e == ModelExtension::WrapActions);
+    check_environments(&job.job_environments, "jobEnvironments", wrap_actions)?;
     for (i, s) in job.steps.iter().enumerate() {
         let at = format!("steps[{i}]");
-        non_empty(&s.dependencies, || format!("{at}.dependencies"))?;
-        check_environments(&s.step_environments, &format!("{at}.stepEnvironments"))?;
-        non_empty(&s.script.embedded_files, || {
-            format!("{at}.script.embeddedFiles")
-        })?;
+        check_environments(
+            &s.step_environments,
+            &format!("{at}.stepEnvironments"),
+            wrap_actions,
+        )?;
+        check_embedded_files(&s.script.embedded_files, &format!("{at}.script"))?;
         check_action(
             &s.script.actions.on_run,
             &format!("{at}.script.actions.onRun"),
         )?;
-        let attributes = s
-            .host_requirements
-            .as_ref()
-            .and_then(|h| h.attributes.as_ref());
-        for (k, a) in attributes.into_iter().flatten().enumerate() {
-            let attr = format!("{at}.hostRequirements.attributes[{k}]");
-            non_empty(&a.any_of, || format!("{attr}.anyOf"))?;
-            non_empty(&a.all_of, || format!("{attr}.allOf"))?;
+        if let Some(h) = &s.host_requirements {
+            check_host_requirements(h, &format!("{at}.hostRequirements"))?;
         }
     }
     Ok(())

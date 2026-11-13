@@ -895,3 +895,31 @@ fn a_null_step_environments_list_is_no_step_environments() {
         r#"{"name":"S","stepEnvironments":null}"#
     );
 }
+
+#[test]
+fn a_kept_value_the_job_declares_and_an_environment_constrains_is_checked() {
+    let job = Q_JOB.replace(
+        "name: Q\n",
+        "name: Q\nparameterDefinitions:\n  - {name: Q, type: STRING}\n",
+    );
+    let side = || text(&job).environment(TemplateSource::Text(Q_ENV.to_string()));
+    let stored = |v: &str| -> JobParameterValues {
+        [(
+            "Q".to_string(),
+            JobParameterValue {
+                param_type: JobParameterType::String,
+                value: ExprValue::String(v.into()),
+            },
+        )]
+        .into_iter()
+        .collect()
+    };
+    let merged = merge_parameters(&stored("c"), &JobParameterInputValues::new(), &side()).unwrap();
+    assert_eq!(sorted(&merged), ["Q=STRING:c"]);
+    let err = side().preprocessed(merged).build().unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: Parameter 'Q': value 'c' is not in allowed values"
+    );
+    assert!(side().preprocessed(stored("b")).build().is_ok());
+}

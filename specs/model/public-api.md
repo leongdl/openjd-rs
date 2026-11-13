@@ -912,12 +912,13 @@ impl<T: ToDocument> Op<'_, T> {
 }
 pub trait job::apply::ToDocument { fn as_document(&self) -> impl Serialize + '_; }   // for Job, Step, Environment, JobParameter, StepParameterSpace
 pub enum job::apply::TaskChange { Boxes(Box<ProductDelta>), All, Replace }
-impl TaskChange {
-    pub fn tasks<'s>(&'s self, space: Option<&'s StepParameterSpace>)
-        -> Result<impl Iterator<Item = TaskParameterSet> + 's, ModelError>;   // the tasks added, in create_job's order for All/Replace
-    pub fn task_count(&self, space: Option<&StepParameterSpace>) -> Result<u64, ModelError>;
-    pub fn as_document<'s>(&'s self, space: Option<&'s StepParameterSpace>) -> impl Serialize + 's;   // tasks named by value, no positions
-    pub fn to_value(&self, space: Option<&StepParameterSpace>) -> Result<serde_json::Value, ModelError>;
+pub struct job::apply::TaskOp<'a> { pub space: Option<&'a StepParameterSpace>, pub change: TaskChange }
+impl<'a> TaskOp<'a> {
+    pub fn added_tasks(&self)
+        -> Result<impl Iterator<Item = TaskParameterSet> + use<'_, 'a>, ModelError>;   // the tasks added, in create_job's order for All/Replace
+    pub fn added_count(&self) -> Result<u64, ModelError>;
+    pub fn as_document(&self) -> impl Serialize + '_;   // tasks named by value, no positions
+    pub fn to_value(&self) -> Result<serde_json::Value, ModelError>;
 }
 #[non_exhaustive] pub enum job::apply::MutationKind { JobMetadata, JobExtensions, ParameterValue, ParameterAdd, ParameterRemove,
     EnvVariables, EnvScript, EnvMetadata, EnvSymbols, EnvAdd, EnvRemove, EnvReorder, StepMetadata, StepScript,
@@ -929,7 +930,7 @@ impl MutationKind {
 impl FromStr for MutationKind { type Err = UnknownMutationKind; }   // exact name, case-sensitive
 pub struct job::apply::UnknownMutationKind(pub String);   // Display "unknown mutation kind 'Foo'"; Error
 #[non_exhaustive] pub enum job::apply::Action<'a> { Job(Op<'a, Job>), Parameter(Op<'a, JobParameter>), Environment(usize, Op<'a, Environment>),
-    Step(StepRef<'a>, Op<'a, Step>), Tasks { step: StepRef<'a>, space: Option<&'a StepParameterSpace>, change: TaskChange } }
+    Step(StepRef<'a>, Op<'a, Step>), Tasks(StepRef<'a>, TaskOp<'a>) }
 pub struct job::apply::PlannedOp<'a> { pub kinds: BTreeSet<MutationKind>, pub action: Action<'a> }
 impl PlannedOp<'_> {
     pub fn target(&self) -> OpTarget;
@@ -960,7 +961,7 @@ pub trait job::apply::JobApplier {   // object safe
     fn parameter(&mut self, op: Op<'_, JobParameter>) -> Result<(), Self::Error>;
     fn environment(&mut self, index: usize, op: Op<'_, Environment>) -> Result<(), Self::Error>;
     fn step(&mut self, step: StepRef<'_>, op: Op<'_, Step>) -> Result<(), Self::Error>;
-    fn tasks(&mut self, step: StepRef<'_>, space: Option<&StepParameterSpace>, change: &TaskChange) -> Result<(), Self::Error>;
+    fn tasks(&mut self, step: StepRef<'_>, op: &TaskOp<'_>) -> Result<(), Self::Error>;
     fn begin(&mut self) -> Result<(), Self::Error>;    // default Ok
     fn commit(&mut self) -> Result<(), Self::Error>;   // default Ok
 }
@@ -968,9 +969,11 @@ pub trait job::apply::JobApplier {   // object safe
 
 `StepRef` names a step by name and index, so a store keyed by name needs no job to resolve
 the index. A task is named by its parameter set, never by a position, so a host keeps its
-own task ids: `TaskChange::tasks` gives the tasks a change adds (for `All` and `Replace`,
-the whole new space in `create_job`'s order, so a host never enumerates a space), and the
-task change document lists those and, for `Boxes`, the removed sets (see
+own task ids. A `TaskOp` is a step's `TaskChange` with the new parameter space it is read
+against, so none of its methods takes an argument: `added_tasks` gives the tasks the change
+adds (for `All` and `Replace`, the whole new space in `create_job`'s order, one task per
+`CHUNK[INT]` value, so a host never enumerates a space), and the task change document
+lists those and, for `Boxes`, the removed sets (see
 [job-apply.md](job-apply.md#task-identity)). `OpTarget` is the owned form a `Refusal` and `ApplyError::Vetoed` carry. The
 `as_document` views write each object in its `JobDocument` form, in the host encoding of
 [host-support.md](host-support.md#host-encoding), and borrow the plan; `to_value` turns one

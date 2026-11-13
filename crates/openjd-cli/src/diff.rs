@@ -350,8 +350,8 @@ fn plan_doc(plan: &ApplyPlan<'_>, step: Option<&str>) -> PlanDoc {
                 None,
             ),
             Action::Step(s, o) => (format!("step {} {}", o.verb(), s.name), Some(s.name)),
-            Action::Tasks { step, change, .. } => (
-                format!("tasks of {}: {}", step.name, task_change(change)),
+            Action::Tasks(step, t) => (
+                format!("tasks of {}: {}", step.name, task_change(&t.change)),
                 Some(step.name),
             ),
             _ => ("other".to_string(), None),
@@ -381,18 +381,12 @@ fn op_name<'a, T>(op: &Op<'a, T>, name: impl Fn(&'a T) -> &'a String) -> &'a str
 fn task_change(change: &TaskChange) -> String {
     match change {
         TaskChange::Boxes(d) => {
-            let added: u64 = d.added.iter().map(|b| b.len()).sum();
-            let removed: u64 = d.removed.iter().map(|b| b.len()).sum();
-            let start = d.old.len();
-            let at = if added > 0 {
-                format!(
-                    " at index {start}..{}",
-                    start.saturating_add(added).saturating_sub(1)
-                )
-            } else {
-                String::new()
-            };
-            format!("keep {}, add {added}{at}, remove {removed}", d.kept.len())
+            format!(
+                "keep {}, add {}, remove {}",
+                d.kept.len(),
+                d.appended_count(),
+                d.removed_count()
+            )
         }
         TaskChange::All => "all".to_string(),
         TaskChange::Replace => "replace all".to_string(),

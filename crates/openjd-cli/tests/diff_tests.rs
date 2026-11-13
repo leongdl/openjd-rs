@@ -178,7 +178,7 @@ fn plan() {
             "{V1_V2}{CASE3_OUT}
 apply plan:
   1. parameter modify Frames  [ParameterValue]
-  2. tasks of Render: keep 100, add 300 at index 100..399, remove 0  [TaskAppend]
+  2. tasks of Render: keep 100, add 300, remove 0  [TaskAppend]
 kinds: ParameterValue, TaskAppend
 "
         ),
@@ -673,7 +673,7 @@ kinds: JobMetadata, EnvVariables, StepScript, StepAdd, TaskAppend, TaskRemove
         plan,
         "  1. job modify  [JobMetadata]
   2. job environment modify Tools  [EnvVariables]
-  3. tasks of Shrink: keep 3, add 3 at index 3..5, remove 0  [TaskAppend]
+  3. tasks of Shrink: keep 3, add 3, remove 0  [TaskAppend]
   4. step modify Modify  [StepScript]
   5. step remove Added  [StepRemove]
 kinds: JobMetadata, EnvVariables, StepScript, StepRemove, TaskAppend

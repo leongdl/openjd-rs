@@ -95,7 +95,7 @@ render_v1.yaml -> render_v2.yaml
 
 apply plan:
   1. parameter modify Frames  [ParameterValue]
-  2. tasks of Render: keep 100, add 300 at index 100..399, remove 0  [TaskAppend]
+  2. tasks of Render: keep 100, add 300, remove 0  [TaskAppend]
 kinds: ParameterValue, TaskAppend
 ```
 

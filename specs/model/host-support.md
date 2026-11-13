@@ -59,7 +59,7 @@ the supported version is 1`.
 
 `taskParameterDefinitions` is a list in definition order, which the job keeps. It is not
 task order: a `combination` reorders the dimensions, so a host takes the tasks from
-`TaskChange::tasks` and the task change documents ([task identity](job-apply.md#task-identity))
+`TaskOp::added_tasks` and the task change documents ([task identity](job-apply.md#task-identity))
 and never enumerates a space itself. No part of a
 document depends on the order of an object's keys, so `serde_json::to_value` of a document
 and the document parsed back from its JSON text are the same value, and a host may parse
@@ -67,24 +67,49 @@ either into its own maps. `parameters` and environment `variables` are objects s
 name. An `INT` definition with `chunks` (which `create_job` never builds) writes them as a
 `CHUNK[INT]` does.
 
-`job_from_str` reads exactly this form. A parameter must have exactly `name`, `type` and
-`value`, its `name` must be its key, its `type` must be a spec type name, case and all,
-and its `value` must have that type
+### Reading a built job
+
+`job_from_str` reads exactly this form, and only what `create_job` writes. Values are read
+strictly: a parameter value, a definition's `range` or `list` item, and a `resolvedSymTab`
+value must be the exact text a built job writes for the value it parses as, so `"TRUE"` is
+not the BOOL `true` and `" 1-4 "` is not the range `1-4`
+(`parameters[P].value: "TRUE" is not in the form a built job writes ("true")`). A
+parameter must have exactly `name`, `type` and `value`, its `name` must be its key, its
+`type` must be a spec type name, case and all, and its `value` must have that type
 (`parameters[P].value: Cannot convert 'x' to int: invalid digit found in string`). A
 definition must have exactly the keys its type takes
 (`steps[0].parameterSpace.taskParameterDefinitions[0].bogus: unknown field`), and two
-definitions of a step may not have the same name. It also rejects forms `create_job`
-never writes, each with its location:
+definitions of a step may not have the same name.
+
+It also rejects each form template validation rejects that a built job can express, with
+its location. Where template validation has a message, it is the same message without its
+final period. The reader makes these checks, and no others:
 
 | form | message |
 |---|---|
+| an empty job `name` | `name: must not be empty` |
+| `extensions: []`, or a repeated extension | `extensions: if provided, must be a non-empty list`; `extensions: Duplicate values for extension name are not allowed. Duplicate values: EXPR` |
+| an empty step `name`, or a repeated one | `steps[0].name: must not be empty`; `steps[1].name: duplicate step name: 'S'` |
+| a dependency on the step itself, on a step the job does not have, or repeated | `steps[0].dependencies[0]: cannot depend on itself`; `…: dependency 'X' not found`; `steps[1].dependencies[1]: duplicate dependency 'S'` |
+| `hostRequirements` with no amounts and no attributes (`{}`, or both lists empty) | `steps[0].hostRequirements: must have at least one of amounts or attributes` |
+| an amount with neither `min` nor `max`, `min < 0`, `max <= 0`, or `min > max` | `…amounts[0]: must have at least one of min or max`; `…amounts[0].min: must be non-negative`; `…amounts[0].max: must be positive`; `steps[0].hostRequirements.amounts[0]: min (4) > max (2)` |
+| an attribute with neither `anyOf` nor `allOf` | `steps[0].hostRequirements.attributes[0]: must have at least one of anyOf or allOf` |
+| an environment `script.actions` with no action | `jobEnvironments[0].script.actions: must define at least one of onEnter or onExit` (with `WRAP_ACTIONS` in `extensions`, the template's longer message naming the wrap hooks) |
+| an embedded file (step or environment) without `data`, or with empty `data` | `steps[0].script.embeddedFiles[0]: embedded file 'F' is missing 'data' field`; `….data: must not be empty` |
+| a `combination` naming a parameter the step does not define | `steps[0].parameterSpace.combination: 'G' is not a task parameter of the step` |
+| any other `combination` template validation rejects (empty, a trailing operator, a parameter missing or repeated, …) | `steps[0].parameterSpace.combination: combination expression is empty` |
 | `chunks.defaultTaskCount: 0` | `steps[0].parameterSpace.taskParameterDefinitions[0].chunks.defaultTaskCount: must be at least 1` |
 | `taskParameterDefinitions: []` | `steps[0].parameterSpace.taskParameterDefinitions: must not be empty` |
-| a `combination` naming a parameter the step does not define | `steps[0].parameterSpace.combination: 'G' is not a task parameter of the step` |
 | a definition's `list: []` | `steps[0].parameterSpace.taskParameterDefinitions[0].list: must not be empty` |
-| an empty list or map a template requires to be non-empty: `steps`, `jobEnvironments`, a step's `dependencies` and `stepEnvironments`, `anyOf`, `allOf`, `args`, `embeddedFiles`, an environment's `variables` | `steps: must not be empty`, `steps[0].hostRequirements.attributes[0].anyOf: must not be empty`, … |
+| an empty list or map a template requires to be non-empty: `steps`, `jobEnvironments`, a step's `dependencies` and `stepEnvironments`, `anyOf`, `allOf`, `args`, `embeddedFiles` (step or environment), an environment's `variables` | `steps: must not be empty`, `steps[0].hostRequirements.attributes[0].anyOf: must not be empty`, … |
 | a literal `timeout` or `notifyPeriodInSeconds` that is not a positive integer (`"seven"`, `"0"`); a format string is resolved on the worker and not checked | `steps[0].script.actions.onRun.timeout: must be a positive integer` |
-| a number or bool where the document writes a string (`command: 7`, which the job types would read as `"7"`) | `steps[0].script.actions.onRun.command: expected a string` |
+| a number or bool where the document writes a string (`command: 7`, which the job types would read as `"7"`; YAML `letBindings: [7]`) | `steps[0].script.actions.onRun.command: expected a string`; `steps[0].script.letBindings[0]: expected a string` |
+| a `resolvedSymTab` that is not a list of `{name, type, value}` with unique names and a value of its type | `steps[0].resolvedSymTab[0]: missing field 'value'`, … |
+
+Not checked, because each needs symbol analysis of the scripts: a step with
+`parameterSpace: null` whose script reads `Task.Param.*`, and a `resolvedSymTab` that does
+not hold the symbols its step or environment reads. Nor are the checks template validation
+makes on the resolved strings themselves (lengths, control characters, identifier syntax).
 
 A serde error (a field of the wrong type that the job types reject themselves) is located
 by line and column only, and names the Rust type it expected.
@@ -220,12 +245,14 @@ origin, and each merge rule: a kept, a retyped, a removed and a new parameter, a
 undeclared request, a stored Windows PATH that plans nothing, a stored PATH whose rewritten
 form would break `allowedValues` or `maxLength`, a kept value that a narrowed template
 rejects when the job is built, a kept value that only an environment template declares and
-rejects (`Parameter 'Q': value 'c' is not in allowed values`), a requested PATH and a new
+rejects (`Parameter 'Q': value 'c' is not in allowed values`), the same when the job
+template also declares the parameter without a constraint, a requested PATH and a new
 default that are preprocessed, a preprocessed side and an input side with the same text
 (`[parameters]`),
 and the middle job keeping a stored Windows PATH (origins as for a POSIX path) and leaving
 out a dropped or retyped parameter (origins as `merge_parameters` gives, no note), and a range
 flagged contiguous writing its canonical text with an unchanged digest. The host encoding is tested in `tests/integration/test_template_diff.rs`
 (the document against the serde form, each parameter type read back, each malformed
-parameter and definition, the forms `create_job` never writes, the document version) and in `src/test_job_apply.rs` (the task change documents list
+parameter and definition, each row of [Reading a built job](#reading-a-built-job) in full,
+as JSON and as YAML, with the accepted forms beside them, the document version) and in `src/test_job_apply.rs` (the task change documents list
 `create_job`'s tasks, and a store keyed by task values applies chained updates from them).

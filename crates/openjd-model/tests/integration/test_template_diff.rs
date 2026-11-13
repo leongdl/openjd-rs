@@ -4205,3 +4205,215 @@ fn job_from_str_rejects_each_form_create_job_never_writes() {
     }
     job_from_str(&doc.to_string()).unwrap();
 }
+
+// ─── applier adaptor audit round 4 ──────────────────────────────────
+
+/// A built job's parameters, as `{name: (type, value)}`.
+fn with_parameter(ty: &str, value: serde_json::Value) -> impl Fn(&mut serde_json::Value) {
+    let ty = ty.to_string();
+    move |doc: &mut serde_json::Value| {
+        doc["parameters"] = serde_json::json!({"P": {"name": "P", "type": ty, "value": value}});
+    }
+}
+
+#[test]
+fn job_from_str_rejects_what_template_validation_rejects() {
+    use serde_json::{json, Value};
+    type Edit = Box<dyn Fn(&mut Value)>;
+    let set = |pointer: &'static str, value: Value| -> Edit {
+        Box::new(move |doc: &mut Value| *doc.pointer_mut(pointer).unwrap() = value.clone())
+    };
+    let amount = |min: Value, max: Value| {
+        set(
+            "/steps/0/hostRequirements",
+            json!({"amounts": [{"name": "amount.worker.vcpu", "min": min, "max": max}], "attributes": null}),
+        )
+    };
+    let attribute = |any: Value, all: Value| {
+        set(
+            "/steps/0/hostRequirements",
+            json!({"amounts": null, "attributes": [{"name": "attr.worker.os.family", "anyOf": any, "allOf": all}]}),
+        )
+    };
+    let file = |data: Value| json!([{"name": "F", "fileType": "TEXT", "data": data}]);
+    let two_steps = |deps: Value| -> Edit {
+        Box::new(move |doc: &mut Value| {
+            let mut t = doc["steps"][0].clone();
+            t["name"] = json!("T");
+            t["dependencies"] = deps.clone();
+            doc["steps"].as_array_mut().unwrap().push(t);
+        })
+    };
+    let cases: Vec<(Edit, &str)> = vec![
+        (set("/name", json!("")), "name: must not be empty"),
+        (
+            set("/extensions", json!([])),
+            "extensions: if provided, must be a non-empty list",
+        ),
+        (
+            set("/extensions", json!(["EXPR", "EXPR"])),
+            "extensions: Duplicate values for extension name are not allowed. Duplicate values: EXPR",
+        ),
+        (set("/steps/0/name", json!("")), "steps[0].name: must not be empty"),
+        (
+            Box::new(|doc: &mut Value| {
+                let s = doc["steps"][0].clone();
+                doc["steps"].as_array_mut().unwrap().push(s);
+            }),
+            "steps[1].name: duplicate step name: 'S'",
+        ),
+        (
+            set("/steps/0/dependencies", json!([{"dependsOn": "X"}])),
+            "steps[0].dependencies[0]: dependency 'X' not found",
+        ),
+        (
+            set("/steps/0/dependencies", json!([{"dependsOn": "S"}])),
+            "steps[0].dependencies[0]: cannot depend on itself",
+        ),
+        (
+            two_steps(json!([{"dependsOn": "S"}, {"dependsOn": "S"}])),
+            "steps[1].dependencies[1]: duplicate dependency 'S'",
+        ),
+        (
+            set("/steps/0/hostRequirements", json!({})),
+            "steps[0].hostRequirements: must have at least one of amounts or attributes",
+        ),
+        (
+            set(
+                "/steps/0/hostRequirements",
+                json!({"amounts": [], "attributes": []}),
+            ),
+            "steps[0].hostRequirements: must have at least one of amounts or attributes",
+        ),
+        (
+            amount(json!(4), json!(2)),
+            "steps[0].hostRequirements.amounts[0]: min (4) > max (2)",
+        ),
+        (
+            amount(json!(-1), Value::Null),
+            "steps[0].hostRequirements.amounts[0].min: must be non-negative",
+        ),
+        (
+            amount(Value::Null, json!(0)),
+            "steps[0].hostRequirements.amounts[0].max: must be positive",
+        ),
+        (
+            amount(Value::Null, Value::Null),
+            "steps[0].hostRequirements.amounts[0]: must have at least one of min or max",
+        ),
+        (
+            attribute(Value::Null, Value::Null),
+            "steps[0].hostRequirements.attributes[0]: must have at least one of anyOf or allOf",
+        ),
+        (
+            set("/jobEnvironments/0/script/actions", json!({})),
+            "jobEnvironments[0].script.actions: must define at least one of onEnter or onExit",
+        ),
+        (
+            Box::new(|doc: &mut Value| {
+                doc["extensions"] = json!(["EXPR", "WRAP_ACTIONS"]);
+                doc["jobEnvironments"][0]["script"]["actions"] = json!({});
+            }),
+            "jobEnvironments[0].script.actions: must define at least one of onEnter or onExit, \
+             or the complete set of wrap hooks (onWrapEnvEnter, onWrapTaskRun, and onWrapEnvExit \
+             together)",
+        ),
+        (
+            set("/jobEnvironments/0/script/embeddedFiles", json!([])),
+            "jobEnvironments[0].script.embeddedFiles: must not be empty",
+        ),
+        (
+            set("/steps/0/script/embeddedFiles", file(Value::Null)),
+            "steps[0].script.embeddedFiles[0]: embedded file 'F' is missing 'data' field",
+        ),
+        (
+            set("/jobEnvironments/0/script/embeddedFiles", file(Value::Null)),
+            "jobEnvironments[0].script.embeddedFiles[0]: embedded file 'F' is missing 'data' field",
+        ),
+        (
+            set("/steps/0/script/embeddedFiles", file(json!(""))),
+            "steps[0].script.embeddedFiles[0].data: must not be empty",
+        ),
+        (
+            set("/steps/0/parameterSpace/combination", json!("")),
+            "steps[0].parameterSpace.combination: combination expression is empty",
+        ),
+        (
+            set("/steps/0/parameterSpace/combination", json!("F *")),
+            "steps[0].parameterSpace.combination: trailing operator in combination expression",
+        ),
+        // Values: only the form a built job writes.
+        (
+            Box::new(with_parameter("BOOL", json!("TRUE"))),
+            r#"parameters[P].value: "TRUE" is not in the form a built job writes ("true")"#,
+        ),
+        (
+            Box::new(with_parameter("RANGE_EXPR", json!(" 1-4 "))),
+            r#"parameters[P].value: " 1-4 " is not in the form a built job writes ("1-4")"#,
+        ),
+        (
+            Box::new(with_parameter("LIST[BOOL]", json!(["true", "False"]))),
+            r#"parameters[P].value: ["true","False"] is not in the form a built job writes (["true","false"])"#,
+        ),
+        (
+            set(
+                "/steps/0/parameterSpace/taskParameterDefinitions/0/range",
+                json!(" 1-3"),
+            ),
+            r#"steps[0].parameterSpace.taskParameterDefinitions[0].range: " 1-3" is not in the form a built job writes ("1-3")"#,
+        ),
+        (
+            set(
+                "/steps/0/parameterSpace/taskParameterDefinitions/0",
+                json!({"name": "F", "type": "INT", "list": ["+1"]}),
+            ),
+            r#"steps[0].parameterSpace.taskParameterDefinitions[0].list[0]: "+1" is not in the form a built job writes ("1")"#,
+        ),
+        (
+            set(
+                "/steps/0/resolvedSymTab",
+                json!([{"name": "Param.B", "type": "bool", "value": "TRUE"}]),
+            ),
+            r#"steps[0].resolvedSymTab[0].value: "TRUE" is not in the form a built job writes ("true")"#,
+        ),
+    ];
+    for (edit, want) in cases {
+        let mut doc = built_job_value();
+        edit(&mut doc);
+        let want = format!("Validation error: not a built job: {want}");
+        assert_eq!(
+            job_from_str(&doc.to_string()).unwrap_err().to_string(),
+            want
+        );
+        let yaml = serde_saphyr::to_string(&doc).unwrap();
+        assert_eq!(job_from_str(&yaml).unwrap_err().to_string(), want, "(YAML)");
+    }
+    // YAML reads `7` into a string field as its text; JSON does not. The
+    // alias `letBindings` is checked as `let` is.
+    let mut doc = built_job_value();
+    let script = doc["steps"][0]["script"].as_object_mut().unwrap();
+    script.remove("let");
+    script.insert("letBindings".into(), json!([7]));
+    assert_eq!(
+        job_from_str(&serde_saphyr::to_string(&doc).unwrap())
+            .unwrap_err()
+            .to_string(),
+        "Validation error: not a built job: steps[0].script.letBindings[0]: expected a string"
+    );
+    // The forms template validation accepts still read back.
+    let accepted: Vec<Edit> = vec![
+        amount(json!(0), json!(4)),
+        amount(json!(2), Value::Null),
+        attribute(Value::Null, json!(["linux"])),
+        two_steps(json!([{"dependsOn": "S"}])),
+        set("/steps/0/parameterSpace/combination", json!("F")),
+        set("/steps/0/script/embeddedFiles", file(json!("x"))),
+        Box::new(with_parameter("BOOL", json!("false"))),
+        Box::new(with_parameter("RANGE_EXPR", json!("1-4"))),
+    ];
+    for edit in accepted {
+        let mut doc = built_job_value();
+        edit(&mut doc);
+        job_from_str(&doc.to_string()).unwrap();
+    }
+}

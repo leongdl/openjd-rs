@@ -48,11 +48,14 @@ these, so only a hand-built `Job` has one. The diff reports the copies as a sing
    Step environments travel inside their step's op, because a step is one item in a
    store.
 4. Steps in **topological order of the new step graph**, origins first:
-   - `Added`: `Step(j, Add)`, then `Tasks { change: All }`.
+   - `Added`: `Step(j, Add)`, then `Tasks(j, TaskOp { change: All, .. })`.
    - `Modified`: `Step(j, Modify)` unless the only change is the parameter space, then
-     `Tasks` when the task set or task order changed (`task_delta`: `Product` with
+     `Tasks(j, …)` when the task set or task order changed (`task_delta`: `Product` with
      added or removed boxes → `Boxes`, `Fallback` → `Replace`). A change of dimension
-     order is a `Fallback`, because every kept task moves. If the space changed but the
+     order is a `Fallback`, because every kept task moves, and so is any change to a step
+     with a `CHUNK[INT]` dimension. When the parameter space is the step's only change,
+     there is no `Step` op: the host writes the step's new parameter space, `TaskOp::space`,
+     from the `tasks` call. If the space changed but the
      tasks and their order didn't (e.g. `1-2` rewritten as `[1, 2]`), there is no
      `Tasks` op. The `Step(j, Modify)` is emitted with `StepParameterSpace`, so the store
      still writes the new definition.
@@ -65,7 +68,7 @@ name never resolves the index. The index in `Step(j, Add)` is the step's final p
 topological order, not index order, so `j` can be past the end of the store's list at the
 time (`[A]` to `[B (dependsOn C), A, C]` adds C at 2, then B at 0). A store that keeps step
 rows in order places the added steps by `j` once the plan is done, in ascending `j`, after
-the removes and after any `Job` op's `StepReorder` of the shared steps. `Tasks { step: j }`
+the removes and after any `Job` op's `StepReorder` of the shared steps. `Tasks(j, …)`
 also indexes `new.steps`, and needs no `Step` op before it: a store resolves `j` from the
 new job, as it does for `Step(j, …)`.
 
@@ -159,14 +162,16 @@ A `TaskChange` names every task it touches by its set:
 - `Boxes`: remove the tasks of `ProductDelta::removed`, then add those of
   `ProductDelta::appended`. Every other task is kept, with its id.
 - `All` (a step add) and `Replace`: the step's tasks become exactly those of
-  `TaskChange::tasks(space)`. A host may keep a stored task whose set is in the list, with
+  `TaskOp::added_tasks`. A host may keep a stored task whose set is in the list, with
   its id, and removes the rest.
 
-`TaskChange::tasks(space)` yields the tasks a change adds, in a deterministic order. For
-`All` and `Replace` it is every task of the step's new space in `create_job`'s order:
-`StepParameterSpaceIterator` with the chunk override `create_job` counts tasks with
-(`Some(1)`, one task per chunked value), or one task with no parameters for a step without
-a space. A host never enumerates a space itself: a `combination` reorders dimensions
+`JobApplier::tasks` receives a `TaskOp { space, change }`: the change and the step's new
+parameter space it is read against. `TaskOp::added_tasks()` yields the tasks the change
+adds, in a deterministic order. For `All` and `Replace` it is every task of the step's new
+space in `create_job`'s order: `StepParameterSpaceIterator` with the chunk override
+`create_job` counts tasks with (`Some(1)`), or one task with no parameters for a step
+without a space. A `CHUNK[INT]` dimension therefore gives one task per value, as CreateJob
+creates them: `1-6` with `defaultTaskCount: 3` is six tasks, `"1-1"` to `"6-6"`, not two. A host never enumerates a space itself: a `combination` reorders dimensions
 (`combination: "B * A"` with definitions `[A, B]` makes `B` the outer dimension), so
 definition order alone is not task order. For `Boxes` it is `ProductDelta::appended`: the
 `added` boxes in turn, each rightmost parameter fastest. Box `k` holds the new tasks whose
@@ -187,7 +192,7 @@ is only a hint: it is the task's index at job creation, so it locates the task o
 the stored job has never been updated. The task change document does not carry it. Both
 orders depend only on the two parameter spaces, so every plan of the same jobs, in any
 process, yields the same sequences. `appended_count`, `removed_count` and
-`TaskChange::task_count` give the sizes without iterating.
+`TaskOp::added_count` give the sizes without iterating.
 
 ## Host adaptors
 
@@ -203,8 +208,9 @@ Every payload has a plain-data form that needs nothing outside these types:
 | `check` | `&PlannedOp` | `PlannedOp::as_document`: `{"kinds": [names], "action": "job" \| "parameter" \| "environment" \| "step" \| "tasks", …}` |
 | `job`, `parameter`, `environment`, `step` | `Op<'_, T>` | `Op::as_document`: `{"change": "add" \| "modify" \| "remove", "old"?: …, "new"?: …}` |
 | `step`, `tasks` | `StepRef` | `Serialize`: `{"name": …, "index": …}` |
-| `tasks` | `Option<&StepParameterSpace>` | `ToDocument`, the `JobDocument` form |
-| `tasks` | `&TaskChange` | `TaskChange::as_document(space)` |
+| `tasks` | `&TaskOp` | `TaskOp::as_document()`; its `space` through `ToDocument`, the `JobDocument` form |
+
+No document needs an argument: each is a method of the value the call receives.
 
 Objects inside an op (`Job`, `Step`, `Environment`, `JobParameter`, `StepParameterSpace`,
 through `ToDocument`) are written as `JobDocument` writes them, in the
@@ -213,7 +219,7 @@ sorted by name, typed values as `{type, value}`, and `taskParameterDefinitions` 
 definition order. `Op::Modify::node` is left out,
 because it indexes the plan's diff.
 
-`TaskChange::as_document(space)` names every task by its set, written by
+`TaskOp::as_document()` names every task by its set, written by
 `task_parameter_set_document` (name to `{type, value}`, the value as text so a float keeps
 its literal), and holds no positions (see [task identity](#task-identity)). `Frames` `1-2`
 to `1-4` is
@@ -232,17 +238,30 @@ and `1-4` to `3-6` removes `1` and `2` by value:
  "removedCount": 2, "removed": [{"Frame": {"type": "INT", "value": "1"}}, {"Frame": {"type": "INT", "value": "2"}}]}
 ```
 
-`All` and `Replace` carry the step's whole new task list, from `TaskChange::tasks`:
-`{"change": "all" | "replace", "taskCount": n, "tasks": [<task parameter set>, …]}`.
+`All` and `Replace` carry the step's whole new task list, from `TaskOp::added_tasks`:
+`{"change": "all" | "replace", "taskCount": n, "tasks": [<task parameter set>, …]}`. For
+`Frame` `CHUNK[INT]` `1-6` with `defaultTaskCount: 3` that is `"taskCount": 6` and
+`{"F": {"type": "CHUNK[INT]", "value": "1-1"}}` to `"6-6"`.
 
 The document lists every task the change adds or removes, so for `All` and `Replace` it is
 linear in the step's task count: the same size as the task rows the host writes for them.
 The lists are serialized as they are iterated, not collected first, but a consumer that
 parses the whole document (JSON text into Python, a `serde_json::Value`) holds it all at
 once. That is the trade-off of a self-contained document: a host reads one value and never
-calls back into openjd-rs. An adaptor written in Rust that would rather stream a large
-step calls `TaskChange::tasks(space)` and `task_count` itself and hands the host the tasks
-in batches; the order is the same.
+calls back into openjd-rs. Measured for a single `INT` dimension, an All or Replace
+document of 100,000 tasks is about 3.7 to 4.1 MB of JSON and takes about 0.1 to 0.25 s to
+write; one of 1,000,000 tasks is about 38 to 42 MB and 1 to 3.3 s (the lower figures are
+the task change document alone, in a release build). Any change to a step with a `CHUNK[INT]`
+dimension takes this path, since its task delta is always a `Fallback` and so a `Replace`
+of every task. An adaptor written in Rust that would rather stream a large step calls
+`TaskOp::added_tasks` and `added_count` itself and hands the host the tasks in batches; the
+order is the same.
+
+Two orders a host must know. When only a step's tasks change, there is no `Step` op, so the
+host writes the step's new parameter space (`TaskOp::space`) from the `tasks` call. A reorder
+of the job environments both jobs share arrives as the `Job` modify op (kind `EnvReorder`),
+before the environment ops; a reorder of a step's environments arrives in its `Step`
+modify op.
 
 `as_document` returns a `Serialize` view that borrows the plan; `to_value` is the same
 document as a `serde_json::Value`. Every order in a document is a list order, so the two
@@ -263,10 +282,10 @@ alternative. The sketch below compiles against PyO3 0.25:
 
 ```rust
 use openjd_model::job::apply::{
-    apply, AllowList, ApplyError, ApplyReport, JobApplier, Op, PlannedOp, StepRef, TaskChange,
+    apply, AllowList, ApplyError, ApplyReport, JobApplier, Op, PlannedOp, StepRef, TaskOp,
     ToDocument,
 };
-use openjd_model::job::{Environment, Job, JobParameter, Step, StepParameterSpace};
+use openjd_model::job::{Environment, Job, JobParameter, Step};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -321,17 +340,11 @@ impl JobApplier for PyStore {
     fn step(&mut self, step: StepRef<'_>, op: Op<'_, Step>) -> PyResult<()> {
         self.call("step", &[&step, &op.as_document()])
     }
-    fn tasks(
-        &mut self,
-        step: StepRef<'_>,
-        space: Option<&StepParameterSpace>,
-        change: &TaskChange,
-    ) -> PyResult<()> {
+    fn tasks(&mut self, step: StepRef<'_>, op: &TaskOp<'_>) -> PyResult<()> {
         // The change lists its tasks, in create_job's order for All and
         // Replace, so Python never enumerates the space.
-        let tasks = change.as_document(space);
-        let space = space.map(ToDocument::as_document);
-        self.call("tasks", &[&step, &space, &tasks])
+        let space = op.space.map(ToDocument::as_document);
+        self.call("tasks", &[&step, &space, &op.as_document()])
     }
 }
 
@@ -380,16 +393,19 @@ in that plan refuses it with no writes.
 
 `ValueStore` is a store keyed by task values that reads only the task change documents,
 through `DynStore`. It and `JobRebuilder` apply chained updates to one stored job (append
-then remove, remove then append, and a product under `combination: "B * A"` changed three
-times); after each update both hold exactly the new job's tasks, and every kept task keeps
-its id. The adaptor tests above cover the dyn path; others assert each refusal message in
+then remove, remove then append, a product under `combination: "B * A"` changed three
+times, and a chain of `Replace` updates: product to association, back, then a definition
+reorder); after each update both hold exactly the new job's tasks, every kept task keeps its
+id, and the tests assert how many were kept, so the `Replace` id-keeping branch of both
+stores is exercised. The adaptor tests above cover the dyn path; others assert each refusal message in
 full, every kind's name round trip, that `MutationKind::ALL` lists every variant (an
 exhaustive match whose arms index a fixed list by constant, so a new variant fails to
 compile, or fails the test, until `ALL` lists it), `AllowList::from_names`, that each op's
 document equals the matching part of the `JobDocument`, one whole `check` document for a
 job, an environment and a step op, a whole `Boxes` document with appends and removals, that
 the `All` and `Replace` documents list `create_job`'s tasks (definitions `[Z, A]`, and
-`combination: "B * A"` for a step add and a dimension reorder), that 20 plans of
+`combination: "B * A"` for a step add and a dimension reorder), the whole `Replace` and
+`All` documents of a `CHUNK[INT]` step (`taskCount: 6`, `"1-1"` to `"6-6"`), that 20 plans of
 independently rebuilt jobs are equal, and that resuming after a failed write with a plan of
 rebuilt jobs leaves the store holding the new job.
 `test_task_delta.rs` checks `appended` and `removed` against enumeration for every product
