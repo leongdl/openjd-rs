@@ -1447,6 +1447,31 @@ fn null_parameter_uses_the_default() {
     }
 }
 
+/// With a template from stdin, a new-side null overrides an old-side or `-p`
+/// value, so the default applies.
+#[test]
+fn null_parameter_with_a_stdin_template_uses_the_default() {
+    let dir = null_dir();
+    let text = std::fs::read_to_string(dir.path().join("t.yaml")).unwrap();
+    for (null, old_flag) in NULLS
+        .iter()
+        .flat_map(|null| [(null, "--old-parameter"), (null, "-p")])
+    {
+        let o = openjd_in(
+            dir.path(),
+            &["diff", "-", old_flag, "A=x", "--new-parameter", null],
+            Some(&text),
+        );
+        assert_eq!(stderr(&o), DIFF_WARNING, "{old_flag} {null}");
+        assert_eq!(
+            stdout(&o),
+            "-: old parameters -> new parameters\n~ parameter A: x -> dflt  [parameters]\n~ step S\n    ~ resolvedSymTab: Param.A=x -> Param.A=dflt  [parameters]\n    tasks: 1 unchanged\n\n1 step changed. Tasks: 1 kept, 0 added, 0 removed.\n",
+            "{old_flag} {null}"
+        );
+        assert_eq!(o.status.code(), Some(0), "{old_flag} {null}");
+    }
+}
+
 /// A null in the side flag overrides the `-p` value for that side only.
 #[test]
 fn side_flag_null_overrides_p() {
@@ -1625,6 +1650,32 @@ fn null_environment_parameter_uses_the_default() {
             "-p",
             "J=1",
             "--old-parameter",
+            "EnvParam=x",
+            "--new-parameter",
+            r#"{"EnvParam": null}"#,
+            "--environment",
+            "env_with_param.yaml",
+        ],
+        None,
+    );
+    assert_ok(
+        &o,
+        "simple_with_j_param.yaml: old parameters -> new parameters\n~ parameter EnvParam: x -> DefaultForEnvParam  [parameters]\n\n0 steps changed. Tasks: 1 kept, 0 added, 0 removed.\n",
+    );
+}
+
+/// A side-flag null for an environment parameter overrides the `-p` value
+/// for that side, so the environment's default applies there.
+#[test]
+fn side_flag_null_overrides_p_for_an_environment_parameter() {
+    let o = openjd_in(
+        &templates(),
+        &[
+            "diff",
+            "simple_with_j_param.yaml",
+            "-p",
+            "J=1",
+            "-p",
             "EnvParam=x",
             "--new-parameter",
             r#"{"EnvParam": null}"#,

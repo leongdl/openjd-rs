@@ -17,7 +17,8 @@ order, so a later value wins. It accepts three input formats and returns a
 `HashMap<String, ExprValue>`.
 
 A JSON or YAML null means the value is not given. That covers a null value, such as
-`{"A": null}` inline or in a JSON file, and `A: null`, `A: ~` or `A:` in a YAML file. A file
+`{"A": null}` inline or in a JSON file, and any YAML null (`null`, `Null`, `NULL`, `~`, or an
+empty value) in a YAML file. A file
 that is only `null` is rejected with `Job parameter file 'file://p.json' should contain a
 dictionary.` This matches deadline-cloud's job bundle parameter handling
 (`apply_job_parameters` in `job_bundle/parameters.py`), which skips a None value so the
@@ -110,8 +111,9 @@ fn json_val_to_expr(v: &serde_json::Value) -> ExprValue {
 
 This means numeric JSON values like `{"Frames": 100}` become the string `"100"`. The
 model crate's parameter preprocessing handles parsing this string into the correct type
-based on the parameter definition. This matches the Python CLI's behavior where all
-parameter values pass through as strings initially.
+based on the parameter definition. The Python openjd CLI instead keeps typed values and
+turns them into text later (`openjd-model _create_job.py str(value)`), so it gives `True`
+and `None` where openjd-rs gives `true` and treats null as not given.
 
 ### Known type coercion bugs (shared by run, summary and diff)
 

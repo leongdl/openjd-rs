@@ -816,12 +816,168 @@ steps:
         let dir = tempfile::tempdir().unwrap();
         let t = path(dir.path(), "t.yaml");
         setup(dir.path());
-        for later in [r#"{"A": "1"}"#, "A=1"] {
+        std::fs::write(dir.path().join("three.yaml"), "A: 3\n").unwrap();
+        let file = format!("file://{}", dir.path().join("three.yaml").display());
+        for (later, value) in [(r#"{"A": "1"}"#, "1"), ("A=1", "1"), (file.as_str(), "3")] {
             let (code, stdout, stderr) =
                 run_cli(&["summary", &t, "-p", r#"{"A": null}"#, "-p", later]);
             assert_eq!((code, stderr.as_str()), (0, ""), "{later}");
-            assert_eq!(stdout, summary_of("1"), "{later}");
+            assert_eq!(stdout, summary_of(value), "{later}");
         }
+    }
+
+    /// Only a null means not given: an empty string and `0` are values.
+    #[test]
+    fn summary_empty_string_and_zero_are_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = path(dir.path(), "t.yaml");
+        setup(dir.path());
+        let (code, stdout, stderr) = run_cli(&["summary", &t, "-p", r#"{"A": ""}"#]);
+        assert_eq!((code, stderr.as_str()), (0, ""));
+        assert_eq!(
+            stdout,
+            "\n--- Summary for 'T' ---\n\nParameters:\n  - A (STRING)\n\nTotal steps: 1\nTotal tasks: 1\nTotal environments: 0\n\n--- Steps in 'T' ---\n\n1. 'S' (1 total Tasks)\n\n\n"
+        );
+        let (code, stdout, stderr) = run_cli(&["summary", &t, "-p", r#"{"A": 0}"#]);
+        assert_eq!((code, stderr.as_str()), (0, ""));
+        assert_eq!(stdout, summary_of("0"));
+    }
+
+    /// A Key=Value value is always text: `A=` is empty and `A=~` is `~`.
+    #[test]
+    fn key_value_empty_and_tilde_are_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = path(dir.path(), "t.yaml");
+        setup(dir.path());
+        let (code, stdout, stderr) = run_cli(&["summary", &t, "-p", "A="]);
+        assert_eq!((code, stderr.as_str()), (0, ""));
+        assert_eq!(
+            stdout,
+            "\n--- Summary for 'T' ---\n\nParameters:\n  - A (STRING)\n\nTotal steps: 1\nTotal tasks: 1\nTotal environments: 0\n\n--- Steps in 'T' ---\n\n1. 'S' (1 total Tasks)\n\n\n"
+        );
+        let (code, stdout, stderr) = run_cli(&["summary", &t, "-p", "A=~"]);
+        assert_eq!((code, stderr.as_str()), (0, ""));
+        assert_eq!(stdout, summary_of("~"));
+    }
+
+    /// `A` is a PATH with the relative default `sub/x`; the step prints
+    /// `DoTask <A>`, passing the path as an argument so a Windows path is not
+    /// read as Python escapes.
+    const PATH_DEFAULT: &str = r#"specificationVersion: "jobtemplate-2023-09"
+name: T
+parameterDefinitions:
+  - name: A
+    type: PATH
+    default: sub/x
+steps:
+  - name: S
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import sys; print('DoTask ' + sys.argv[1])", "{{Param.A}}"]
+"#;
+
+    /// Write the PATH template into a fresh directory, and return the
+    /// directories and the path a default resolves to: `sub/x` under the
+    /// template's directory, as the binary canonicalizes it.
+    fn path_default_setup() -> (tempfile::TempDir, tempfile::TempDir, String) {
+        let tdir = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        std::fs::write(tdir.path().join("p.yaml"), PATH_DEFAULT).unwrap();
+        let canonical = std::fs::canonicalize(tdir.path()).unwrap();
+        let canonical = canonical.to_str().unwrap();
+        let base = PathBuf::from(canonical.strip_prefix(r"\\?\").unwrap_or(canonical));
+        let resolved = base.join("sub").join("x").to_str().unwrap().to_string();
+        (tdir, cwd, resolved)
+    }
+
+    /// A null PATH takes its default joined to the template's directory, not
+    /// to the current directory as a given relative value would be.
+    #[test]
+    fn summary_null_path_default_is_relative_to_the_template() {
+        let (tdir, cwd, resolved) = path_default_setup();
+        let p = path(tdir.path(), "p.yaml");
+        let output = cli_command(&["summary", &p, "-p", "A=y", "-p", r#"{"A": null}"#])
+            .current_dir(cwd.path())
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!(
+                "\n--- Summary for 'T' ---\n\nParameters:\n  - A (PATH): {resolved}\n\nTotal steps: 1\nTotal tasks: 1\nTotal environments: 0\n\n--- Steps in 'T' ---\n\n1. 'S' (1 total Tasks)\n\n\n"
+            )
+        );
+    }
+
+    /// `run` resolves a null PATH's default against the template's directory too.
+    #[test]
+    fn run_null_path_default_is_relative_to_the_template() {
+        let (tdir, cwd, resolved) = path_default_setup();
+        let p = path(tdir.path(), "p.yaml");
+        let output = cli_command(&["run", &p, "-p", "A=y", "-p", r#"{"A": null}"#])
+            .current_dir(cwd.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let printed: Vec<&str> = stdout
+            .lines()
+            .filter_map(|l| l.split_once("DoTask ").map(|(_, v)| v))
+            .collect();
+        assert_eq!(printed, [resolved.as_str()], "stdout: {stdout}");
+    }
+
+    /// An INT environment-template parameter with the default 5.
+    const INT_ENV: &str = r#"specificationVersion: environment-2023-09
+parameterDefinitions:
+  - name: N
+    type: INT
+    default: 5
+environment:
+  name: E
+  script:
+    actions:
+      onEnter:
+        command: python
+        args: ["-c", "print('E {{Param.N}}')"]
+"#;
+
+    /// A null for an INT environment parameter takes its default, so it is not
+    /// checked as the text `null`, which the `N=null` contrast shows fails.
+    #[test]
+    fn summary_null_int_environment_parameter_uses_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = path(dir.path(), "t.yaml");
+        setup(dir.path());
+        std::fs::write(dir.path().join("env.yaml"), INT_ENV).unwrap();
+        let env = path(dir.path(), "env.yaml");
+        let (code, stdout, stderr) = run_cli(&[
+            "summary",
+            &t,
+            "--environment",
+            &env,
+            "-p",
+            "N=7",
+            "-p",
+            r#"{"N": null}"#,
+        ]);
+        assert_eq!((code, stderr.as_str()), (0, ""));
+        assert_eq!(stdout, summary_of("dflt"));
+        let (code, stdout, stderr) =
+            run_cli(&["summary", &t, "--environment", &env, "-p", "N=null"]);
+        assert_eq!((code, stdout.as_str()), (1, ""));
+        assert_eq!(
+            stderr,
+            "ERROR: Validation error: Parameter 'N': Value 'null' is not a valid integer or integer string.\n"
+        );
     }
 
     /// A null for a parameter the template does not define gives no value, so
