@@ -58,8 +58,9 @@ openjd run template.yaml -p file://params.yaml
 ```
 
 The file is read and parsed as JSON (if `.json` extension) or YAML (otherwise). The file
-must contain a dictionary mapping parameter names to values. Each value is converted to
-`ExprValue` via `json_val_to_expr()`:
+must contain a dictionary mapping parameter names to values. Each value goes through
+`set_json_param()`, which removes the parameter for a null and converts any other value to
+`ExprValue` with `json_val_to_expr()`:
 
 - JSON strings → `ExprValue::String`
 - null → not given (the parameter is removed, see above)
