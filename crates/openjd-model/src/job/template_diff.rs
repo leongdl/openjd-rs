@@ -38,7 +38,10 @@ use openjd_expr::{ExprType, ExprValue};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
 
-use crate::create_job::{merge_job_parameter_definitions, preprocess_job_parameters_except};
+use crate::create_job::{
+    merge_job_parameter_definitions, preprocess_job_parameters_except,
+    preprocess_named_job_parameters,
+};
 use crate::error::ModelError;
 use crate::job::apply::{plan, ApplyPlan};
 use crate::job::diff::{diff_jobs, diff_steps, DiffNode, DiffOptions, DiffStatus, DiffTree};
@@ -433,28 +436,65 @@ fn typed_values(
         &loaded.template,
         inputs,
         &loaded.environments,
-        &PathParameterOptions {
-            job_template_dir: &loaded.template_dir,
-            current_working_dir: &loaded.cwd,
-            path_format: PathFormat::host(),
-            allow_template_dir_walk_up: false,
-            allow_uri_path_values: true,
-        },
+        &path_options(loaded),
         &kept,
     )?;
     values.extend(kept);
     Ok(values)
 }
 
-/// The values to build `loaded` with from `stored` values and `inputs`, as
-/// [`host::merge_parameters`] merges them: stored values that `loaded` keeps
-/// are used as given, and `inputs` and the defaults are preprocessed.
-fn stored_values(
+/// How a side's PATH values are resolved: against its directories, in the
+/// host's format.
+fn path_options(loaded: &Loaded) -> PathParameterOptions<'_> {
+    PathParameterOptions {
+        job_template_dir: &loaded.template_dir,
+        current_working_dir: &loaded.cwd,
+        path_format: PathFormat::host(),
+        allow_template_dir_walk_up: false,
+        allow_uri_path_values: true,
+    }
+}
+
+/// The values to build a NEW template `loaded` with from another
+/// template's `stored` values and `inputs`, as [`host::merge_parameters`]
+/// merges them: stored values that `loaded` keeps are used as given, and
+/// `inputs` and the defaults are preprocessed. Unlike
+/// [`same_template_values`], a stored value is filtered by [`keepable`],
+/// because the new template may retype or drop the parameter it was for.
+fn new_template_values(
     loaded: &Loaded,
     stored: &JobParameterValues,
     inputs: &JobParameterInputValues,
 ) -> Result<JobParameterValues, ModelError> {
     typed_values(loaded, keepable(loaded, stored, inputs)?, inputs)
+}
+
+/// The values to build `loaded` with from its OWN `stored` values and a
+/// parameter set `side`: every stored value the side does not set, as given,
+/// and the side's values preprocessed. Unlike [`new_template_values`], no
+/// stored value is filtered and no default is added: the template is the
+/// one the values were stored for, so they must build exactly as
+/// [`TemplateInput::build`] builds them, retyped and undeclared ones
+/// included. With an empty side the values are `stored`.
+fn same_template_values(
+    loaded: &Loaded,
+    stored: &JobParameterValues,
+    side: &JobParameterInputValues,
+) -> Result<JobParameterValues, ModelError> {
+    let mut values: JobParameterValues = stored
+        .iter()
+        .filter(|(name, _)| !side.contains_key(*name))
+        .map(|(name, v)| (name.clone(), v.clone()))
+        .collect();
+    if !side.is_empty() {
+        values.extend(preprocess_named_job_parameters(
+            &loaded.template,
+            side,
+            &loaded.environments,
+            &path_options(loaded),
+        )?);
+    }
+    Ok(values)
 }
 
 /// The values of `stored` that `loaded` keeps: those its template (with its
@@ -488,7 +528,7 @@ fn middle_values(old: &TemplateInput, new: &Loaded) -> Result<JobParameterValues
     let none = JobParameterInputValues::new();
     match &old.preprocessed {
         None => typed_values(new, JobParameterValues::new(), &old.parameters),
-        Some(stored) => stored_values(new, stored, &none),
+        Some(stored) => new_template_values(new, stored, &none),
     }
 }
 
@@ -903,9 +943,12 @@ pub fn diff_templates(
 /// Diff one template under two parameter sets. `old` and `new` are laid
 /// over the template input's own parameters; a later value wins. When the
 /// template input holds [`preprocessed`](TemplateInput::preprocessed)
-/// values, those a set does not override are kept as given, never
-/// preprocessed again, and the set's own values are preprocessed, as
-/// [`merge_parameters`] merges them.
+/// values, each set is built from every stored value it does not override,
+/// as given, plus its own values preprocessed. Stored values are not
+/// filtered by type or declaration and get no defaults, unlike
+/// [`merge_parameters`], because this is the template they were stored
+/// for: an empty set builds what [`TemplateInput::build`] builds, or fails
+/// with its error.
 ///
 /// Errors name the build that failed: `old parameters: …` or
 /// `new parameters: …`, or `the template: …` when the template itself
@@ -920,7 +963,7 @@ pub fn diff_job_template_with_parameter_sets(
 ) -> Result<TemplateDiff, ModelError> {
     let loaded = load(template).map_err(|e| on_side("the template", e))?;
     let build_side = |side: &JobParameterInputValues| match &template.preprocessed {
-        Some(stored) => stored_values(&loaded, stored, side)
+        Some(stored) => same_template_values(&loaded, stored, side)
             .and_then(|v| build(&loaded, Values::Preprocessed(&v), &template.limits)),
         None => {
             let mut p = template.parameters.clone();

@@ -1079,3 +1079,138 @@ fn a_parameter_set_diff_from_stored_values_names_the_set_that_failed() {
         )
     );
 }
+
+const RT: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: RT
+parameterDefinitions:
+  - {name: N, type: INT, default: "3"}
+  - {name: S, type: STRING}
+steps:
+  - name: A
+    script: {actions: {onRun: {command: a, args: ["{{Param.N}}", "{{Param.S}}"]}}}
+"#;
+
+fn value(param_type: JobParameterType, value: ExprValue) -> JobParameterValue {
+    JobParameterValue { param_type, value }
+}
+
+/// `RT`'s stored values: `N` as given, `S` = `s`, and `extra`.
+fn rt_stored(n: JobParameterValue, extra: &[(&str, JobParameterValue)]) -> JobParameterValues {
+    let mut v = JobParameterValues::new();
+    v.insert("N".into(), n);
+    v.insert(
+        "S".into(),
+        value(JobParameterType::String, ExprValue::String("s".into())),
+    );
+    for (k, e) in extra {
+        v.insert(k.to_string(), e.clone());
+    }
+    v
+}
+
+/// Diff `RT` from `stored` with an empty old set and `new`.
+fn rt_diff(
+    stored: &JobParameterValues,
+    new: &[(&str, &str)],
+) -> Result<openjd_model::job::template_diff::TemplateDiff, String> {
+    diff_job_template_with_parameter_sets(
+        &text(RT).preprocessed(stored.clone()),
+        &inputs(&[]),
+        &inputs(new),
+        &DiffOptions::default(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[test]
+fn a_parameter_set_diff_builds_retyped_stored_values_as_build_does() {
+    // (stored, parameter, its value in the built job): `N` is INT and `S`
+    // is STRING in the template.
+    let cases = [
+        (
+            rt_stored(
+                value(JobParameterType::String, ExprValue::String("7".into())),
+                &[],
+            ),
+            "N",
+            "7",
+        ),
+        (
+            rt_stored(
+                value(JobParameterType::Int, ExprValue::Int(4)),
+                &[("S", value(JobParameterType::Int, ExprValue::Int(5)))],
+            ),
+            "S",
+            "5",
+        ),
+    ];
+    for (stored, name, want) in cases {
+        let built = text(RT).preprocessed(stored.clone()).build().unwrap();
+        assert_eq!(built.parameters[name].value.to_display_string(), want);
+        let d = rt_diff(&stored, &[]).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(d.old_job, built, "{name}");
+        assert_eq!(d.new_job, built, "{name}");
+        assert_eq!(changes(&d), Vec::<String>::new(), "{name}");
+    }
+}
+
+#[test]
+fn a_parameter_set_diff_fails_on_a_retyped_stored_value_as_build_does() {
+    let t = RT.replace(r#"default: "3"}"#, r#"default: "6", minValue: 5}"#);
+    assert_ne!(t, RT);
+    let stored = rt_stored(value(JobParameterType::Float, ExprValue::Int(1)), &[]);
+    let err = text(&t).preprocessed(stored.clone()).build().unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: Parameter 'N': value 1 is less than minimum 5"
+    );
+    let err = diff_job_template_with_parameter_sets(
+        &text(&t).preprocessed(stored),
+        &inputs(&[]),
+        &inputs(&[]),
+        &DiffOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: old parameters: Parameter 'N': value 1 is less than minimum 5"
+    );
+}
+
+#[test]
+fn a_parameter_set_diff_keeps_an_undeclared_stored_value_as_build_does() {
+    let stored = rt_stored(
+        value(JobParameterType::Int, ExprValue::Int(4)),
+        &[(
+            "Z",
+            value(JobParameterType::String, ExprValue::String("z".into())),
+        )],
+    );
+    let built = text(RT).preprocessed(stored.clone()).build().unwrap();
+    assert_eq!(built.parameters["Z"].value.to_display_string(), "z");
+    let d = rt_diff(&stored, &[]).unwrap();
+    assert_eq!(d.old_job, built);
+    assert_eq!(d.new_job, built);
+}
+
+#[test]
+fn a_parameter_set_diff_preprocesses_a_set_that_overrides_a_retyped_stored_value() {
+    let stored = rt_stored(
+        value(JobParameterType::String, ExprValue::String("7".into())),
+        &[],
+    );
+    let built = text(RT).preprocessed(stored.clone()).build().unwrap();
+    let d = rt_diff(&stored, &[("N", "8")]).unwrap();
+    assert_eq!(d.old_job, built);
+    assert_eq!(d.new_job.parameters["N"].param_type, JobParameterType::Int);
+    assert_eq!(d.new_job.parameters["N"].value, ExprValue::Int(8));
+    assert_eq!(
+        changes(&d),
+        [
+            "~ parameters[N].type: STRING -> INT  [parameters]",
+            r#"~ parameters[N].value: "7" (STRING) -> 8 (INT)  [parameters]"#,
+            "~ steps[A].resolvedSymTab: Param.N=7, Param.S=s -> Param.N=8, Param.S=s  [parameters]",
+        ]
+    );
+}

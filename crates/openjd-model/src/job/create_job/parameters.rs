@@ -879,6 +879,46 @@ pub(crate) fn preprocess_job_parameters_except(
     path_options: &PathParameterOptions<'_>,
     supplied: &JobParameterValues,
 ) -> Result<JobParameterValues, ModelError> {
+    preprocess_selected(
+        job_template,
+        input_values,
+        environment_templates,
+        path_options,
+        &|name| !supplied.contains_key(name),
+        true,
+    )
+}
+
+/// [`preprocess_job_parameters`] for only the parameters `input_values`
+/// names. Every other parameter is left alone: it gets no default, is not
+/// missing, and is not checked for satisfiability.
+pub(crate) fn preprocess_named_job_parameters(
+    job_template: &JobTemplate,
+    input_values: &JobParameterInputValues,
+    environment_templates: &[EnvironmentTemplate],
+    path_options: &PathParameterOptions<'_>,
+) -> Result<JobParameterValues, ModelError> {
+    preprocess_selected(
+        job_template,
+        input_values,
+        environment_templates,
+        path_options,
+        &|name| input_values.contains_key(name),
+        false,
+    )
+}
+
+/// The preprocessing pass over the parameters `selected` accepts.
+/// `satisfiable_all` checks every parameter's satisfiability, not only the
+/// selected ones.
+fn preprocess_selected(
+    job_template: &JobTemplate,
+    input_values: &JobParameterInputValues,
+    environment_templates: &[EnvironmentTemplate],
+    path_options: &PathParameterOptions<'_>,
+    selected: &dyn Fn(&str) -> bool,
+    satisfiable_all: bool,
+) -> Result<JobParameterValues, ModelError> {
     let job_template_dir = path_options.job_template_dir;
     let current_working_dir = path_options.current_working_dir;
     let path_format = path_options.path_format;
@@ -896,7 +936,10 @@ pub(crate) fn preprocess_job_parameters_except(
 
     let mut errors: Vec<String> = Vec::new();
 
-    for param in &merged {
+    for param in merged
+        .iter()
+        .filter(|p| satisfiable_all || selected(&p.name))
+    {
         if let Err(e) = param.validate_satisfiable() {
             errors.push(model_err_message(e));
         }
@@ -919,7 +962,7 @@ pub(crate) fn preprocess_job_parameters_except(
         has_expr,
     };
 
-    for param in merged.iter().filter(|p| !supplied.contains_key(&p.name)) {
+    for param in merged.iter().filter(|p| selected(&p.name)) {
         let param_type = param.param_type;
         if let Some(input_val) = input_values.get(&param.name) {
             let coerced_opt: Option<openjd_expr::ExprValue> =

@@ -20,7 +20,7 @@ use openjd_expr::ExprValue;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{load, stored_values, TemplateInput};
+use super::{load, new_template_values, TemplateInput};
 use crate::create_job::build_symbol_table;
 use crate::error::ModelError;
 use crate::job::template_diff::JobDocument;
@@ -184,5 +184,5 @@ pub fn merge_parameters(
     requested: &JobParameterInputValues,
     new: &TemplateInput,
 ) -> Result<JobParameterValues, ModelError> {
-    stored_values(&load(new)?, stored, requested)
+    new_template_values(&load(new)?, stored, requested)
 }
