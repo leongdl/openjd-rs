@@ -1214,3 +1214,128 @@ fn a_parameter_set_diff_preprocesses_a_set_that_overrides_a_retyped_stored_value
         ]
     );
 }
+
+/// A job template declaring `Q` (`allowedValues: [a, b]`, default `a`) and
+/// `Count`, with an environment template narrowing `Q` to `[b]`: the merged
+/// definition's default is not allowed, so it has no satisfiable value.
+const QJ: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: QJ
+parameterDefinitions:
+  - {name: Q, type: STRING, allowedValues: [a, b], default: a}
+  - {name: Count, type: INT, default: "1"}
+steps:
+  - name: A
+    script: {actions: {onRun: {command: a, args: ["{{Param.Q}}", "{{Param.Count}}"]}}}
+"#;
+
+const QE: &str = r#"
+specificationVersion: environment-2023-09
+parameterDefinitions:
+  - {name: Q, type: STRING, allowedValues: [b]}
+environment:
+  name: E
+  variables: {Q: "{{Param.Q}}"}
+"#;
+
+fn qj_side() -> TemplateInput {
+    text(QJ).environment(TemplateSource::Text(QE.to_string()))
+}
+
+fn q_stored(count: i64) -> JobParameterValues {
+    [
+        (
+            "Q".to_string(),
+            value(JobParameterType::String, ExprValue::String("b".into())),
+        ),
+        (
+            "Count".to_string(),
+            value(JobParameterType::Int, ExprValue::Int(count)),
+        ),
+    ]
+    .into_iter()
+    .collect()
+}
+
+#[test]
+fn merge_parameters_checks_the_satisfiability_of_a_kept_parameter() {
+    let err =
+        merge_parameters(&q_stored(1), &JobParameterInputValues::new(), &qj_side()).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: Parameter 'Q': default 'a' not in merged allowedValues"
+    );
+}
+
+#[test]
+fn a_parameter_set_checks_satisfiability_only_for_the_parameters_it_names() {
+    let stored = q_stored(1);
+    let built = qj_side().preprocessed(stored.clone()).build().unwrap();
+    let d = diff_job_template_with_parameter_sets(
+        &qj_side().preprocessed(stored),
+        &inputs(&[]),
+        &inputs(&[("Count", "2")]),
+        &DiffOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(d.old_job, built);
+    assert_eq!(d.new_job.parameters["Count"].value, ExprValue::Int(2));
+    assert_eq!(
+        d.new_job,
+        qj_side().preprocessed(q_stored(2)).build().unwrap()
+    );
+}
+
+#[test]
+fn a_parameter_set_adds_no_default_for_a_parameter_it_does_not_name() {
+    let stored: JobParameterValues = [(
+        "S".to_string(),
+        value(JobParameterType::String, ExprValue::String("s".into())),
+    )]
+    .into_iter()
+    .collect();
+    let err = text(RT).preprocessed(stored.clone()).build().unwrap_err();
+    let want = "1 validation error for JobTemplate\nsteps[0] -> script -> actions -> onRun -> args[0]:\n\tFailed to parse interpolation expression at [0, 11]. Undefined variable: 'Param.N'. Did you mean: Param.S\n  Param.N\n  ~~~~~~^";
+    assert_eq!(err.to_string(), format!("Model validation error: {want}"));
+    let err = diff_job_template_with_parameter_sets(
+        &text(RT).preprocessed(stored),
+        &inputs(&[("S", "t")]),
+        &inputs(&[("S", "u")]),
+        &DiffOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        format!("Validation error: old parameters: Model validation error: {want}")
+    );
+}
+
+#[test]
+fn an_empty_parameter_set_does_not_check_the_template_dir() {
+    let side = || {
+        TemplateInput::new(TemplateSource::Text(RT.to_string()))
+            .template_dir("rel")
+            .cwd(CWD)
+    };
+    let stored = rt_stored(value(JobParameterType::Int, ExprValue::Int(4)), &[]);
+    let built = side().preprocessed(stored.clone()).build().unwrap();
+    let d = diff_job_template_with_parameter_sets(
+        &side().preprocessed(stored),
+        &inputs(&[]),
+        &inputs(&[]),
+        &DiffOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(d.old_job, built);
+    assert_eq!(d.new_job, built);
+}
+
+#[test]
+fn a_parameter_set_from_stored_values_rejects_an_undeclared_parameter() {
+    let stored = rt_stored(value(JobParameterType::Int, ExprValue::Int(4)), &[]);
+    let err = rt_diff(&stored, &[("Zzz", "z")]).unwrap_err();
+    assert_eq!(
+        err,
+        "Validation error: new parameters: Job parameter values provided for parameters that are not defined in the template: Zzz"
+    );
+}

@@ -204,8 +204,9 @@ with no kept value takes the new template's default. Old input values are all pr
 overlays its parameter sets on the side's values. From input values it preprocesses the
 result. From preprocessed values it builds each set from every stored value the set does
 not override, as given, plus the set's own values preprocessed (only those: no default is
-added for a parameter the set does not name). Unlike `merge_parameters`, a stored value is
-not filtered by type or declaration, because the template is the one the values were
+added for a parameter the set does not name). A set checks satisfiability only for the
+parameters it names, as `TemplateInput::build` does not check it for stored values. Unlike
+`merge_parameters`, a stored value is not filtered by type or declaration, because the template is the one the values were
 stored for. So an empty set builds what `TemplateInput::build` builds from the same values,
 including a retyped or undeclared stored value, or fails with its error; a stored Windows
 PATH is the same in both built jobs; and a stored value is not checked in a rewritten form.
@@ -258,7 +259,8 @@ origin, and each merge rule: a kept, a retyped, a removed and a new parameter, a
 undeclared request, a stored Windows PATH that plans nothing, a stored PATH whose rewritten
 form would break `allowedValues` or `maxLength`, a kept value that a narrowed template
 rejects when the job is built, a kept value that only an environment template declares and
-rejects (`Parameter 'Q': value 'c' is not in allowed values`), the same when the job
+rejects (`Parameter 'Q': value 'c' is not in allowed values`), a kept parameter whose
+merged definition has no satisfiable value, the same when the job
 template also declares the parameter without a constraint, a requested PATH and a new
 default that are preprocessed, a preprocessed side and an input side with the same text
 (`[parameters]`),
@@ -268,7 +270,10 @@ parameter-set diff from stored values keeping a stored Windows PATH a set does n
 preprocessing a set's override, not checking a stored value's rewritten form
 (`allowedValues`, `maxLength`), naming the set that failed, building a retyped or
 undeclared stored value as `TemplateInput::build` builds it (the same job, or its error with
-the set's prefix), and preprocessing a set's override of a retyped value, beside the same
+the set's prefix), preprocessing a set's override of a retyped value, adding no default for
+a parameter a set does not name, checking satisfiability only for the parameters a set
+names, not checking the template dir for an empty set, and rejecting an undeclared
+parameter a set names, beside the same
 diff from input values preprocessing them, and a range
 flagged contiguous writing its canonical text with an unchanged digest. The host encoding is tested in `tests/integration/test_template_diff.rs`
 (the document against the serde form, each parameter type read back, each malformed
