@@ -259,7 +259,7 @@ impl<'a> TaskOp<'a> {
     /// and `Replace`, every task of the new space in `create_job`'s order:
     /// [`StepParameterSpaceIterator`] with the chunk override `create_job`
     /// counts tasks with (`Some(1)`: a `CHUNK[INT]` dimension gives one
-    /// task per value, as CreateJob creates them), and one task with no
+    /// task per value, as `create_job` counts them), and one task with no
     /// parameters when `space` is `None`. For `Boxes`,
     /// [`ProductDelta::appended`]. A host never enumerates a space itself:
     /// a `combination` reorders dimensions, so definition order alone is

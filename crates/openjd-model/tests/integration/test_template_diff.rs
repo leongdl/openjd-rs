@@ -4484,3 +4484,31 @@ fn job_from_str_rejects_what_template_validation_rejects() {
         job_from_str(&doc.to_string()).unwrap();
     }
 }
+
+// ─── a FLOAT default given as a number or a string ──────────────────
+
+/// A template with a FLOAT `F` and a LIST[FLOAT] `LF`, their defaults as given.
+fn float_defaults(f: &str, lf: &str) -> TemplateInput {
+    text(&format!(
+        "specificationVersion: jobtemplate-2023-09\nextensions: [EXPR]\nname: J\nparameterDefinitions:\n  - {{name: F, type: FLOAT, default: {f}}}\n  - {{name: LF, type: \"LIST[FLOAT]\", default: {lf}}}\nsteps:\n  - name: S\n    script: {{actions: {{onRun: {{command: c, args: [\"{{{{Param.F}}}}\", \"{{{{Param.LF}}}}\"]}}}}}}\n"
+    ))
+}
+
+/// The template layer compares numbers by value, so a FLOAT default given as
+/// the number `2` and as the string `"2"` are equal there. The job writes the
+/// number as `2.0` and keeps the string's spelling, so the job layer shows the
+/// change, as it does for a LIST[FLOAT] string item.
+#[test]
+fn a_float_default_as_a_number_or_a_string_differs_only_in_the_job() {
+    let d = diff_templates(
+        &float_defaults("2", "[2.5]"),
+        &float_defaults("\"2\"", "[\"2.50\"]"),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        "~ step S\n    ~ resolvedSymTab: Param.F=2.0, Param.LF=[2.5] -> Param.F=2, Param.LF=[2.50]  [template]\n    tasks: 1 unchanged\n\n1 step changed. Tasks: 1 kept, 0 added, 0 removed."
+    );
+    assert!(d.changes.iter().all(|c| c.stage == Stage::Job));
+}

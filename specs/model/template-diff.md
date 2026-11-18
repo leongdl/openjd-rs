@@ -128,6 +128,11 @@ What the built job cannot show, compared on the decoded templates:
 | `parameterDefinitions[P]` | (empty) | a definition added or removed, shown as its fields |
 | `steps[S]` | `let` | the step-level `let` text, for steps on both sides |
 
+A FLOAT number has no spelling and is written as `repr` writes it, while a FLOAT string
+keeps its spelling, so a default the template layer finds equal can still change the job:
+`default: 2` is `2.0` and `default: "2"` is `2`, and a `LIST[FLOAT]` default `[2.5]` is
+`[2.5]` where `["2.50"]` is `[2.50]`. Only the job layer reports such a change, `[template]`.
+
 Definitions are matched by name. `extensions` is also a field of the built job, so both
 layers report it; `Display` prints only the template layer's line, whatever the job
 layer's origin.
@@ -230,7 +235,7 @@ new-only steps. `status` is the step's status under the caller's options (one
 
 Counts are `u64` and count what `StepParameterSpaceIterator` yields (chunks, for a chunked
 step). The task change document of [job-apply.md](job-apply.md#host-adaptors) lists one task
-per `CHUNK[INT]` value instead, because a host creates tasks as CreateJob does, so for
+per `CHUNK[INT]` value instead, because `create_job` counts one task per value, so for
 `1-20` with `defaultTaskCount: 10` this summary says 2 and that document lists 20.
 Sums saturate at `u64::MAX` rather than overflow. When either side's parameter space
 does not iterate (reachable only through an edited built job, for example an association

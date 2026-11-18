@@ -82,7 +82,11 @@ whose parameter `A` is a STRING.
   Key=Value). openjd-rs follows deadline's job bundle parameter handling here
   (see [parameter-parsing.md](parameter-parsing.md)). A file that is only `null` fails with
   `Job parameter file 'file://p.json' should contain a dictionary.`
-- Every value other than null is passed as text. JSON `{"A": true}` gives `true`.
+- Every value other than null is passed as text, except a number given to a FLOAT, which is
+  a float with no spelling (`{"F": 2}` gives `2.0`, see
+  [parameter-parsing.md](parameter-parsing.md#value-coercion)). Each side reads a number by
+  the FLOAT parameters of its own template and the environments. JSON `{"A": true}` gives
+  `true`.
 - For an INT parameter `N`, a YAML file with `N: 007` fails with `Parameter 'N': Value
   '7.0' is not a valid integer or integer string.`, where `deadline` gives 7.
 - A malformed parameter file reports `Job parameter file 'file://bad.yaml' should contain

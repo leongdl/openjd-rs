@@ -170,8 +170,8 @@ parameter space it is read against. `TaskOp::added_tasks()` yields the tasks the
 adds, in a deterministic order. For `All` and `Replace` it is every task of the step's new
 space in `create_job`'s order: `StepParameterSpaceIterator` with the chunk override
 `create_job` counts tasks with (`Some(1)`), or one task with no parameters for a step
-without a space. A `CHUNK[INT]` dimension therefore gives one task per value, as CreateJob
-creates them: `1-6` with `defaultTaskCount: 3` is six tasks, `"1-1"` to `"6-6"`, not two. A host never enumerates a space itself: a `combination` reorders dimensions
+without a space. A `CHUNK[INT]` dimension therefore gives one task per value, as `create_job`
+counts them: `1-6` with `defaultTaskCount: 3` is six tasks, `"1-1"` to `"6-6"`, not two. A host never enumerates a space itself: a `combination` reorders dimensions
 (`combination: "B * A"` with definitions `[A, B]` makes `B` the outer dimension), so
 definition order alone is not task order. For `Boxes` it is `ProductDelta::appended`: the
 `added` boxes in turn, each rightmost parameter fastest. Box `k` holds the new tasks whose

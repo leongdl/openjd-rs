@@ -805,12 +805,10 @@ impl TaskBox {
 }
 ```
 
-`appended` yields the `added` boxes in turn, each rightmost parameter fastest: the order a
-host creates them in, which is not the new space's iteration order.
-`removed` merges the `removed` boxes into ascending old index; the index is a hint, valid
-only while the stored job has never been updated, since a host names a task by its
-parameter set. Both fail only when a
-box's iterator cannot be built. See [job-apply.md](job-apply.md#task-identity).
+`appended` yields the `added` boxes in turn, each rightmost parameter fastest, which is
+not the new space's iteration order. `removed` merges the `removed` boxes into ascending
+old index; the index is valid only while the stored job has never been updated. Both fail
+only when a box's iterator cannot be built. See [job-apply.md](job-apply.md#task-identity).
 
 ### Template Diff (unstable)
 
@@ -971,18 +969,16 @@ pub trait job::apply::JobApplier {   // object safe
 }
 ```
 
-`StepRef` names a step by name and index, so a store keyed by name needs no job to resolve
-the index. A task is named by its parameter set, never by a position, so a host keeps its
-own task ids. A `TaskOp` is a step's `TaskChange` with the new parameter space it is read
+`StepRef` names a step by name and index. A task is named by its parameter set, never by
+a position. A `TaskOp` is a step's `TaskChange` with the new parameter space it is read
 against, so none of its methods takes an argument: `added_tasks` gives the tasks the change
 adds (for `All` and `Replace`, the whole new space in `create_job`'s order, one task per
-`CHUNK[INT]` value, so a host never enumerates a space), and the task change document
+`CHUNK[INT]` value), and the task change document
 holds the step's new space and lists those and, for `Boxes`, the removed sets (see
 [job-apply.md](job-apply.md#task-identity)). `OpTarget` is the owned form a `Refusal` and `ApplyError::Vetoed` carry. The
 `as_document` views write each object in its `JobDocument` form, in the host encoding of
 [host-support.md](host-support.md#host-encoding), and borrow the plan; `to_value` turns one
-into the same document as a `serde_json::Value` (every order in it is a list order, so key
-sorting changes nothing) and fails only if serialization fails. `Refusal` is built with
+into the same document as a `serde_json::Value` and fails only if serialization fails. `Refusal` is built with
 `Refusal::new`, since it is `#[non_exhaustive]`. `ApplyError` separates a policy refusal (`Refused`: not
 allowed yet), a store veto in `check` (`Vetoed`: not allowed in the store's current state;
 nothing written) and a failed write (`Store`: ops before it were applied). `AllowList`
