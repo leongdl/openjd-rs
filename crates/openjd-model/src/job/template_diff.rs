@@ -446,6 +446,17 @@ fn typed_values(
     Ok(values)
 }
 
+/// The values to build `loaded` with from `stored` values and `inputs`, as
+/// [`host::merge_parameters`] merges them: stored values that `loaded` keeps
+/// are used as given, and `inputs` and the defaults are preprocessed.
+fn stored_values(
+    loaded: &Loaded,
+    stored: &JobParameterValues,
+    inputs: &JobParameterInputValues,
+) -> Result<JobParameterValues, ModelError> {
+    typed_values(loaded, keepable(loaded, stored, inputs)?, inputs)
+}
+
 /// The values of `stored` that `loaded` keeps: those its template (with its
 /// environments) declares with the stored type, and `inputs` does not set.
 fn keepable(
@@ -477,7 +488,7 @@ fn middle_values(old: &TemplateInput, new: &Loaded) -> Result<JobParameterValues
     let none = JobParameterInputValues::new();
     match &old.preprocessed {
         None => typed_values(new, JobParameterValues::new(), &old.parameters),
-        Some(stored) => typed_values(new, keepable(new, stored, &none)?, &none),
+        Some(stored) => stored_values(new, stored, &none),
     }
 }
 
@@ -890,7 +901,11 @@ pub fn diff_templates(
 }
 
 /// Diff one template under two parameter sets. `old` and `new` are laid
-/// over the template input's own parameters; a later value wins.
+/// over the template input's own parameters; a later value wins. When the
+/// template input holds [`preprocessed`](TemplateInput::preprocessed)
+/// values, those a set does not override are kept as given, never
+/// preprocessed again, and the set's own values are preprocessed, as
+/// [`merge_parameters`] merges them.
 ///
 /// Errors name the build that failed: `old parameters: …` or
 /// `new parameters: …`, or `the template: …` when the template itself
@@ -904,16 +919,17 @@ pub fn diff_job_template_with_parameter_sets(
     options: &DiffOptions,
 ) -> Result<TemplateDiff, ModelError> {
     let loaded = load(template).map_err(|e| on_side("the template", e))?;
-    let overlay = |side: &JobParameterInputValues| {
-        let mut p = template.inputs();
-        p.extend(side.iter().map(|(k, v)| (k.clone(), v.clone())));
-        p
+    let build_side = |side: &JobParameterInputValues| match &template.preprocessed {
+        Some(stored) => stored_values(&loaded, stored, side)
+            .and_then(|v| build(&loaded, Values::Preprocessed(&v), &template.limits)),
+        None => {
+            let mut p = template.parameters.clone();
+            p.extend(side.iter().map(|(k, v)| (k.clone(), v.clone())));
+            build(&loaded, Values::Input(&p), &template.limits)
+        }
     };
-    let (old_params, new_params) = (overlay(old), overlay(new));
-    let old_job = build(&loaded, Values::Input(&old_params), &template.limits)
-        .map_err(|e| on_side("old parameters", e))?;
-    let new_job = build(&loaded, Values::Input(&new_params), &template.limits)
-        .map_err(|e| on_side("new parameters", e))?;
+    let old_job = build_side(old).map_err(|e| on_side("old parameters", e))?;
+    let new_job = build_side(new).map_err(|e| on_side("new parameters", e))?;
     let rule = OriginRule::All(Origin::Parameters);
     Ok(assemble(
         old_job,

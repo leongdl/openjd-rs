@@ -201,7 +201,11 @@ side and an input side never count as the same parameters. The origin split's mi
 with nothing requested: a preprocessed old value the new template declares with the same
 type is used as stored, a retyped or no longer declared one is left out, and a parameter
 with no kept value takes the new template's default. Old input values are all preprocessed against the new template. `diff_job_template_with_parameter_sets`
-overlays its parameter sets on the side's values and preprocesses the result.
+overlays its parameter sets on the side's values. From input values it preprocesses the
+result. From preprocessed values it builds each set the way `merge_parameters` builds,
+with the set requested: a stored value the set does not override is kept as given, never
+preprocessed again, and the set's values are preprocessed. So a stored Windows PATH is the
+same in both built jobs, and a stored value is not checked in a rewritten form.
 
 ## Parameter merge
 
@@ -231,8 +235,9 @@ maximum 3`), and so does an environment template that narrowed one (`Parameter '
 error (`Job parameter values provided for parameters that are not defined in the template:
 Z`).
 
-`merge_parameters` and the middle job of `diff_templates` share one helper that builds a
-side's values from kept values and values to preprocess.
+`merge_parameters`, the middle job of `diff_templates`, and the parameter sets of
+`diff_job_template_with_parameter_sets` built from preprocessed values share one helper
+that builds a side's values from stored values and values to preprocess.
 
 ## Tests
 
@@ -253,7 +258,11 @@ template also declares the parameter without a constraint, a requested PATH and 
 default that are preprocessed, a preprocessed side and an input side with the same text
 (`[parameters]`),
 and the middle job keeping a stored Windows PATH (origins as for a POSIX path) and leaving
-out a dropped or retyped parameter (origins as `merge_parameters` gives, no note), and a range
+out a dropped or retyped parameter (origins as `merge_parameters` gives, no note), a
+parameter-set diff from stored values keeping a stored Windows PATH a set does not override,
+preprocessing a set's override, not checking a stored value's rewritten form
+(`allowedValues`, `maxLength`), and naming the set that failed, beside the same diff from
+input values preprocessing them, and a range
 flagged contiguous writing its canonical text with an unchanged digest. The host encoding is tested in `tests/integration/test_template_diff.rs`
 (the document against the serde form, each parameter type read back, each malformed
 parameter and definition, each row of [Reading a built job](#reading-a-built-job) in full,

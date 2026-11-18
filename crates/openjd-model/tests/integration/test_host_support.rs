@@ -12,9 +12,9 @@ use openjd_expr::ExprValue;
 use openjd_model::job::apply::plan;
 use openjd_model::job::diff::{diff_jobs, DiffOptions};
 use openjd_model::job::template_diff::{
-    build_job_symbol_table, diff_templates, job_digest, job_from_str, merge_parameters,
-    template_job_environment_fragment, template_step_fragment, JobDocument, TemplateInput,
-    TemplateSource,
+    build_job_symbol_table, diff_job_template_with_parameter_sets, diff_templates, job_digest,
+    job_from_str, merge_parameters, template_job_environment_fragment, template_step_fragment,
+    JobDocument, TemplateInput, TemplateSource,
 };
 use openjd_model::job::Job;
 use openjd_model::{
@@ -922,4 +922,160 @@ fn a_kept_value_the_job_declares_and_an_environment_constrains_is_checked() {
         "Validation error: Parameter 'Q': value 'c' is not in allowed values"
     );
     assert!(side().preprocessed(stored("b")).build().is_ok());
+}
+
+// ─── parameter-set diffs from stored values ─────────────────────────
+
+fn inputs(values: &[(&str, &str)]) -> JobParameterInputValues {
+    values
+        .iter()
+        .map(|(k, v)| (k.to_string(), ExprValue::String(v.to_string())))
+        .collect()
+}
+
+fn changes(d: &openjd_model::job::template_diff::TemplateDiff) -> Vec<String> {
+    d.changes.iter().map(ToString::to_string).collect()
+}
+
+fn p_value(job: &Job) -> String {
+    job.parameters["P"].value.to_display_string()
+}
+
+#[test]
+fn a_parameter_set_diff_keeps_the_stored_values_a_set_does_not_override() {
+    let stored = stored_as(
+        PN,
+        &[("P", r"C:\w\out"), ("Count", "1")],
+        PathFormat::Windows,
+    );
+    let d = diff_job_template_with_parameter_sets(
+        &text(PN).preprocessed(stored),
+        &inputs(&[]),
+        &inputs(&[("Count", "2")]),
+        &DiffOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(p_value(&d.old_job), r"C:\w\out");
+    assert_eq!(p_value(&d.new_job), r"C:\w\out");
+    assert_eq!(
+        changes(&d),
+        [
+            r"~ parameters[Count].value: 1 -> 2  [parameters]",
+            r"~ steps[A].resolvedSymTab: Param.Count=1, RawParam.P=C:\w\out -> Param.Count=2, RawParam.P=C:\w\out  [parameters]",
+        ]
+    );
+}
+
+#[test]
+fn a_parameter_set_diff_preprocesses_a_set_that_overrides_a_stored_value() {
+    let stored = stored_as(
+        PN,
+        &[("P", r"C:\w\out"), ("Count", "1")],
+        PathFormat::Windows,
+    );
+    let d = diff_job_template_with_parameter_sets(
+        &text(PN).preprocessed(stored),
+        &inputs(&[]),
+        &inputs(&[("P", "o")]),
+        &DiffOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(p_value(&d.old_job), r"C:\w\out");
+    assert_eq!(p_value(&d.new_job), format!("{CWD}{SEP}o"));
+    assert_eq!(
+        changes(&d),
+        [
+            format!(r"~ parameters[P].value: C:\w\out -> {CWD}{SEP}o  [parameters]"),
+            format!(
+                r"~ steps[A].resolvedSymTab: Param.Count=1, RawParam.P=C:\w\out -> Param.Count=1, RawParam.P={CWD}{SEP}o  [parameters]"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_parameter_set_diff_does_not_check_the_rewritten_form_of_a_stored_value() {
+    // (constraint, stored value): the stored value meets the constraint; on
+    // a POSIX host its preprocessed form (`/work/C:\...`) does not.
+    let cases = [
+        (r#"allowedValues: ['C:\w\out']"#, r"C:\w\out"),
+        ("maxLength: 12", r"C:\work\out"),
+    ];
+    for (constraint, value) in cases {
+        let t = PN.replace("type: PATH}", &format!("type: PATH, {constraint}}}"));
+        assert_ne!(t, PN);
+        let stored = stored_as(&t, &[("P", value), ("Count", "1")], PathFormat::Windows);
+        let d = diff_job_template_with_parameter_sets(
+            &text(&t).preprocessed(stored),
+            &inputs(&[]),
+            &inputs(&[("Count", "2")]),
+            &DiffOptions::default(),
+        )
+        .unwrap_or_else(|e| panic!("{constraint}: {e}"));
+        assert_eq!(p_value(&d.old_job), value, "{constraint}");
+        assert_eq!(p_value(&d.new_job), value, "{constraint}");
+    }
+}
+
+#[test]
+fn a_parameter_set_diff_from_input_values_still_preprocesses_them() {
+    // Without `preprocessed`, the template input's values are inputs, so a
+    // Windows path is resolved for this host on both sides.
+    let d = diff_job_template_with_parameter_sets(
+        &text(PN).param("P", r"C:\w\out").param("Count", "1"),
+        &inputs(&[]),
+        &inputs(&[("Count", "2")]),
+        &DiffOptions::default(),
+    )
+    .unwrap();
+    let p = if cfg!(windows) {
+        r"C:\w\out".to_string()
+    } else {
+        r"/work/C:\w\out".to_string()
+    };
+    assert_eq!(p_value(&d.old_job), p);
+    assert_eq!(
+        changes(&d),
+        [
+            "~ parameters[Count].value: 1 -> 2  [parameters]".to_string(),
+            format!(
+                "~ steps[A].resolvedSymTab: Param.Count=1, RawParam.P={p} -> Param.Count=2, RawParam.P={p}  [parameters]"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_parameter_set_diff_from_stored_values_names_the_set_that_failed() {
+    let t = PN.replace("type: PATH}", "type: PATH, maxLength: 12}");
+    let stored = stored_as(
+        &t,
+        &[("P", r"C:\work\out"), ("Count", "1")],
+        PathFormat::Windows,
+    );
+    let err = diff_job_template_with_parameter_sets(
+        &text(&t).preprocessed(stored.clone()),
+        &inputs(&[]),
+        &inputs(&[("Count", "x")]),
+        &DiffOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: new parameters: Parameter 'Count': Value 'x' is not a valid integer or integer string."
+    );
+    let err = diff_job_template_with_parameter_sets(
+        &text(&t).preprocessed(stored),
+        &inputs(&[("P", "too-long-for-the-limit")]),
+        &inputs(&[]),
+        &DiffOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Validation error: old parameters: Parameter 'P': value length {} exceeds maximum 12",
+            CWD.len() + 23
+        )
+    );
 }

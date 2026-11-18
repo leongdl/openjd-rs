@@ -27,7 +27,10 @@ pub fn job_from_str(text: &str) -> Result<Job, ModelError>;
 
 - `diff_job_template_with_parameter_sets` lays `old` and `new` over the template input's
   own parameters (a later value wins), decodes the template once and builds it twice. It has no template
-  layer, and every change has origin `Parameters`.
+  layer, and every change has origin `Parameters`. When the template input holds
+  `preprocessed` values, those a set does not override are kept as given, not preprocessed
+  again, and the set's own values are preprocessed; see
+  [host-support.md](host-support.md#building-from-stored-values).
 - `diff_built_jobs` is for callers that already hold two jobs. It has no template layer,
   and every change has origin `Job`, because the cause is not known.
 - `job_from_str` reads a job back from its `JobDocument` (JSON when the first
