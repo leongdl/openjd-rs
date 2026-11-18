@@ -210,6 +210,8 @@ parameters it names, as `TemplateInput::build` does not check it for stored valu
 stored for. So an empty set builds what `TemplateInput::build` builds from the same values,
 including a retyped or undeclared stored value, or fails with its error; a stored Windows
 PATH is the same in both built jobs; and a stored value is not checked in a rewritten form.
+A non-empty set preprocesses its values against the side's template directory, which must
+then be absolute; an empty set, like `TemplateInput::build` from stored values, does not use it.
 
 ## Parameter merge
 
@@ -272,8 +274,10 @@ preprocessing a set's override, not checking a stored value's rewritten form
 undeclared stored value as `TemplateInput::build` builds it (the same job, or its error with
 the set's prefix), preprocessing a set's override of a retyped value, adding no default for
 a parameter a set does not name, checking satisfiability only for the parameters a set
-names, not checking the template dir for an empty set, and rejecting an undeclared
-parameter a set names, beside the same
+names and checking it for those it names, setting a parameter only an environment template
+declares, accepting a URI PATH under `EXPR`, not checking the template dir for an empty set
+and requiring it to be absolute for a non-empty one, and rejecting the undeclared
+parameters a set names (listed sorted), beside the same
 diff from input values preprocessing them, and a range
 flagged contiguous writing its canonical text with an unchanged digest. The host encoding is tested in `tests/integration/test_template_diff.rs`
 (the document against the serde form, each parameter type read back, each malformed

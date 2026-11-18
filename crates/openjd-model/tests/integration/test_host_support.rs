@@ -1339,3 +1339,130 @@ fn a_parameter_set_from_stored_values_rejects_an_undeclared_parameter() {
         "Validation error: new parameters: Job parameter values provided for parameters that are not defined in the template: Zzz"
     );
 }
+
+#[test]
+fn a_parameter_set_from_stored_values_lists_undeclared_parameters_sorted() {
+    let stored = rt_stored(value(JobParameterType::Int, ExprValue::Int(4)), &[]);
+    // Each call hashes the set in a fresh order, so repeating it catches an
+    // unsorted list.
+    for _ in 0..32 {
+        let err = rt_diff(&stored, &[("Zzz", "z"), ("Aaa", "a")]).unwrap_err();
+        assert_eq!(
+            err,
+            "Validation error: new parameters: Job parameter values provided for parameters that are not defined in the template: Aaa, Zzz"
+        );
+    }
+}
+
+const NJ: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: NJ
+parameterDefinitions:
+  - {name: N, type: INT}
+steps:
+  - name: A
+    script: {actions: {onRun: {command: a, args: ["{{Param.N}}"]}}}
+"#;
+
+const PKGS_ENV: &str = r#"
+specificationVersion: environment-2023-09
+parameterDefinitions:
+  - {name: Pkgs, type: STRING, default: numpy}
+environment:
+  name: E
+  variables: {PKGS: "{{Param.Pkgs}}"}
+"#;
+
+#[test]
+fn a_parameter_set_can_set_a_parameter_only_an_environment_template_declares() {
+    let side = || text(NJ).environment(TemplateSource::Text(PKGS_ENV.to_string()));
+    let stored = |pkgs: &str| -> JobParameterValues {
+        [
+            (
+                "N".to_string(),
+                value(JobParameterType::Int, ExprValue::Int(1)),
+            ),
+            (
+                "Pkgs".to_string(),
+                value(JobParameterType::String, ExprValue::String(pkgs.into())),
+            ),
+        ]
+        .into_iter()
+        .collect()
+    };
+    let d = diff_job_template_with_parameter_sets(
+        &side().preprocessed(stored("numpy")),
+        &inputs(&[]),
+        &inputs(&[("Pkgs", "scipy")]),
+        &DiffOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        changes(&d),
+        ["~ parameters[Pkgs].value: numpy -> scipy  [parameters]"]
+    );
+    assert_eq!(
+        d.new_job,
+        side().preprocessed(stored("scipy")).build().unwrap()
+    );
+}
+
+#[test]
+fn a_parameter_set_checks_satisfiability_for_the_parameters_it_names() {
+    let err = diff_job_template_with_parameter_sets(
+        &qj_side().preprocessed(q_stored(1)),
+        &inputs(&[]),
+        &inputs(&[("Q", "b")]),
+        &DiffOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: new parameters: Parameter 'Q': default 'a' not in merged allowedValues"
+    );
+}
+
+#[test]
+fn a_parameter_set_from_stored_values_accepts_a_uri_path() {
+    let t = PN.replace("name: PN\n", "name: PN\nextensions: [EXPR]\n");
+    assert_ne!(t, PN);
+    let stored: JobParameterValues = [
+        (
+            "P".to_string(),
+            value(JobParameterType::Path, ExprValue::String("/o".into())),
+        ),
+        (
+            "Count".to_string(),
+            value(JobParameterType::Int, ExprValue::Int(1)),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let d = diff_job_template_with_parameter_sets(
+        &text(&t).preprocessed(stored),
+        &inputs(&[]),
+        &inputs(&[("P", "s3://b/k")]),
+        &DiffOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(p_value(&d.new_job), "s3://b/k");
+}
+
+#[test]
+fn a_non_empty_parameter_set_checks_the_template_dir() {
+    let side = TemplateInput::new(TemplateSource::Text(RT.to_string()))
+        .template_dir("rel")
+        .cwd(CWD);
+    let stored = rt_stored(value(JobParameterType::Int, ExprValue::Int(4)), &[]);
+    let err = diff_job_template_with_parameter_sets(
+        &side.preprocessed(stored),
+        &inputs(&[("N", "5")]),
+        &inputs(&[]),
+        &DiffOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: old parameters: The value supplied for the job template dir, rel, is not an absolute path. It must be absolute to enforce that PATH parameter defaults are always inside the job template dir."
+    );
+}
