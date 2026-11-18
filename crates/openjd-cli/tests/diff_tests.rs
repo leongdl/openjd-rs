@@ -1742,6 +1742,22 @@ fn a_number_given_to_a_float_parameter_is_written_as_a_float() {
     }
 }
 
+/// A template read from stdin is searched for FLOAT names too.
+#[test]
+fn a_number_given_to_a_float_parameter_of_a_template_on_stdin_is_a_float() {
+    let dir = float_dir();
+    let template = std::fs::read_to_string(dir.path().join("f.yaml")).unwrap();
+    let o = openjd_in(
+        dir.path(),
+        &["diff", "-", "--new-parameter", r#"{"F": 2}"#],
+        Some(&template),
+    );
+    assert_ok(
+        &o,
+        "-: old parameters -> new parameters\n~ parameter F: 1.5 -> 2.0  [parameters]\n~ step S\n    ~ resolvedSymTab: Param.F=1.5 -> Param.F=2.0  [parameters]\n    tasks: 1 unchanged\n\n1 step changed. Tasks: 1 kept, 0 added, 0 removed.\n",
+    );
+}
+
 /// Each side reads a number by its own template: the old template's FLOAT
 /// `F` gets `2.0`, the new template's STRING `F` gets the digits `2`.
 #[test]

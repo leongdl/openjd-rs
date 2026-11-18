@@ -165,7 +165,10 @@ Each change says where it came from:
 Template-layer changes are always `Template`. For job-layer changes in `diff_templates`:
 
 1. Parameter inputs equal (`==` on the two `JobParameterInputValues`): every change is
-   `Template`.
+   `Template`. Values typed per side are compared as typed: `openjd diff` reads a number
+   given to a FLOAT by each side's template, so a type change from FLOAT gives unequal
+   inputs and falls through to step 3 ([cli/diff.md](../cli/diff.md#known-limitations)
+   shows the result).
 2. Otherwise, templates equal: every change is `Parameters`. "Equal" compares the parsed
    documents of the template and its environment templates, the allowlist, and the two
    PATH directories. A `Decoded` source has no document, so it never takes this shortcut;

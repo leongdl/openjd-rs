@@ -95,6 +95,29 @@ whose parameter `A` is a STRING.
   parameter: `Job parameter values provided for parameters that are not defined in the
   template: `.
 
+#### Known limitations
+
+When the new template changes a parameter's type from FLOAT, a number given with `-p`
+reaches the two sides as different values: the old side reads it as a float, the new side
+as text. The parameter inputs are then unequal, so the origin split (rule 3 of
+[model/template-diff.md](../model/template-diff.md#origin)) builds the new template with
+the old side's float, and the parameter's change is tagged `[both]` rather than
+`[template]`, though `-p` gave both sides the same text. With `F` a FLOAT (default 1.5) in
+`f.yaml` and a STRING (default `"1.5"`) in `s.yaml`:
+
+```
+$ openjd diff f.yaml s.yaml -p '{"F": 2}'
+f.yaml -> s.yaml
+~ parameter definition F.default: 1.5 -> "1.5"  [template]
+~ parameter definition F.type: FLOAT -> STRING  [template]
+~ parameter F: 2.0 (FLOAT) -> "2" (STRING)  [both]
+~ step S
+    ~ resolvedSymTab: Param.F=2.0 -> Param.F=2  [both]
+    tasks: 1 unchanged
+
+1 step changed. Tasks: 1 kept, 0 added, 0 removed.
+```
+
 Which library call runs:
 
 | inputs | call |
@@ -219,6 +242,10 @@ and from clap's 2. Errors name the path (`'nope.yaml' does not exist.`) or the i
 failed: `old template: …` / `new template: …` for two templates, `old parameters: …` /
 `new parameters: …` for one template under two parameter sets, and `the template: …` when
 that one template does not decode.
+
+Templates are read before parameters are parsed, so a command with both a missing
+template and a bad parameter reports the template (`'nope.yaml' does not exist.`), as
+`run` and `summary` do.
 
 ## Not implemented
 
