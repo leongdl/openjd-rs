@@ -1466,3 +1466,79 @@ fn a_non_empty_parameter_set_checks_the_template_dir() {
         "Validation error: old parameters: The value supplied for the job template dir, rel, is not an absolute path. It must be absolute to enforce that PATH parameter defaults are always inside the job template dir."
     );
 }
+
+// ─── a parameter-set diff applies the template input's limits ──────
+
+const ARG: &str = r#"
+specificationVersion: jobtemplate-2023-09
+name: ARG
+parameterDefinitions:
+  - {name: S, type: STRING}
+steps:
+  - name: A
+    script: {actions: {onRun: {command: a, args: ["{{Param.S}}"]}}}
+"#;
+
+/// `ARG` with resolved args capped at 10 characters.
+fn arg_capped() -> TemplateInput {
+    text(ARG).limits(CallerLimits {
+        max_resolved_arg_len: Some(10),
+        ..CallerLimits::default()
+    })
+}
+
+/// The error for `ARG` with `S` 100 characters long, after `prefix`.
+fn arg_too_long_error(prefix: &str) -> String {
+    format!(
+        "{prefix}Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> script -> actions -> onRun -> args[0]:\n\
+         \tresolves to at least 100 characters, exceeding the maximum of 10."
+    )
+}
+
+#[test]
+fn a_parameter_set_diff_from_stored_values_applies_the_limits() {
+    let mut stored = JobParameterValues::new();
+    stored.insert(
+        "S".into(),
+        value(JobParameterType::String, ExprValue::String("x".repeat(100))),
+    );
+    let side = arg_capped().preprocessed(stored);
+    let err = diff_job_template_with_parameter_sets(
+        &side,
+        &inputs(&[]),
+        &inputs(&[]),
+        &DiffOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        arg_too_long_error("Validation error: old parameters: ")
+    );
+    // `build()` fails the same way.
+    assert_eq!(
+        side.build().unwrap_err().to_string(),
+        arg_too_long_error("")
+    );
+}
+
+#[test]
+fn a_parameter_set_diff_from_input_values_applies_the_limits() {
+    let side = arg_capped().param("S", "x".repeat(100));
+    let err = diff_job_template_with_parameter_sets(
+        &side,
+        &inputs(&[]),
+        &inputs(&[]),
+        &DiffOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        arg_too_long_error("Validation error: old parameters: ")
+    );
+    // `build()` fails the same way.
+    assert_eq!(
+        side.build().unwrap_err().to_string(),
+        arg_too_long_error("")
+    );
+}
