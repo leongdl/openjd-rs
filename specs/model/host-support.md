@@ -245,7 +245,8 @@ Z`).
 template's values from another template's stored values and values to preprocess, keeping
 only the stored values the table above keeps. The parameter sets of
 `diff_job_template_with_parameter_sets` built from preprocessed values use a second helper
-that keeps every stored value, because their template is the one the values were stored for.
+that keeps every stored value the set does not override, because their template is the one
+the values were stored for.
 
 ## Tests
 
@@ -277,8 +278,8 @@ a parameter a set does not name, checking satisfiability only for the parameters
 names and checking it for those it names, setting a parameter only an environment template
 declares, accepting a URI PATH under `EXPR`, not checking the template dir for an empty set
 and requiring it to be absolute for a non-empty one, and rejecting the undeclared
-parameters a set names (listed sorted), beside the same
-diff from input values preprocessing them, and a range
+parameters a set names (listed sorted), and applying the side's caller limits, beside the same
+diff from input values preprocessing them and applying the limits, and a range
 flagged contiguous writing its canonical text with an unchanged digest. The host encoding is tested in `tests/integration/test_template_diff.rs`
 (the document against the serde form, each parameter type read back, each malformed
 parameter and definition, each row of [Reading a built job](#reading-a-built-job) in full,
