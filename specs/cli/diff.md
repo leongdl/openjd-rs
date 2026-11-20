@@ -134,9 +134,9 @@ directory sets relative PATH defaults. Stdin text is JSON when its first non-whi
 character is `{` and YAML otherwise, with the working directory as its template directory. Inline template text is
 not accepted on the command line, because YAML is hard to quote in a shell argument.
 
-`--help` ends with examples of each form that use the shipped files in
-`crates/openjd-cli/examples/diff/` and `crates/openjd-model/examples/template_diff/`, and a
-line pointing to the full gallery, [diff-examples.md](diff-examples.md).
+`--help` ends with examples of each form that use the curated files in
+`crates/openjd-cli/examples/diff/`, and a line pointing to that directory's README, which
+walks through them with their output.
 
 ## Output
 
@@ -255,10 +255,19 @@ See [model/template-diff.md](../model/template-diff.md#the-template-layer).
 
 ## Examples
 
-[diff-examples.md](diff-examples.md) has one case per field the diff can report: the
-command, its output, and for some cases its `--plan` output and JSON document. The test
-`crates/openjd-cli/tests/diff_examples.rs` runs every case and fails when the file is out
-of date; `UPDATE_DIFF_EXAMPLES=1 cargo test -p openjd-cli --test diff_examples` rewrites
-it.
+`crates/openjd-cli/examples/diff/README.md` is a short walkthrough for people learning the
+command: four scenarios (more frames from one template, a template edit with a parameter
+change, two different templates with parameters from files and inline JSON, and a change
+that replaces every task next to one the built job does not see), each with its command
+and output.
 
-Tests: `crates/openjd-cli/tests/diff_tests.rs` and `diff_examples.rs`.
+[diff-cases.md](diff-cases.md) is the test suite's per-field cases, on the templates in
+`crates/openjd-cli/tests/templates/diff/`: one case per field the diff can report, with
+the command, its output, and for some cases its `--plan` output and JSON document.
+
+The test `crates/openjd-cli/tests/diff_cases.rs` runs every per-field case and every
+`console` block command in the walkthrough, and fails when either file is out of date, when a file in
+either directory is not used, or when a `--help` example fails to run;
+`UPDATE_DIFF_CASES=1 cargo test -p openjd-cli --test diff_cases` rewrites both files.
+
+Tests: `crates/openjd-cli/tests/diff_tests.rs` and `diff_cases.rs`.

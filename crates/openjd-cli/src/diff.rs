@@ -27,17 +27,14 @@ const UNSTABLE_WARNING: &str =
     "warning: 'openjd diff' is unstable; its flags and output may change.";
 
 const EXAMPLES: &str = "\
-Examples, from the openjd-rs repository root with E=crates/openjd-cli/examples/diff
-and M=crates/openjd-model/examples/template_diff:
-  openjd diff $E/frames.yaml --old-parameter Frames=1-100 --new-parameter Frames=1-200
-  openjd diff $M/render_v1.yaml $M/render_v2.yaml -p Scene=//srv/s
-  openjd diff $E/let_script_v1.yaml $E/let_script_v2.yaml
-  openjd diff $E/extensions_v1.yaml $E/extensions_v2.yaml --plan
-  openjd diff $M/render_v1.yaml $M/render_v2.yaml -p Scene=//srv/s --stat
-  openjd diff $E/frames.yaml -p file://$E/frames_params.json --new-parameter '{\"Frames\": \"1-200\"}'
-  openjd diff $E/let_script_v1.yaml - --output json --exit-code < $E/let_script_v2.yaml
+Examples, from the openjd-rs repository root with E=crates/openjd-cli/examples/diff:
+  openjd diff $E/frame_range.yaml --old-parameter Frames=1-3 --new-parameter Frames=1-5
+  openjd diff $E/render_v1.yaml $E/render_v2.yaml --new-parameter Frames=1-4
+  openjd diff $E/tasks_v1.yaml $E/tasks_v2.yaml --plan
+  openjd diff $E/pipeline_v1.yaml $E/pipeline_v2.yaml -p file://$E/shot.json --new-parameter '{\"Quality\": null}'
+  openjd diff $E/tasks_v1.yaml - --output json --exit-code < $E/tasks_v2.yaml
 
-Every field the diff reports, with its output: specs/cli/diff-examples.md";
+A walkthrough of these examples with their output: crates/openjd-cli/examples/diff/README.md";
 
 #[derive(Args)]
 #[command(after_help = EXAMPLES)]

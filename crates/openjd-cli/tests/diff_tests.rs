@@ -4,7 +4,8 @@
 
 //! `openjd diff`, run as a binary on the samples in
 //! `crates/openjd-model/examples/template_diff/` and on the multi-step
-//! fixtures `tests/templates/diff_multi_v*.yaml`.
+//! fixtures `tests/templates/diff_multi_v*.yaml`, and on one per-field case
+//! in `tests/templates/diff/`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1106,9 +1107,9 @@ fn diff_applies_the_cli_caller_limits() {
 
 #[test]
 fn an_unexpanded_parameter_space_shows_each_definition_as_written() {
-    let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/diff");
+    let cases = templates().join("diff");
     let o = openjd_in(
-        &examples,
+        &cases,
         &[
             "diff",
             "range_rewritten_v1.yaml",

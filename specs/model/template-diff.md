@@ -140,8 +140,8 @@ layer's origin.
 An extension added, removed or reordered is therefore printed once (`+ extensions: [EXPR]
 [template]`) and kept twice in `changes`, once per layer. `job::apply::plan` turns the job
 layer's change into the root `Job` modify op with kind `JobExtensions`, and a store applies
-it through `JobApplier::job`. The gallery's `extension_added` and `extension_removed`
-cases show both ([cli/diff-examples.md](../cli/diff-examples.md)).
+it through `JobApplier::job`. The per-field `extension_added` and `extension_removed`
+cases show both ([cli/diff-cases.md](../cli/diff-cases.md)).
 
 **Deferred**, and recorded here so they are not mistaken for gaps:
 
@@ -430,7 +430,7 @@ parameter's value, `"1-200"`; for a task parameter definition,
 ## Examples
 
 The samples are in `crates/openjd-model/examples/template_diff/` and are the cases of the
-design's §7.4. [cli/diff-examples.md](../cli/diff-examples.md) has one generated example per
+design's §7.4. [cli/diff-cases.md](../cli/diff-cases.md) has one generated test case per
 field the diff reports, with its output:
 
 | case | inputs | result |

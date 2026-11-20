@@ -37,8 +37,10 @@ This places an `openjd` binary on your `PATH`.
 
 `diff` is unstable: its flags and output may change in any release, and it prints a
 warning saying so to stderr. The
-[diff example gallery](https://github.com/OpenJobDescription/openjd-rs/blob/main/specs/cli/diff-examples.md)
-shows the output for every field the diff reports.
+[diff examples](https://github.com/OpenJobDescription/openjd-rs/blob/main/crates/openjd-cli/examples/diff/README.md)
+walk through the common cases with their output, and the
+[per-field cases](https://github.com/OpenJobDescription/openjd-rs/blob/main/specs/cli/diff-cases.md)
+show the output for every field the diff reports.
 
 Run `openjd --help` for the full flag list, or `openjd COMMAND --help`
 for a specific command.
