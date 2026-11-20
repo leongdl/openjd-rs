@@ -2313,7 +2313,7 @@ fn job_from_str_reads_each_parameter_type_from_the_host_encoding() {
                         .unwrap(),
                     ExprValue::make_list(vec![], openjd_expr::ExprType::INT).unwrap(),
                 ],
-                openjd_expr::ExprType::list(openjd_expr::ExprType::INT),
+                openjd_expr::ExprType::list(openjd_expr::ExprType::INT).unwrap(),
             )
             .unwrap(),
         ),

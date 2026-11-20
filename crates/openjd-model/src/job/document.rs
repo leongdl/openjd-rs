@@ -205,7 +205,7 @@ fn string<'v>(m: &'v Map<String, Value>, key: &str, path: &str) -> Result<&'v st
 fn storage_type(t: JobParameterType) -> ExprType {
     match t {
         JobParameterType::Path => ExprType::STRING,
-        JobParameterType::ListPath => ExprType::list(ExprType::STRING),
+        JobParameterType::ListPath => crate::types::fixed_type(ExprType::list(ExprType::STRING)),
         other => other.expr_type(),
     }
 }
