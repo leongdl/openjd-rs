@@ -24,6 +24,7 @@ steps:
     parameterSpace:
       taskParameterDefinitions:
         - {name: Frame, type: INT, range: "{{Param.Frames}}"}
+        - {name: Eye, type: STRING, range: [l, r]}
     script:
       actions:
         onRun: {command: render, args: ["{{Param.Quality}}"]}
@@ -207,6 +208,16 @@ fn origins() {
             &[("Quality", "high")],
             &[("Quality", "mid")],
             "~ parameterDefinitions[Quality]\n  allowedValues: null -> [\"low\",\"mid\"] [template]\n~ parameters[Quality]\n  value: \"high\" -> \"mid\" [both]\n~ steps[Render]\n  resolvedSymTab[Param.Quality]: {\"type\":\"string\",\"value\":\"high\"} -> {\"type\":\"string\",\"value\":\"mid\"} [both]\ncross: Validation error: Parameter 'Quality': value 'high' is not in allowed values\n".into(),
+        ),
+        (
+            "a task parameter reorder is the template's",
+            &[(
+                "        - {name: Frame, type: INT, range: \"{{Param.Frames}}\"}\n        - {name: Eye, type: STRING, range: [l, r]}\n",
+                "        - {name: Eye, type: STRING, range: [l, r]}\n        - {name: Frame, type: INT, range: \"{{Param.Frames}}\"}\n",
+            )],
+            &[],
+            &[("Frames", "1-4")],
+            "~ parameters[Frames]\n  value: \"1-3\" -> \"1-4\" [parameters]\n~ steps[Render]\n  ~ parameterSpace\n    taskParameterDefinitions.order: [\"Frame\",\"Eye\"] -> [\"Eye\",\"Frame\"] [template]\n    ~ taskParameterDefinitions[Frame]\n      range: \"1-3\" -> \"1-4\" [parameters]\n".into(),
         ),
         (
             "a step let changes the step without changing the job",
