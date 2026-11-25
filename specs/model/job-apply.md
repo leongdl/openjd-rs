@@ -48,9 +48,10 @@ kinds.
 
 `tasks` is `Some` exactly for a step `Modify` whose `parameterSpace` child
 changed: the `TaskDelta` from the old step's parameter space to the new one's
-([task-delta.md](task-delta.md)). A system keeps the kept tasks with their
-state, creates the added ones and deletes the removed ones, or replaces all of
-them for a `Fallback`.
+([task-delta.md](task-delta.md)), which `task_delta` returns whenever the diff
+reports the spaces changed. A system keeps the kept tasks with their state,
+creates the added ones and deletes the removed ones, or replaces all of them
+for a `Fallback`.
 
 ## Order
 
@@ -95,6 +96,7 @@ name.
 | `StepSymbols` | step field `resolvedSymTab[NAME]` or `resolvedSymTab` |
 | `StepParameterSpace` | step child `parameterSpace` |
 | `TasksAdded`, `TasksRemoved` | the op's `tasks` is a `Product` with an `added` or a `removed` box |
+| `TasksReordered` | the op's `tasks` is a `Product` with `reordered`: the kept tasks iterate in another order. A system for which task order does not matter ignores it |
 | `TasksReplaced` | the op's `tasks` is a `Fallback` |
 
 `StepParameterSpace` says the step's stored parameter space changes; the task

@@ -162,7 +162,8 @@ fn plan_follows_the_diff() {
          ~ parameters[Frames]\n  value: \"1-3\" -> \"1-5\"\n\
          ~ steps[Render]\n  ~ parameterSpace\n    ~ taskParameterDefinitions[Frame]\n      \
          range: \"1-3\" -> \"1-5\"\n\
-         \x20 tasks: 3 kept, 2 added, 0 removed\n\
+         tasks:\n\
+         Render: 3 kept, 2 added, 0 removed\n\
          1 step changed\n\
          plan:\n\
          1. parameter Frames: modify\n\
@@ -172,7 +173,7 @@ fn plan_follows_the_diff() {
 }
 
 #[test]
-fn a_step_whose_tasks_change_gets_a_tasks_line_without_plan() {
+fn a_step_whose_tasks_change_gets_a_tasks_block_without_plan() {
     let dir = dir_with(&[]);
     let (code, stdout, stderr) = openjd(
         dir.path(),
@@ -191,7 +192,8 @@ fn a_step_whose_tasks_change_gets_a_tasks_line_without_plan() {
          ~ parameters[Frames]\n  value: \"1-4\" -> \"3-6\"\n\
          ~ steps[Render]\n  ~ parameterSpace\n    ~ taskParameterDefinitions[Frame]\n      \
          range: \"1-4\" -> \"3-6\"\n\
-         \x20 tasks: 2 kept, 2 added, 2 removed\n\
+         tasks:\n\
+         Render: 2 kept, 2 added, 2 removed\n\
          1 step changed\n"
     );
 }
@@ -209,11 +211,12 @@ fn a_change_with_no_task_decomposition_replaces_all_tasks() {
         stdout,
         "job.yaml -> new.yaml\n\
          ~ steps[Render]\n  ~ parameterSpace\n    + taskParameterDefinitions[Eye]\n\
-         \x20 tasks: all replaced (task parameter Eye added)\n\
+         tasks:\n\
+         Render: all replaced (task parameter Eye added, removed or retyped)\n\
          1 step changed\n\
          plan:\n\
          1. step Render: modify [StepParameterSpace, TasksReplaced]\n\
-         \x20  replace all tasks: task parameter Eye added\n"
+         \x20  replace all tasks: task parameter Eye added, removed or retyped\n"
     );
 }
 
@@ -231,6 +234,28 @@ fn a_space_change_that_keeps_every_task_has_no_tasks_line() {
          1 step changed\n\
          plan:\n\
          1. step Render: modify [StepParameterSpace]\n"
+    );
+}
+
+#[test]
+fn reordered_task_parameter_definitions_change_the_task_order() {
+    let frame = "- {name: Frame, type: INT, range: \"{{Param.Frames}}\"}";
+    let eye = "- {name: Eye, type: STRING, range: [left, right]}";
+    let old = TEMPLATE.replace(frame, &format!("{frame}\n        {eye}"));
+    let new = TEMPLATE.replace(frame, &format!("{eye}\n        {frame}"));
+    let dir = dir_with(&[("old.yaml", &old), ("new.yaml", &new)]);
+    let (code, stdout, stderr) = openjd(dir.path(), &["old.yaml", "new.yaml", "--plan"]);
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    assert_eq!(
+        stdout,
+        "old.yaml -> new.yaml\n\
+         ~ steps[Render]\n  ~ parameterSpace\n    \
+         taskParameterDefinitions.order: [\"Frame\",\"Eye\"] -> [\"Eye\",\"Frame\"]\n\
+         tasks:\n\
+         Render: order changed\n\
+         1 step changed\n\
+         plan:\n\
+         1. step Render: modify [StepParameterSpace, TasksReordered]\n"
     );
 }
 

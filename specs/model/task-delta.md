@@ -9,19 +9,25 @@ keeps the state of the kept tasks, such as which have run, and creates and delet
 the others. `job::apply` attaches the delta to a step's op ([job-apply.md](job-apply.md)).
 
 ```rust
-pub fn task_delta(old: Option<&StepParameterSpace>, new: Option<&StepParameterSpace>) -> TaskDelta;
+pub fn task_delta(
+    old: Option<&StepParameterSpace>,
+    new: Option<&StepParameterSpace>,
+) -> Option<TaskDelta>;
 ```
 
-`None` is a step without a parameter space. A task is identified by its parameter values:
-the specification gives a task no other identity, and no order beyond the order its space
-iterates in.
+A `None` argument is a step without a parameter space. A task is identified by its
+parameter values: the specification gives a task no other identity. Its position is the
+order its space iterates in, which the delta reports but does not use to match tasks.
 
 ## Result
 
+The result is `None` when both arguments are `None`, or when the spaces are equal as the
+diff compares them ([job-diff.md](job-diff.md) "Order"): `PartialEq`, and the same
+definition order where that is the iteration order. Otherwise it is a `TaskDelta`:
+
 | `TaskDelta` | when |
 |---|---|
-| `Unchanged` | the spaces are equal (`PartialEq`) |
-| `Product(ProductDelta { kept, added, removed })` | both sides are plain products over the same parameters |
+| `Product(ProductDelta { kept, added, removed, reordered })` | both sides are plain products over the same parameters |
 | `Fallback { reason }` | otherwise: every old task is replaced by the new space's tasks |
 
 A side is a plain product when its `combination` is absent, `*`, or every parameter name
@@ -29,13 +35,30 @@ exactly once joined by `*`; no parameter is chunked (`CHUNK[INT]`, or `INT` with
 `chunks`); no range lists a value twice, since the algebra is over sets; and its task count
 fits a `u64`, as `StepParameterSpaceIterator::len` counts it. The two sides must have the
 same parameter names with the same types. The first rule a side breaks, the old side
-first, is the `FallbackReason`.
+first, gives the `FallbackReason`:
 
-Order is not part of the delta. A different dimension order, such as a `combination` of
-`B * A` for `A * B` or reordered definitions, or a different order of the values both
-sides share, keeps every task, because the tasks are the same parameter value sets and
-nothing in a plan locates a task by its position. Such a change, like a range expression
-rewritten as the list of its values, is a `Product` with no added or removed box.
+| `FallbackReason` | rule |
+|---|---|
+| `SpaceAddedOrRemoved` | one side has no parameter space |
+| `NotProduct` | the `combination`, a chunked parameter, a repeated value, or the task count |
+| `ParameterMismatch(name)` | a parameter on one side only, or with another type on each |
+| `RangeTooComplex(name)` | an `INT` result no range expression holds (see "Cost") |
+
+## Order
+
+The diff reports a change in task order, and the system applying it decides whether order
+matters, so a reorder alone keeps every task. `reordered` is true when the kept tasks
+iterate in a different relative order: the outermost-first order of the dimensions with
+two or more kept values differs (the `combination`'s order, or the definition order when
+it is absent or `*`), or such a dimension lists its kept values in a different relative
+order. An `INT` range expression's values ascend; a list's are in list order. With fewer
+than two kept tasks there is no order to change.
+
+A change of order only, such as a `combination` of `B * A` for `A * B`, reordered
+definitions with no `combination`, or `[3, 1, 2]` for `[1, 2, 3]`, is a `Product` with no
+added or removed box and `reordered` true. A range expression rewritten as the list of its
+values is a `Product` with nothing added, removed or reordered. A space that is not a
+plain product is a `Fallback` whatever changed, order included.
 
 ## Decomposition
 
@@ -62,7 +85,7 @@ values, as their tasks render differently.
 ## Cost
 
 `FLOAT`, `STRING` and `PATH` values, and an `INT` list, are already in memory, and cost
-time linear in their count: about 0.2 s for a 10^6-value `INT` list and 0.75 s for a
+time linear in their count: about 0.4 s for a 10^6-value `INT` list and 1 s for a
 10^6-value `STRING` list in a release build. An `INT` range expression is never
 enumerated: both sides become the runs of their canonical form (an `INT` list is sorted
 into that form first), and `I_k`, `N_k \ O_k` and `O_k \ N_k` are computed run by run.
@@ -70,11 +93,17 @@ Two runs intersect in one arithmetic progression, solved by the Chinese remainde
 so changing `1-1000000` to `1-2000000` costs microseconds, as does a range of 10^18
 values.
 
-Subtracting a progression whose step is a multiple `m > 1` of the other's leaves gaps, one
-run each. When a result would have more than `MAX_RANGE_EXPR_CHUNKS` runs, such as
-`1-200000` to `1-200000:2`, the delta stops building it and is
-`Fallback(RangeTooComplex)`. So are values no range expression holds (`i64::MIN`).
+A box's `INT` values are a `RangeExpr`, which holds at most `MAX_RANGE_EXPR_CHUNKS` runs,
+so a result with more is `Fallback(RangeTooComplex)`, as are values no range expression
+holds (`i64::MIN`). Results are built as runs, merging each into the previous one when
+they continue one progression, and the delta stops building past the cap. Subtracting a
+progression whose step is `m > 1` times the other's leaves the values between its values:
+for `m = 2` one progression (`1-200000` minus `1-200000:2` is `2-200000:2`); for `m > 2`,
+`m - 1` interleaved progressions, which no range expression holds, so each gap is a run
+of its own. `1-300000` minus `1-300000:3` leaves 200000 runs in canonical form, so that
+delta is a `Fallback`.
 
 Tests: `crates/openjd-model/src/test_task_delta.rs` compares each decomposition with
-brute-force enumeration of both spaces, both ways, and covers every `FallbackReason`; the
+brute-force enumeration of both spaces, both ways, covers every `FallbackReason`, and
+checks each `RangeTooComplex` past the cap against `RangeExpr::from_values`; the
 `model_job_gen` fuzz target compares the delta with enumeration on generated spaces.

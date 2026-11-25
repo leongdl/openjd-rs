@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use clap::Args;
-use openjd_model::job::apply::{plan, ApplyPlan, OpTarget};
+use openjd_model::job::apply::{plan, ApplyOp, ApplyPlan, OpTarget};
 use openjd_model::job::diff::{diff_jobs, DiffTree};
 use openjd_model::job::task_delta::{TaskBox, TaskDelta};
 use openjd_model::job::Job;
@@ -112,8 +112,8 @@ fn header(args: &DiffArgs) -> String {
     }
 }
 
-/// The command's output: `header`, then the tree with a `tasks:` line under
-/// each step whose tasks change, a count of the steps it changes and, with
+/// The command's output: `header`, then the tree, a `tasks:` block when a
+/// step's tasks change, a count of the steps it changes and, with
 /// `show_plan`, `plan:` and the plan; or `no changes`.
 fn render(header: &str, tree: &DiffTree, plan: &ApplyPlan, show_plan: bool) -> String {
     if !tree.is_changed() {
@@ -126,47 +126,46 @@ fn render(header: &str, tree: &DiffTree, plan: &ApplyPlan, show_plan: bool) -> S
         .filter(|c| c.is_changed() && c.segment.starts_with("steps["))
         .count();
     let noun = if steps == 1 { "step" } else { "steps" };
-    let tree = with_task_lines(&tree.to_string(), plan);
+    let tasks: String = plan.ops().iter().filter_map(task_line).collect();
+    let tasks = if tasks.is_empty() {
+        tasks
+    } else {
+        format!("tasks:\n{tasks}")
+    };
     let plan = if show_plan {
         format!("plan:\n{plan}")
     } else {
         String::new()
     };
-    format!("{header}\n{tree}{steps} {noun} changed\n{plan}")
+    format!("{header}\n{tree}{tasks}{steps} {noun} changed\n{plan}")
 }
 
-/// `tree` with a line `  tasks: …` ending the block of each step whose
-/// tasks the plan adds, removes or replaces.
-fn with_task_lines(tree: &str, plan: &ApplyPlan) -> String {
-    let mut lines: Vec<String> = tree.lines().map(str::to_string).collect();
-    for op in plan.ops() {
-        let (OpTarget::Step(name), Some(delta)) = (&op.target, &op.tasks) else {
-            continue;
-        };
-        let summary = match delta {
-            TaskDelta::Product(d) if d.added.is_empty() && d.removed.is_empty() => continue,
-            TaskDelta::Product(d) => {
-                let count = |boxes: &[TaskBox]| boxes.iter().map(TaskBox::len).sum::<u64>();
+/// `{step}: {summary}` for a step op whose tasks are added, removed,
+/// reordered or replaced.
+fn task_line(op: &ApplyOp) -> Option<String> {
+    let (OpTarget::Step(name), Some(delta)) = (&op.target, &op.tasks) else {
+        return None;
+    };
+    let summary = match delta {
+        TaskDelta::Product(d) => {
+            let count = |boxes: &[TaskBox]| boxes.iter().map(TaskBox::len).sum::<u64>();
+            let counts = (!d.added.is_empty() || !d.removed.is_empty()).then(|| {
                 format!(
                     "{} kept, {} added, {} removed",
                     d.kept.len(),
                     count(&d.added),
                     count(&d.removed)
                 )
+            });
+            let order = d.reordered.then(|| "order changed".to_string());
+            let parts: Vec<String> = counts.into_iter().chain(order).collect();
+            if parts.is_empty() {
+                return None;
             }
-            TaskDelta::Fallback { reason } => format!("all replaced ({reason})"),
-            _ => continue,
-        };
-        let head = format!("~ steps[{name}]");
-        let Some(at) = lines.iter().position(|l| *l == head) else {
-            continue;
-        };
-        let end = lines
-            .iter()
-            .skip(at + 1)
-            .position(|l| !l.starts_with("  "))
-            .map_or(lines.len(), |n| at + 1 + n);
-        lines.insert(end, format!("  tasks: {summary}"));
-    }
-    lines.iter().map(|l| format!("{l}\n")).collect()
+            parts.join(", ")
+        }
+        TaskDelta::Fallback { reason } => format!("all replaced ({reason})"),
+        _ => return None,
+    };
+    Some(format!("{name}: {summary}\n"))
 }

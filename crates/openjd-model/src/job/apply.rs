@@ -62,6 +62,9 @@ pub enum MutationKind {
     TasksAdded,
     /// Tasks removed from a step: [`ApplyOp::tasks`] names them.
     TasksRemoved,
+    /// A step's kept tasks iterated in a different relative order. A system
+    /// for which task order does not matter can ignore it.
+    TasksReordered,
     /// All of a step's tasks replaced by those of its new parameter space,
     /// for a change [`task_delta`] does not decompose.
     TasksReplaced,
@@ -192,7 +195,7 @@ impl fmt::Display for ApplyPlan {
                 Some(TaskDelta::Fallback { reason }) => {
                     writeln!(f, "   replace all tasks: {reason}")?;
                 }
-                Some(TaskDelta::Unchanged) | None => {}
+                None => {}
             }
         }
         Ok(())
@@ -280,12 +283,14 @@ pub fn plan(old: &Job, new: &Job) -> Result<ApplyPlan, ModelError> {
             DiffStatus::Added => push(target, OpAction::Add, BTreeSet::new(), None),
             DiffStatus::Modified => {
                 let mut kinds = step_kinds(node)?;
-                let tasks = kinds.contains(&MutationKind::StepParameterSpace).then(|| {
+                let tasks = if kinds.contains(&MutationKind::StepParameterSpace) {
                     let old_space = old_steps
                         .get(step.name.as_str())
                         .and_then(|s| s.parameter_space.as_ref());
                     task_delta(old_space, step.parameter_space.as_ref())
-                });
+                } else {
+                    None
+                };
                 kinds.extend(tasks.as_ref().map_or(Vec::new(), task_kinds));
                 push(target, OpAction::Modify, kinds, tasks);
             }
@@ -314,12 +319,12 @@ fn task_kinds(delta: &TaskDelta) -> Vec<MutationKind> {
         TaskDelta::Product(d) => [
             (!d.added.is_empty()).then_some(MutationKind::TasksAdded),
             (!d.removed.is_empty()).then_some(MutationKind::TasksRemoved),
+            d.reordered.then_some(MutationKind::TasksReordered),
         ]
         .into_iter()
         .flatten()
         .collect(),
         TaskDelta::Fallback { .. } => vec![MutationKind::TasksReplaced],
-        TaskDelta::Unchanged => Vec::new(),
     }
 }
 

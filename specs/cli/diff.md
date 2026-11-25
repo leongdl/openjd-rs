@@ -49,12 +49,15 @@ counting the changed, added and removed steps: `1 step changed`, `2 steps change
 A step that is renamed counts twice, as one removed and one added. A pure reorder of the
 steps changes only the job's `steps.order` field, so it counts 0 steps.
 
-A changed step whose tasks change ends its block with a line `  tasks: …`, read from the
-`tasks` of the step's op in `openjd_model::job::apply::plan`
-([model/task-delta.md](../model/task-delta.md)): `{k} kept, {a} added, {r} removed`, or
-`all replaced ({reason})` when the change has no product decomposition. The counts come
-from the boxes, so the line costs nothing for a large range. A parameter space change that
-keeps every task, such as a range rewritten as the list of its values, gets no line.
+When a step's tasks change, a `tasks:` block follows the tree, before the count, with one
+line `{step}: …` per such step in plan order, read from the `tasks` of the step's op in
+`openjd_model::job::apply::plan` ([model/task-delta.md](../model/task-delta.md)):
+`{k} kept, {a} added, {r} removed` when tasks are added or removed, `order changed` when
+the kept tasks iterate in another order (after the counts, comma-separated, when there
+are both), or `all replaced ({reason})` when the change has no product decomposition. The
+counts come from the boxes, so the block costs nothing for a large range. A parameter
+space change that keeps every task in the same order, such as a range rewritten as the
+list of its values, gets no line.
 
 ```
 $ openjd diff frames.yaml --old-job-param Frames=1-100 --new-job-param Frames=1-200
@@ -65,7 +68,8 @@ frames.yaml: old parameters -> new parameters
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
       range: "1-100" -> "1-200"
-  tasks: 100 kept, 100 added, 0 removed
+tasks:
+Render: 100 kept, 100 added, 0 removed
 1 step changed
 ```
 
@@ -106,7 +110,7 @@ plan:
 2. step Encode: add
 ```
 
-The command computes the plan with or without `--plan`, for the `tasks:` lines. `plan`
+The command computes the plan with or without `--plan`, for the `tasks:` block. `plan`
 fails only for a job whose steps have no topological order, which `create_job` never
 produces, or for a diff field it has no kind for, which its tests rule out, so it adds no
 error case.

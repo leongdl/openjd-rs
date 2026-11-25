@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
+use indexmap::IndexMap;
 use openjd_expr::value::Float64;
 use serde::Serialize;
 use serde_json::Value;
@@ -45,7 +46,8 @@ pub struct FieldChange {
     /// keyed collection reads `variables[KEY]`, `amounts[NAME]`,
     /// `attributes[NAME]` or `resolvedSymTab[NAME]`, or the collection's
     /// name when the whole collection differs and no entry does; the
-    /// relative order of a named list's shared elements reads
+    /// relative order of a named list's shared elements, or of the task
+    /// parameter definitions where they fix the iteration order, reads
     /// `<collection>.order`.
     pub field: String,
     /// The old value as JSON; `null` when the field is absent.
@@ -144,18 +146,19 @@ impl DiffNode {
             .collect()
     }
 
-    /// One child per element of a named list.
-    fn named_children<T: PartialEq>(
+    /// One child per element of a named list, each pair compared with `eq`.
+    fn named_children<T>(
         &mut self,
         collection: &str,
         a: Option<&[T]>,
         b: Option<&[T]>,
         name: fn(&T) -> &str,
+        eq: fn(&T, &T) -> bool,
         expand: fn(&mut DiffNode, &T, &T),
     ) {
         for (key, x, y) in self.match_names(collection, a, b, name) {
             self.children
-                .extend(pair(format!("{collection}[{key}]"), x, y, expand));
+                .extend(pair_with(format!("{collection}[{key}]"), x, y, eq, expand));
         }
     }
 }
@@ -211,7 +214,7 @@ fn write_node(f: &mut fmt::Formatter<'_>, node: &DiffNode, depth: usize) -> fmt:
 #[must_use]
 pub fn diff_jobs(old: &Job, new: &Job) -> DiffTree {
     DiffTree {
-        root: compare(String::new(), old, new, expand_job),
+        root: compare_with(String::new(), old, new, jobs_equal, expand_job),
     }
 }
 
@@ -220,8 +223,39 @@ pub fn diff_jobs(old: &Job, new: &Job) -> DiffTree {
 #[must_use]
 pub fn diff_steps(old: &Step, new: &Step) -> DiffTree {
     DiffTree {
-        root: compare(String::new(), old, new, expand_step),
+        root: compare_with(String::new(), old, new, steps_equal, expand_step),
     }
+}
+
+/// Whether a space iterates its tasks in definition order: it has no
+/// `combination`, or `*`.
+fn follows_definitions(space: &StepParameterSpace) -> bool {
+    space.combination.as_deref().is_none_or(|c| c.trim() == "*")
+}
+
+/// Equality of parameter spaces: `PartialEq`, which ignores the order of the
+/// definitions map, and the same definition order where it is the iteration
+/// order.
+pub(crate) fn spaces_equal(a: &StepParameterSpace, b: &StepParameterSpace) -> bool {
+    a == b
+        && (!follows_definitions(a)
+            || a.task_parameter_definitions
+                .keys()
+                .eq(b.task_parameter_definitions.keys()))
+}
+
+/// `PartialEq`, with the parameter spaces compared by [`spaces_equal`].
+fn steps_equal(a: &Step, b: &Step) -> bool {
+    a == b
+        && match (&a.parameter_space, &b.parameter_space) {
+            (Some(x), Some(y)) => spaces_equal(x, y),
+            _ => true,
+        }
+}
+
+/// `PartialEq`, with the steps compared by [`steps_equal`].
+fn jobs_equal(a: &Job, b: &Job) -> bool {
+    a == b && a.steps.iter().zip(&b.steps).all(|(x, y)| steps_equal(x, y))
 }
 
 /// Diff two environments. The tree has the same shape as an environment's
@@ -246,7 +280,18 @@ fn compare<T: PartialEq>(
     b: &T,
     expand: fn(&mut DiffNode, &T, &T),
 ) -> DiffNode {
-    if a == b {
+    compare_with(segment, a, b, T::eq, expand)
+}
+
+/// [`compare`] with the equality `eq`.
+fn compare_with<T>(
+    segment: String,
+    a: &T,
+    b: &T,
+    eq: fn(&T, &T) -> bool,
+    expand: fn(&mut DiffNode, &T, &T),
+) -> DiffNode {
+    if eq(a, b) {
         return DiffNode::new(segment, DiffStatus::Unchanged);
     }
     let mut node = DiffNode::new(segment, DiffStatus::Modified);
@@ -260,8 +305,18 @@ fn pair<T: PartialEq>(
     b: Option<&T>,
     expand: fn(&mut DiffNode, &T, &T),
 ) -> Option<DiffNode> {
+    pair_with(segment, a, b, T::eq, expand)
+}
+
+fn pair_with<T>(
+    segment: String,
+    a: Option<&T>,
+    b: Option<&T>,
+    eq: fn(&T, &T) -> bool,
+    expand: fn(&mut DiffNode, &T, &T),
+) -> Option<DiffNode> {
     match (a, b) {
-        (Some(a), Some(b)) => Some(compare(segment, a, b, expand)),
+        (Some(a), Some(b)) => Some(compare_with(segment, a, b, eq, expand)),
         (Some(_), None) => Some(DiffNode::new(segment, DiffStatus::Removed)),
         (None, Some(_)) => Some(DiffNode::new(segment, DiffStatus::Added)),
         (None, None) => None,
@@ -383,6 +438,7 @@ fn expand_job(n: &mut DiffNode, a: &Job, b: &Job) {
         job_environments.as_deref(),
         b.job_environments.as_deref(),
         |e| &e.name,
+        PartialEq::eq,
         expand_environment,
     );
     n.named_children(
@@ -390,6 +446,7 @@ fn expand_job(n: &mut DiffNode, a: &Job, b: &Job) {
         Some(steps),
         Some(&b.steps),
         |s| &s.name,
+        steps_equal,
         expand_step,
     );
 }
@@ -439,12 +496,14 @@ fn expand_step(n: &mut DiffNode, a: &Step, b: &Step) {
         step_environments.as_deref(),
         b.step_environments.as_deref(),
         |e| &e.name,
+        PartialEq::eq,
         expand_environment,
     );
-    n.children.extend(pair(
+    n.children.extend(pair_with(
         "parameterSpace".into(),
         parameter_space.as_ref(),
         b.parameter_space.as_ref(),
+        spaces_equal,
         expand_parameter_space,
     ));
     n.children.extend(pair(
@@ -535,6 +594,7 @@ fn embedded_file_children(
         a.as_deref(),
         b.as_deref(),
         |f| &f.name,
+        PartialEq::eq,
         expand_embedded_file,
     );
 }
@@ -575,6 +635,23 @@ fn expand_parameter_space(n: &mut DiffNode, a: &StepParameterSpace, b: &StepPara
         combination,
     } = a;
     n.field("combination", combination, &b.combination);
+    if follows_definitions(a) && follows_definitions(b) {
+        fn shared<'a>(
+            x: &'a IndexMap<String, TaskParameter>,
+            y: &IndexMap<String, TaskParameter>,
+        ) -> Vec<&'a str> {
+            x.keys()
+                .filter(|k| y.contains_key(*k))
+                .map(String::as_str)
+                .collect()
+        }
+        let (x, y) = (task_parameter_definitions, &b.task_parameter_definitions);
+        n.field(
+            "taskParameterDefinitions.order",
+            &shared(x, y),
+            &shared(y, x),
+        );
+    }
     for (key, (x, y)) in by_key(task_parameter_definitions, &b.task_parameter_definitions) {
         n.children.extend(pair(
             format!("taskParameterDefinitions[{key}]"),

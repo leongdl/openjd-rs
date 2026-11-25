@@ -1363,7 +1363,7 @@ pub enum MutationKind {
     EnvAdd, EnvRemove, EnvMetadata, EnvVariables, EnvScript, EnvSymbols,
     StepMetadata, StepScript, StepHostRequirements,
     StepDependencies, StepSymbols, StepParameterSpace,
-    TasksAdded, TasksRemoved, TasksReplaced,
+    TasksAdded, TasksRemoved, TasksReordered, TasksReplaced,
 }
 ```
 
@@ -1381,8 +1381,8 @@ pub enum MutationKind {
   `{target}: {action}`, then ` [{kinds}]` when there are kinds.
 - `OpTarget`, `OpAction` and `MutationKind` implement `Display`; a kind
   displays as its variant name. `StepParameterSpace` is the step's space
-  definition; `TasksAdded`, `TasksRemoved` and `TasksReplaced` say what happens
-  to its tasks.
+  definition; `TasksAdded`, `TasksRemoved`, `TasksReordered` and
+  `TasksReplaced` say what happens to its tasks.
 
 ## Task Delta (unstable)
 
@@ -1390,11 +1390,13 @@ pub enum MutationKind {
 release without notice. Semantics: [task-delta.md](task-delta.md).
 
 ```rust
-pub fn task_delta(old: Option<&StepParameterSpace>, new: Option<&StepParameterSpace>) -> TaskDelta;
+pub fn task_delta(
+    old: Option<&StepParameterSpace>,
+    new: Option<&StepParameterSpace>,
+) -> Option<TaskDelta>;
 
 #[non_exhaustive]
 pub enum TaskDelta {
-    Unchanged,
     Product(ProductDelta),
     Fallback { reason: FallbackReason },
 }
@@ -1404,6 +1406,7 @@ pub struct ProductDelta {
     pub kept: TaskBox,
     pub added: Vec<TaskBox>,
     pub removed: Vec<TaskBox>,
+    pub reordered: bool,
 }
 
 pub struct TaskBox { /* private */ }
@@ -1416,25 +1419,25 @@ impl Display for TaskBox;
 
 #[non_exhaustive]
 pub enum FallbackReason {
-    SpaceAddedOrRemoved, NotProduct, Chunked(String), RepeatedValue(String),
-    TaskCountOverflow, ParameterAdded(String), ParameterRemoved(String),
-    ParameterRetyped(String), RangeTooComplex(String),
+    SpaceAddedOrRemoved, NotProduct, ParameterMismatch(String),
+    RangeTooComplex(String),
 }
 impl Display for FallbackReason;
 ```
 
 - `task_delta` never fails and never enumerates tasks. `None` is a step
-  without a parameter space. It returns `Unchanged` for equal spaces, a
-  `Product` when both are plain products over the same parameters, and a
-  `Fallback` naming the first rule a side breaks otherwise.
+  without a parameter space. It returns `None` for spaces the diff reports
+  unchanged, a `Product` when both are plain products over the same
+  parameters, and a `Fallback` naming the first rule a side breaks otherwise.
 - `ProductDelta`: `kept` holds the tasks both spaces have and may be empty;
   `added` and `removed` are disjoint, non-empty boxes whose unions are the
-  tasks only the new space has and only the old space has.
+  tasks only the new space has and only the old space has. `reordered` says
+  whether the kept tasks iterate in a different relative order.
 - `TaskBox::space` is a `StepParameterSpace` with no `combination` that
   `StepParameterSpaceIterator` iterates; `len` is its task count. `Display`
   writes `name=values` per parameter, comma-separated.
 - `FallbackReason` displays as a short phrase naming the parameter, such as
-  `task parameter Eye added`.
+  `task parameter Eye added, removed or retyped`.
 
 ## Step Dependency Graph
 

@@ -608,23 +608,67 @@ fn field_lines(node: &DiffNode) -> String {
 
 // Other claims of the spec.
 
-/// Parameters and task parameter definitions are maps: their order is not
-/// part of the job's equality, so a reorder is no change.
+/// Job parameters are a map whose order is not part of the job's equality,
+/// so a reorder is no change.
 #[test]
-fn reordered_map_entries_are_unchanged() {
+fn reordered_job_parameters_are_unchanged() {
     let params = edited(
         BASE,
         "  - {name: Scene, type: STRING, default: a.blend}\n  - {name: Quality, type: STRING, default: low}",
         "  - {name: Quality, type: STRING, default: low}\n  - {name: Scene, type: STRING, default: a.blend}",
     );
-    let tasks = edited(
-        &params,
-        "        - {name: Frame, type: INT, range: \"1-{{Param.Last}}\"}\n        \
-         - {name: Eye, type: STRING, range: [left, right]}",
-        "        - {name: Eye, type: STRING, range: [left, right]}\n        \
-         - {name: Frame, type: INT, range: \"1-{{Param.Last}}\"}",
+    assert!(!diff_jobs(&job(BASE), &job(&params)).is_changed());
+}
+
+const FRAME_EYE: &str = "        - {name: Frame, type: INT, range: \"1-{{Param.Last}}\"}\n        \
+                         - {name: Eye, type: STRING, range: [left, right]}";
+const EYE_FRAME: &str = "        - {name: Eye, type: STRING, range: [left, right]}\n        \
+                         - {name: Frame, type: INT, range: \"1-{{Param.Last}}\"}";
+
+/// With no `combination`, or `*`, the definition order is the iteration
+/// order, so a reorder is one `taskParameterDefinitions.order` change on
+/// the parameter space.
+#[test]
+fn reordered_task_parameter_definitions_are_an_order_change() {
+    let combined = |c: &str| {
+        edited(
+            BASE,
+            "      taskParameterDefinitions:\n",
+            &format!("      combination: \"{c}\"\n      taskParameterDefinitions:\n"),
+        )
+    };
+    // Templates reject a `*` combination, but `StepParameterSpace` can hold one.
+    let star = |mut j: Job| {
+        if let Some(space) = &mut j.steps[1].parameter_space {
+            space.combination = Some(" * ".into());
+        }
+        j
+    };
+    let (old, new) = (job(BASE), job(&edited(BASE, FRAME_EYE, EYE_FRAME)));
+    for (old, new) in [(old.clone(), new.clone()), (star(old), star(new))] {
+        let tree = diff_jobs(&old, &new);
+        let render = tree.root().child(RENDER).unwrap();
+        let space = render.child("parameterSpace").unwrap();
+        assert_eq!(space.status, DiffStatus::Modified);
+        assert_eq!(
+            field_lines(space),
+            r#"taskParameterDefinitions.order: ["Frame","Eye"] -> ["Eye","Frame"]"#
+        );
+        assert!(space.children.iter().all(|c| !c.is_changed()));
+        assert_eq!(
+            diff_steps(&old.steps[1], &new.steps[1]).root(),
+            &with_segment(Some(render), "")
+        );
+    }
+    // A combination other than `*` fixes the order instead, on either side.
+    let base = combined("Frame * Eye");
+    assert!(!diff_jobs(&job(&base), &job(&edited(&base, FRAME_EYE, EYE_FRAME))).is_changed());
+    let tree = diff_jobs(&job(BASE), &job(&edited(&base, FRAME_EYE, EYE_FRAME)));
+    let render = tree.root().child(RENDER).unwrap();
+    assert_eq!(
+        field_lines(render.child("parameterSpace").unwrap()),
+        r#"combination: null -> "Frame * Eye""#
     );
-    assert!(!diff_jobs(&job(BASE), &job(&tasks)).is_changed());
 }
 
 /// A step environment has no `resolvedSymTab`; the parameters it reads are

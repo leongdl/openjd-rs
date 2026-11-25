@@ -21,7 +21,8 @@ frames.yaml: old parameters -> new parameters
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
       range: "1-3" -> "1-5"
-  tasks: 3 kept, 2 added, 0 removed
+tasks:
+Render: 3 kept, 2 added, 0 removed
 1 step changed
 ```
 
@@ -72,8 +73,9 @@ render_v1.yaml -> render_v2.yaml
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
       range: "1-3" -> "1-4"
-  tasks: 3 kept, 1 added, 0 removed
 + steps[Encode]
+tasks:
+Render: 3 kept, 1 added, 0 removed
 2 steps changed
 ```
 
@@ -101,8 +103,9 @@ render_v1.yaml -> render_v2.yaml
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
       range: "1-3" -> "1-4"
-  tasks: 3 kept, 1 added, 0 removed
 + steps[Encode]
+tasks:
+Render: 3 kept, 1 added, 0 removed
 2 steps changed
 plan:
 1. parameter Frames: modify
@@ -115,8 +118,9 @@ plan:
 ## Which tasks change
 
 A system that applies the plan keeps the state of the tasks a change does not touch. The
-`tasks:` line under a step counts the tasks the change keeps, adds and removes, without
-listing them. Doubling the frame range keeps the first 100 frames and adds 100:
+`tasks:` block after the tree counts, for each step, the tasks the change keeps, adds and
+removes, without listing them. Doubling the frame range keeps the first 100 frames and
+adds 100:
 
 ```console
 $ openjd diff frames.yaml --old-job-param Frames=1-100 --new-job-param Frames=1-200 --plan
@@ -127,7 +131,8 @@ frames.yaml: old parameters -> new parameters
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
       range: "1-100" -> "1-200"
-  tasks: 100 kept, 100 added, 0 removed
+tasks:
+Render: 100 kept, 100 added, 0 removed
 1 step changed
 plan:
 1. parameter Frames: modify
@@ -149,7 +154,8 @@ frames.yaml: old parameters -> new parameters
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
       range: "1-3" -> "1-5"
-  tasks: 3 kept, 2 added, 0 removed
+tasks:
+Render: 3 kept, 2 added, 0 removed
 1 step changed
 3
 ```

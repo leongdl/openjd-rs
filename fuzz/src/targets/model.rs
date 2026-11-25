@@ -23,8 +23,10 @@
 //!   iteration, `get(i)` equals the i-th iterated set, and every iterated set
 //!   passes `contains` / `validate_containment`.
 //! - **Task delta**: between a small step parameter space and a copy with
-//!   each range's first value dropped and a new one appended, the kept, added
-//!   and removed boxes are the enumerated intersection and differences.
+//!   each range's first value dropped and a new one appended (for a float,
+//!   the dropped value respelled), the kept, added and removed boxes are the
+//!   enumerated intersection and differences, and no added or removed box is
+//!   empty.
 //! - **Topological order** respects every declared dependency.
 //! - **Apply plan order**: a plan adds steps dependencies first and removes
 //!   them dependents first, a job planned against itself is empty, and only a
@@ -35,6 +37,7 @@ use crate::gen::{self, one_in, pick, upto};
 use crate::targets::text_and_control;
 use crate::{known_issue, oracle};
 use arbitrary::Unstructured;
+use openjd_expr::value::Float64;
 use openjd_expr::{
     ExprValue, ExpressionError, FormatString, FormatStringOptions, FunctionLibrary, HostContext,
     PathFormat, SymbolTable,
@@ -656,7 +659,6 @@ fn sets_eq(a: &[TaskParameterSet], b: &[TaskParameterSet]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| set_eq(x, y))
 }
 
-/// Parameter-space invariants. Returns a few task parameter sets to resolve.
 /// Compare `task_delta` with enumeration, both ways, between the step's
 /// space (at most 64 tasks and 64 values a parameter) and a copy with each
 /// range's first value dropped and a new value appended.
@@ -665,8 +667,8 @@ fn check_task_delta(step: &Step) {
         return;
     };
     oracle!(
-        task_delta(Some(space), Some(space)) == TaskDelta::Unchanged,
-        "a space's delta to itself is not Unchanged: {space:?}"
+        task_delta(Some(space), Some(space)).is_none(),
+        "a space's delta to itself is not None: {space:?}"
     );
     let small = StepParameterSpaceIterator::new(space).is_ok_and(|it| it.len() <= 64)
         && space.task_parameter_definitions.values().all(|p| match p {
@@ -689,7 +691,11 @@ fn check_task_delta(step: &Step) {
     };
     for (old, new) in [(space, &shifted), (&shifted, space)] {
         match task_delta(Some(old), Some(new)) {
-            TaskDelta::Product(d) => {
+            Some(TaskDelta::Product(d)) => {
+                oracle!(
+                    d.added.iter().chain(&d.removed).all(|b| !b.is_empty()),
+                    "an empty added or removed box: {old:?} -> {new:?}: {d:?}"
+                );
                 let (o, n) = (enumerate(old), enumerate(new));
                 let (Some(o), Some(n)) = (o, n) else {
                     return;
@@ -702,15 +708,17 @@ fn check_task_delta(step: &Step) {
                     "task delta disagrees with enumeration: {old:?} -> {new:?}: {d:?}"
                 );
             }
-            TaskDelta::Fallback { reason } => {
+            Some(TaskDelta::Fallback { reason }) => {
                 oracle!(!reason.to_string().is_empty(), "an empty fallback reason");
             }
-            d => oracle!(old == new, "{d:?} for unequal spaces {old:?} -> {new:?}"),
+            Some(d) => oracle!(false, "an unexpected delta {d:?}"),
+            None => oracle!(old == new, "no delta for unequal spaces {old:?} -> {new:?}"),
         }
     }
 }
 
-/// `p` with its first value dropped and a value it lacks appended.
+/// `p` with its first value dropped and a value it lacks appended; for a
+/// float, the dropped value spelled another way, a value of its own.
 fn shift(p: &TaskParameter) -> TaskParameter {
     match p {
         TaskParameter::Int {
@@ -749,9 +757,20 @@ fn shift(p: &TaskParameter) -> TaskParameter {
                 .chain(["/shifted".to_string()])
                 .collect(),
         },
-        TaskParameter::Float { range } => TaskParameter::Float {
-            range: range.iter().skip(1).cloned().collect(),
-        },
+        TaskParameter::Float { range } => {
+            let respelled = range.first().and_then(|v| {
+                let text = v.value().to_string();
+                let text = if text.contains('.') {
+                    format!("{text}0")
+                } else {
+                    format!("{text}.0")
+                };
+                Float64::with_str(v.value(), text).ok()
+            });
+            TaskParameter::Float {
+                range: range.iter().skip(1).cloned().chain(respelled).collect(),
+            }
+        }
         other => other.clone(),
     }
 }
@@ -791,6 +810,7 @@ fn tasks_of(boxes: &[TaskBox]) -> Option<std::collections::BTreeSet<String>> {
     Some(all)
 }
 
+/// Parameter-space invariants. Returns a few task parameter sets to resolve.
 fn check_param_space(step: &Step) -> Vec<TaskParameterSet> {
     let Some(space) = &step.parameter_space else {
         return vec![TaskParameterSet::new()];

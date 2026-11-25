@@ -35,7 +35,7 @@ Each node has a `segment` (its path step from the parent, such as
 
 | status | meaning | expanded |
 |---|---|---|
-| `Unchanged` | both sides present and equal under the model's `PartialEq` | no |
+| `Unchanged` | both sides present and equal under the model's `PartialEq`, with the parameter space exception in "Order" | no |
 | `Modified` | both sides present and not equal | yes |
 | `Added` | only the new side present | no |
 | `Removed` | only the old side present | no |
@@ -77,11 +77,17 @@ A list's `PartialEq` depends on order, so a list whose shared names are in a
 different relative order records `<collection>.order`, with the shared names
 in each side's order. A pure reorder is then a `Modified` parent with that one
 field change and unchanged children. A map's `PartialEq` ignores order, so
-maps never record an order change and reordered map entries are `Unchanged`.
+reordered job parameters are `Unchanged`.
 
-`Unchanged` means equal under `PartialEq`, which does not imply the same task
-order. A reordered task parameter definition list with no `combination` is
-`Unchanged` although it iterates tasks in another order.
+Task parameter definitions are a map too, but a parameter space with no
+`combination`, or `*`, iterates its tasks in definition order, and task order
+is part of what `job::apply` reports ([task-delta.md](task-delta.md)
+"Order"). So two parameter spaces, and the steps and jobs that hold them,
+compare equal only when they are equal under `PartialEq` and, where neither
+side's `combination` fixes the order, their definitions are in the same
+order. Where both sides iterate in definition order and the shared names are
+in a different relative order, the parameter space records
+`taskParameterDefinitions.order`, with the shared names in each side's order.
 
 ## Resolved symbol tables
 
@@ -142,7 +148,7 @@ unchanged tree writes nothing.
 | EnvironmentScript | `script` | `let`, `embeddedFiles.order` | `onEnter`, `onWrapEnvEnter`, `onWrapTaskRun`, `onWrapEnvExit`, `onExit`, `embeddedFiles[N]` |
 | Action | `onRun`, `onEnter`, ... | `command`, `args`, `timeout`, `cancelation` | none |
 | EmbeddedFile | `embeddedFiles[N]` | `name`, `type`, `filename`, `data`, `runnable`, `endOfLine` | none |
-| ParameterSpace | `parameterSpace` | `combination` | `taskParameterDefinitions[K]` |
+| ParameterSpace | `parameterSpace` | `combination`, `taskParameterDefinitions.order` | `taskParameterDefinitions[K]` |
 | TaskParameter | `taskParameterDefinitions[K]` | `type`, `range`, `chunks` | none |
 | HostRequirements | `hostRequirements` | `amounts.order`, `amounts[N]` (or `amounts`), `attributes.order`, `attributes[N]` (or `attributes`) | none |
 

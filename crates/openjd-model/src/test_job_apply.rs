@@ -345,7 +345,7 @@ fn a_job_whose_steps_have_no_order_is_an_error() {
 
 /// Every kind, indexed by `index`, whose exhaustive match fails to compile
 /// when a kind is added.
-const ALL: [MutationKind; 19] = [
+const ALL: [MutationKind; 20] = [
     MutationKind::JobMetadata,
     MutationKind::JobExtensions,
     MutationKind::StepReorder,
@@ -364,6 +364,7 @@ const ALL: [MutationKind; 19] = [
     MutationKind::StepParameterSpace,
     MutationKind::TasksAdded,
     MutationKind::TasksRemoved,
+    MutationKind::TasksReordered,
     MutationKind::TasksReplaced,
 ];
 
@@ -388,7 +389,8 @@ fn index(kind: MutationKind) -> usize {
         StepParameterSpace => 15,
         TasksAdded => 16,
         TasksRemoved => 17,
-        TasksReplaced => 18,
+        TasksReordered => 18,
+        TasksReplaced => 19,
     }
 }
 
@@ -408,6 +410,8 @@ fn single_edits() {
         j
     };
     let edit = |from: &str, to: &str| job(&edited(BASE, from, to));
+    let frame = "- {name: Frame, type: INT, range: \"1-{{Param.Last}}\"}";
+    let eye = "- {name: Eye, type: STRING, range: [left, right]}";
     let extra = "  - {name: Extra, type: STRING, default: x}\n";
     let with_extra = edit(
         "parameterDefinitions:\n",
@@ -606,7 +610,19 @@ fn single_edits() {
                 "- {name: Frame, type: INT, range: \"1-{{Param.Last}}\"}\n        - {name: Eye, type: STRING, range: [left]}",
             ),
             "1. step Render: modify [StepParameterSpace, TasksReplaced]\n   \
-             replace all tasks: task parameter Eye added\n",
+             replace all tasks: task parameter Eye added, removed or retyped\n",
+        ),
+        (
+            "task parameter definitions reordered",
+            edit(frame, &format!("{frame}\n        {eye}")),
+            edit(frame, &format!("{eye}\n        {frame}")),
+            "1. step Render: modify [StepParameterSpace, TasksReordered]\n",
+        ),
+        (
+            "task values reordered",
+            edit("range: \"1-{{Param.Last}}\"", "range: [1, 2, 3]"),
+            edit("range: \"1-{{Param.Last}}\"", "range: [3, 1, 2]"),
+            "1. step Render: modify [StepParameterSpace, TasksReordered]\n",
         ),
     ];
     let mut planned = BTreeSet::new();

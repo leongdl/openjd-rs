@@ -18,6 +18,7 @@ use openjd_expr::range_expr::IntRange;
 use openjd_expr::value::Float64;
 use openjd_expr::{RangeExpr, MAX_RANGE_EXPR_CHUNKS};
 
+use crate::job::diff::spaces_equal;
 use crate::job::{StepParameterSpace, TaskParamRange, TaskParameter};
 
 /// A set of tasks that is the Cartesian product of one value list per task
@@ -80,8 +81,6 @@ fn json<T: serde::Serialize>(v: &T) -> String {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum TaskDelta {
-    /// The spaces are equal.
-    Unchanged,
     /// Both spaces are plain products over the same parameters: the tasks
     /// kept, added and removed.
     Product(ProductDelta),
@@ -104,6 +103,8 @@ pub struct ProductDelta {
     pub added: Vec<TaskBox>,
     /// The tasks only the old space has, as disjoint non-empty boxes.
     pub removed: Vec<TaskBox>,
+    /// Whether the kept tasks iterate in a different relative order.
+    pub reordered: bool,
 }
 
 /// Why [`task_delta`] returned [`TaskDelta::Fallback`]. Each variant with a
@@ -113,20 +114,12 @@ pub struct ProductDelta {
 pub enum FallbackReason {
     /// One side has a parameter space and the other has none.
     SpaceAddedOrRemoved,
-    /// A `combination` other than a product of every parameter once.
+    /// A side is not a plain product of distinct values: a `combination`
+    /// other than a product of every parameter once, a chunked parameter, a
+    /// range that lists a value twice, or a task count past `u64`.
     NotProduct,
-    /// A chunked parameter: its tasks are chunks, not values.
-    Chunked(String),
-    /// A range lists a value twice, so its tasks are not a set.
-    RepeatedValue(String),
-    /// A side's task count does not fit a `u64`.
-    TaskCountOverflow,
-    /// A parameter only the new space has.
-    ParameterAdded(String),
-    /// A parameter only the old space has.
-    ParameterRemoved(String),
-    /// A parameter whose type differs between the spaces.
-    ParameterRetyped(String),
+    /// A parameter only one side has, or whose type differs between them.
+    ParameterMismatch(String),
     /// An `INT` parameter's values, or its kept, added or removed values,
     /// that no range expression holds: more than
     /// [`MAX_RANGE_EXPR_CHUNKS`] runs, or `i64::MIN`.
@@ -137,39 +130,38 @@ impl fmt::Display for FallbackReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SpaceAddedOrRemoved => write!(f, "parameter space added or removed"),
-            Self::NotProduct => write!(f, "combination is not a product of every parameter"),
-            Self::Chunked(n) => write!(f, "task parameter {n} is chunked"),
-            Self::RepeatedValue(n) => write!(f, "task parameter {n} repeats a value"),
-            Self::TaskCountOverflow => write!(f, "task count does not fit 64 bits"),
-            Self::ParameterAdded(n) => write!(f, "task parameter {n} added"),
-            Self::ParameterRemoved(n) => write!(f, "task parameter {n} removed"),
-            Self::ParameterRetyped(n) => write!(f, "task parameter {n} changed type"),
+            Self::NotProduct => write!(f, "parameter space is not a product of distinct values"),
+            Self::ParameterMismatch(n) => write!(f, "task parameter {n} added, removed or retyped"),
             Self::RangeTooComplex(n) => {
-                write!(
-                    f,
-                    "task parameter {n} changes in more runs than a range holds"
-                )
+                write!(f, "task parameter {n} needs more runs than a range holds")
             }
         }
     }
 }
 
 /// The task delta from `old` to `new`, where `None` is a step without a
-/// parameter space. See `specs/model/task-delta.md`.
+/// parameter space; `None` when the spaces are equal as
+/// [`diff_steps`](crate::job::diff::diff_steps) compares them. See
+/// `specs/model/task-delta.md`.
 #[must_use]
-pub fn task_delta(old: Option<&StepParameterSpace>, new: Option<&StepParameterSpace>) -> TaskDelta {
-    if old == new {
-        return TaskDelta::Unchanged;
-    }
-    match product_delta(old, new) {
-        Ok(d) => TaskDelta::Product(d),
-        Err(reason) => TaskDelta::Fallback { reason },
-    }
-}
-
-fn product_delta(
+pub fn task_delta(
     old: Option<&StepParameterSpace>,
     new: Option<&StepParameterSpace>,
+) -> Option<TaskDelta> {
+    match (old, new) {
+        (None, None) => return None,
+        (Some(a), Some(b)) if spaces_equal(a, b) => return None,
+        _ => {}
+    }
+    Some(match product_delta(old, new) {
+        Ok(d) => TaskDelta::Product(d),
+        Err(reason) => TaskDelta::Fallback { reason },
+    })
+}
+
+fn product_delta<'a>(
+    old: Option<&'a StepParameterSpace>,
+    new: Option<&'a StepParameterSpace>,
 ) -> Result<ProductDelta, FallbackReason> {
     let (Some(old), Some(new)) = (old, new) else {
         return Err(FallbackReason::SpaceAddedOrRemoved);
@@ -180,11 +172,12 @@ fn product_delta(
         &old.task_parameter_definitions,
         &new.task_parameter_definitions,
     );
-    if let Some(name) = n.keys().find(|k| !o.contains_key(*k)) {
-        return Err(FallbackReason::ParameterAdded(name.clone()));
-    }
-    if let Some(name) = o.keys().find(|k| !n.contains_key(*k)) {
-        return Err(FallbackReason::ParameterRemoved(name.clone()));
+    if let Some(name) = n
+        .keys()
+        .find(|k| !o.contains_key(*k))
+        .or_else(|| o.keys().find(|k| !n.contains_key(*k)))
+    {
+        return Err(FallbackReason::ParameterMismatch(name.clone()));
     }
     let dims = n
         .iter()
@@ -195,11 +188,37 @@ fn product_delta(
     // added_k is I_0 × … × I_{k-1} × (N_k \ O_k) × N_{k+1} × …, so box k
     // holds the tasks whose first value outside the old space is in
     // dimension k. Removed is the same with the sides swapped.
+    let kept = make_box(dims.iter().map(|d| (d.name, &d.kept)));
+    // With no kept task there is no order to change, and only dimensions
+    // with two or more kept values order the kept tasks.
+    let ordering = |names: Vec<&'a str>| -> Vec<&'a str> {
+        names
+            .into_iter()
+            .filter(|n| dims.iter().any(|d| d.name == *n && values_len(&d.kept) > 1))
+            .collect()
+    };
+    let reordered = !kept.is_empty()
+        && (ordering(dimension_order(old)) != ordering(dimension_order(new))
+            || dims.iter().any(|d| d.reordered));
     Ok(ProductDelta {
-        kept: make_box(dims.iter().map(|d| (d.name, &d.kept))),
+        kept,
         added: side_boxes(&dims, |d| (&d.added, d.new)),
         removed: side_boxes(&dims, |d| (&d.removed, d.old)),
+        reordered,
     })
+}
+
+/// A product space's parameter names, outermost first: the `combination`'s
+/// order, or the definition order when it is absent or `*`.
+fn dimension_order(space: &StepParameterSpace) -> Vec<&str> {
+    match space.combination.as_deref() {
+        Some(c) if c.trim() != "*" => c.split('*').map(str::trim).collect(),
+        _ => space
+            .task_parameter_definitions
+            .keys()
+            .map(String::as_str)
+            .collect(),
+    }
 }
 
 /// The non-empty boxes `k = 0, 1, …` of one side, where `pick` gives a
@@ -224,8 +243,9 @@ fn side_boxes<'a>(
         .collect()
 }
 
-/// One parameter of both spaces, with the values both sides have, and the
-/// values only the new and only the old side have.
+/// One parameter of both spaces, with the values both sides have, the
+/// values only the new and only the old side have, and whether the sides
+/// list the values they share in a different order.
 struct Dim<'a> {
     name: &'a str,
     old: &'a TaskParameter,
@@ -233,6 +253,7 @@ struct Dim<'a> {
     kept: TaskParameter,
     added: TaskParameter,
     removed: TaskParameter,
+    reordered: bool,
 }
 
 fn dim<'a>(
@@ -241,8 +262,9 @@ fn dim<'a>(
     new: &'a TaskParameter,
 ) -> Result<Dim<'a>, FallbackReason> {
     use TaskParameter as P;
-    let (kept, added, removed) = match (old, new) {
+    let (kept, added, removed, reordered) = match (old, new) {
         (P::Int { range: a, .. }, P::Int { range: b, .. }) => {
+            let reordered = int_reordered(a, b);
             let too_complex = || FallbackReason::RangeTooComplex(name.to_string());
             let (a, b) = (
                 int_runs(a).ok_or_else(too_complex)?,
@@ -260,33 +282,37 @@ fn dim<'a>(
                 int(intersect(&b, &a))?,
                 int(subtract(&b, &a))?,
                 int(subtract(&a, &b))?,
+                reordered,
             )
         }
         (P::Float { range: a }, P::Float { range: b }) => {
-            let (k, ad, r) = split(a, b, FloatKey);
+            let (k, ad, r, o) = split(a, b, FloatKey);
             (
                 P::Float { range: k },
                 P::Float { range: ad },
                 P::Float { range: r },
+                o,
             )
         }
         (P::String { range: a }, P::String { range: b }) => {
-            let (k, ad, r) = split(a, b, String::as_str);
+            let (k, ad, r, o) = split(a, b, String::as_str);
             (
                 P::String { range: k },
                 P::String { range: ad },
                 P::String { range: r },
+                o,
             )
         }
         (P::Path { range: a }, P::Path { range: b }) => {
-            let (k, ad, r) = split(a, b, String::as_str);
+            let (k, ad, r, o) = split(a, b, String::as_str);
             (
                 P::Path { range: k },
                 P::Path { range: ad },
                 P::Path { range: r },
+                o,
             )
         }
-        _ => return Err(FallbackReason::ParameterRetyped(name.to_string())),
+        _ => return Err(FallbackReason::ParameterMismatch(name.to_string())),
     };
     Ok(Dim {
         name,
@@ -295,26 +321,57 @@ fn dim<'a>(
         kept,
         added,
         removed,
+        reordered,
     })
 }
 
 /// Kept, added and removed values of a list dimension: the new values the
 /// old side has, the new values it lacks, and the old values the new side
-/// lacks, each in its side's order.
+/// lacks, each in its side's order; and whether the old side lists the kept
+/// values in another order.
 fn split<'a, T: Clone, K: Eq + Hash>(
     old: &'a [T],
     new: &'a [T],
     key: impl Fn(&'a T) -> K,
-) -> (Vec<T>, Vec<T>, Vec<T>) {
+) -> (Vec<T>, Vec<T>, Vec<T>, bool) {
     let old_keys: HashSet<K> = old.iter().map(&key).collect();
     let new_keys: HashSet<K> = new.iter().map(&key).collect();
     let (kept, added): (Vec<&T>, Vec<&T>) = new.iter().partition(|v| old_keys.contains(&key(v)));
     let removed = old.iter().filter(|v| !new_keys.contains(&key(v)));
+    let reordered = !old
+        .iter()
+        .filter(|v| new_keys.contains(&key(v)))
+        .map(&key)
+        .eq(kept.iter().map(|v| key(v)));
     (
         kept.into_iter().cloned().collect(),
         added.into_iter().cloned().collect(),
         removed.cloned().collect(),
+        reordered,
     )
+}
+
+/// Whether two `INT` ranges list their shared values in a different order.
+/// A range expression's values ascend; a list's are in list order.
+fn int_reordered(a: &TaskParamRange<i64>, b: &TaskParamRange<i64>) -> bool {
+    fn kept_order(list: &TaskParamRange<i64>, other: &TaskParamRange<i64>) -> Option<Vec<i64>> {
+        let TaskParamRange::List(v) = list else {
+            return None;
+        };
+        let has: Box<dyn Fn(i64) -> bool + '_> = match other {
+            TaskParamRange::RangeExpr(r) => Box::new(|i| r.contains(i)),
+            TaskParamRange::List(o) => {
+                let set: HashSet<i64> = o.iter().copied().collect();
+                Box::new(move |i| set.contains(&i))
+            }
+        };
+        Some(v.iter().copied().filter(|&i| has(i)).collect())
+    }
+    match (kept_order(a, b), kept_order(b, a)) {
+        (Some(x), Some(y)) => x != y,
+        (Some(x), None) | (None, Some(x)) => !x.is_sorted(),
+        (None, None) => false,
+    }
 }
 
 /// A float compared as `Float64` compares. `Float64` never holds a NaN, so
@@ -341,13 +398,13 @@ fn check_product(space: &StepParameterSpace) -> Result<(), FallbackReason> {
         }
     }
     let mut count = 1u64;
-    for (name, p) in defs {
+    for p in defs.values() {
         let distinct = match p {
             TaskParameter::Int {
                 chunks: Some(_), ..
             }
             | TaskParameter::ChunkInt { .. } => {
-                return Err(FallbackReason::Chunked(name.clone()));
+                return Err(FallbackReason::NotProduct);
             }
             TaskParameter::Int {
                 range: TaskParamRange::RangeExpr(_),
@@ -363,11 +420,11 @@ fn check_product(space: &StepParameterSpace) -> Result<(), FallbackReason> {
             }
         };
         if !distinct {
-            return Err(FallbackReason::RepeatedValue(name.clone()));
+            return Err(FallbackReason::NotProduct);
         }
         count = count
             .checked_mul(values_len(p))
-            .ok_or(FallbackReason::TaskCountOverflow)?;
+            .ok_or(FallbackReason::NotProduct)?;
     }
     Ok(())
 }
@@ -428,13 +485,14 @@ fn int_range(runs: Vec<IntRange>) -> Option<TaskParamRange<i64>> {
         .map(TaskParamRange::RangeExpr)
 }
 
-/// The values both run lists have, as ascending runs.
+/// The values both run lists have, as ascending runs; `None` past
+/// [`MAX_RANGE_EXPR_CHUNKS`] runs.
 fn intersect(a: &[IntRange], b: &[IntRange]) -> Option<Vec<IntRange>> {
     let mut out = Vec::new();
     let (mut i, mut j) = (0, 0);
     while let (Some(x), Some(y)) = (a.get(i), b.get(j)) {
         if let Some(r) = intersect_run(x, y)? {
-            out.push(r);
+            push_run(&mut out, r.start(), r.end(), r.step())?;
         }
         if x.end() < y.end() {
             i += 1;
@@ -462,23 +520,13 @@ fn subtract(a: &[IntRange], b: &[IntRange]) -> Option<Vec<IntRange>> {
             if y.start() > x.end() {
                 break;
             }
-            // `common` is on x's lattice with a step that is a multiple of
-            // x's, so the values of x before it and between its values are
-            // runs of x's step. Each gap is a non-empty run, so `push_run`
-            // bounds the loop.
             let (Some(c), Some(common)) = (cursor, intersect_run(x, y)?) else {
                 continue;
             };
             if let Some(end) = common.start().checked_sub(step) {
                 push_run(&mut out, c, end, step)?;
             }
-            if common.step() != step {
-                let mut v = common.start();
-                while v < common.end() {
-                    push_run(&mut out, v + step, v + common.step() - step, step)?;
-                    v += common.step();
-                }
-            }
+            push_gaps(&mut out, step, &common)?;
             cursor = common.end().checked_add(step);
         }
         if let Some(c) = cursor {
@@ -488,16 +536,58 @@ fn subtract(a: &[IntRange], b: &[IntRange]) -> Option<Vec<IntRange>> {
     Some(out)
 }
 
-/// Append the run `start..=end` unless it is empty; `None` past
-/// [`MAX_RANGE_EXPR_CHUNKS`] runs.
-fn push_run(out: &mut Vec<IntRange>, start: i64, end: i64, step: i64) -> Option<()> {
-    if start <= end {
-        if out.len() >= MAX_RANGE_EXPR_CHUNKS {
-            return None;
-        }
-        out.push(IntRange::new(start, end, step).ok()?);
+/// Append the values of a run with step `step` that lie between the values
+/// of `common`, a run on its lattice whose step is `m` times `step`. For
+/// `m = 2` they are one progression. For `m > 2` they are `m - 1`
+/// interleaved progressions, which no range expression holds, so each gap is
+/// one run and `push_run` bounds the loop.
+fn push_gaps(out: &mut Vec<IntRange>, step: i64, common: &IntRange) -> Option<()> {
+    let (first, last, m_step) = (common.start(), common.end(), common.step());
+    if first == last || m_step == step {
+        return Some(());
+    }
+    if step.checked_mul(2) == Some(m_step) {
+        return push_run(out, first + step, last - step, m_step);
+    }
+    let mut v = first;
+    while v < last {
+        push_run(out, v + step, v + m_step - step, step)?;
+        v += m_step;
     }
     Some(())
+}
+
+/// Append the run `start..=end` unless it is empty, merging it into the last
+/// run when the two continue one progression; `None` past
+/// [`MAX_RANGE_EXPR_CHUNKS`] runs.
+fn push_run(out: &mut Vec<IntRange>, start: i64, end: i64, step: i64) -> Option<()> {
+    if start > end {
+        return Some(());
+    }
+    let run = IntRange::new(start, end, step).ok()?;
+    if let Some(last) = out.last_mut() {
+        if let Some(merged) = merge(last, &run) {
+            *last = merged;
+            return Some(());
+        }
+    }
+    if out.len() >= MAX_RANGE_EXPR_CHUNKS {
+        return None;
+    }
+    out.push(run);
+    Some(())
+}
+
+/// `a` and then `b` as one run, when the gap between them is the step of
+/// each that has two or more values.
+fn merge(a: &IntRange, b: &IntRange) -> Option<IntRange> {
+    let gap = b.start().checked_sub(a.end())?;
+    let fits = |r: &IntRange| r.start() == r.end() || r.step() == gap;
+    if fits(a) && fits(b) {
+        IntRange::new(a.start(), b.end(), gap).ok()
+    } else {
+        None
+    }
 }
 
 /// The values two runs share: `Ok(None)` for none, `None` when the result
