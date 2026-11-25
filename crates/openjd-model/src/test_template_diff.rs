@@ -6,6 +6,7 @@
 //! parameter values and the `Display` of the diff, so a case shows every
 //! change the diff reports with its origin.
 
+use crate::job::diff::DiffNode;
 use crate::job::template_diff::{diff_templates, Origin, TemplateDiffError, TemplateInput};
 use crate::template::JobTemplate;
 use crate::types::ModelExtension;
@@ -79,11 +80,23 @@ fn diff(
         &input(&old, &old_values, &old_ctx),
         &input(&new, &new_values, &new_ctx),
     )?;
+    let shown = d.tree.to_string();
+    assert_eq!(d.tree.is_changed(), !shown.is_empty(), "{shown}");
+    assert_unique_segments(d.tree.root());
     let cross = d
         .cross_build_error
         .map(|e| format!("cross: {e}\n"))
         .unwrap_or_default();
-    Ok(format!("{}{cross}", d.tree))
+    Ok(format!("{shown}{cross}"))
+}
+
+/// No node has two children with the same segment.
+fn assert_unique_segments(node: &DiffNode) {
+    let mut seen = std::collections::HashSet::new();
+    for c in &node.children {
+        assert!(seen.insert(&c.segment), "repeated child {}", c.segment);
+        assert_unique_segments(c);
+    }
 }
 
 fn edited(yaml: &str, edits: &[(&str, &str)]) -> String {
@@ -329,6 +342,24 @@ fn definition_fields() {
             "{old} -> {new}"
         );
     }
+}
+
+#[test]
+fn a_step_let_joins_the_step_node_the_job_diff_made() {
+    let old = "specificationVersion: jobtemplate-2023-09\nextensions: [EXPR]\nname: Demo\n\
+               steps:\n  - name: S\n    script: {actions: {onRun: {command: a}}}\n";
+    let new = edited(
+        old,
+        &[
+            ("  - name: S\n", "  - name: S\n    let: [\"x = 1\"]\n"),
+            ("command: a", "command: b"),
+        ],
+    );
+    assert_eq!(
+        diff(old, &new, &[], &[]).unwrap(),
+        "~ steps[S]\n  let: null -> [\"x = 1\"] [template]\n  ~ script\n    ~ onRun\n      \
+         command: \"a\" -> \"b\" [template]\n"
+    );
 }
 
 #[test]
