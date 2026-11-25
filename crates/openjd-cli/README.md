@@ -33,7 +33,7 @@ This places an `openjd` binary on your `PATH`.
 | `openjd check FILE [--extensions EXT...]` | Validate a job or environment template. Exit code 0 on success, non-zero on validation error, with per-field error paths. |
 | `openjd summary FILE [-p NAME=VALUE...]` | Print a human-readable summary of a job: steps, parameters, dependency graph, estimated task count. |
 | `openjd run FILE [-p NAME=VALUE...] [--step NAME] [--task-params ...]` | Instantiate and run a job template locally, streaming action output with timestamps. |
-| `openjd diff OLD [NEW] [-p NAME=VALUE...] [--old-job-param ...] [--new-job-param ...]` | Unstable. Print what differs between the jobs two templates create, or one template creates under two parameter sets. See [`examples/diff/`](examples/diff/README.md). |
+| `openjd diff OLD [NEW] [-p NAME=VALUE...] [--old-job-param ...] [--new-job-param ...]` | Unstable. Print what differs between the jobs two templates create, or one template creates under two parameter sets; `--plan` adds the operations that apply the change to a running job. See [`examples/diff/`](examples/diff/README.md). |
 
 Run `openjd --help` for the full flag list, or `openjd COMMAND --help`
 for a specific command.

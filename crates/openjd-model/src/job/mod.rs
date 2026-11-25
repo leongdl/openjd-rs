@@ -22,6 +22,7 @@
 //! `-0.0 == 0.0`. Types with `f64` fields implement `PartialEq` but not
 //! `Eq`.
 
+pub mod apply;
 pub mod create_job;
 pub mod diff;
 pub mod step_dependency_graph;

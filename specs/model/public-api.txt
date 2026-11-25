@@ -144,6 +144,110 @@ pub fn openjd_model::error::ValidationErrors::fmt(&self, &mut core::fmt::Formatt
 pub fn openjd_model::error::path_field(&[openjd_model::error::PathElement], &str) -> alloc::vec::Vec<openjd_model::error::PathElement>
 pub fn openjd_model::error::path_index(&[openjd_model::error::PathElement], usize) -> alloc::vec::Vec<openjd_model::error::PathElement>
 pub mod openjd_model::job
+pub mod openjd_model::job::apply
+#[non_exhaustive] pub enum openjd_model::job::apply::MutationKind
+pub openjd_model::job::apply::MutationKind::EnvAdd
+pub openjd_model::job::apply::MutationKind::EnvMetadata
+pub openjd_model::job::apply::MutationKind::EnvRemove
+pub openjd_model::job::apply::MutationKind::EnvReorder
+pub openjd_model::job::apply::MutationKind::EnvScript
+pub openjd_model::job::apply::MutationKind::EnvSymbols
+pub openjd_model::job::apply::MutationKind::EnvVariables
+pub openjd_model::job::apply::MutationKind::JobExtensions
+pub openjd_model::job::apply::MutationKind::JobMetadata
+pub openjd_model::job::apply::MutationKind::ParameterAdd
+pub openjd_model::job::apply::MutationKind::ParameterRemove
+pub openjd_model::job::apply::MutationKind::ParameterValue
+pub openjd_model::job::apply::MutationKind::StepAdd
+pub openjd_model::job::apply::MutationKind::StepDependencies
+pub openjd_model::job::apply::MutationKind::StepHostRequirements
+pub openjd_model::job::apply::MutationKind::StepMetadata
+pub openjd_model::job::apply::MutationKind::StepRemove
+pub openjd_model::job::apply::MutationKind::StepReorder
+pub openjd_model::job::apply::MutationKind::StepScript
+pub openjd_model::job::apply::MutationKind::StepSymbols
+pub openjd_model::job::apply::MutationKind::TaskCreate
+pub openjd_model::job::apply::MutationKind::TaskReplace
+impl core::clone::Clone for openjd_model::job::apply::MutationKind
+pub fn openjd_model::job::apply::MutationKind::clone(&self) -> openjd_model::job::apply::MutationKind
+impl core::cmp::Eq for openjd_model::job::apply::MutationKind
+impl core::cmp::Ord for openjd_model::job::apply::MutationKind
+pub fn openjd_model::job::apply::MutationKind::cmp(&self, &openjd_model::job::apply::MutationKind) -> core::cmp::Ordering
+impl core::cmp::PartialEq for openjd_model::job::apply::MutationKind
+pub fn openjd_model::job::apply::MutationKind::eq(&self, &openjd_model::job::apply::MutationKind) -> bool
+impl core::cmp::PartialOrd for openjd_model::job::apply::MutationKind
+pub fn openjd_model::job::apply::MutationKind::partial_cmp(&self, &openjd_model::job::apply::MutationKind) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for openjd_model::job::apply::MutationKind
+pub fn openjd_model::job::apply::MutationKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::apply::MutationKind
+pub fn openjd_model::job::apply::MutationKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::apply::MutationKind
+pub fn openjd_model::job::apply::MutationKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::job::apply::MutationKind
+impl core::marker::StructuralPartialEq for openjd_model::job::apply::MutationKind
+#[non_exhaustive] pub enum openjd_model::job::apply::OpAction
+pub openjd_model::job::apply::OpAction::Add
+pub openjd_model::job::apply::OpAction::Modify
+pub openjd_model::job::apply::OpAction::Remove
+pub openjd_model::job::apply::OpAction::Replace
+impl core::clone::Clone for openjd_model::job::apply::OpAction
+pub fn openjd_model::job::apply::OpAction::clone(&self) -> openjd_model::job::apply::OpAction
+impl core::cmp::Eq for openjd_model::job::apply::OpAction
+impl core::cmp::PartialEq for openjd_model::job::apply::OpAction
+pub fn openjd_model::job::apply::OpAction::eq(&self, &openjd_model::job::apply::OpAction) -> bool
+impl core::fmt::Debug for openjd_model::job::apply::OpAction
+pub fn openjd_model::job::apply::OpAction::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::apply::OpAction
+pub fn openjd_model::job::apply::OpAction::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for openjd_model::job::apply::OpAction
+impl core::marker::StructuralPartialEq for openjd_model::job::apply::OpAction
+#[non_exhaustive] pub enum openjd_model::job::apply::OpTarget
+pub openjd_model::job::apply::OpTarget::Job
+pub openjd_model::job::apply::OpTarget::JobEnvironment(alloc::string::String)
+pub openjd_model::job::apply::OpTarget::Parameter(alloc::string::String)
+pub openjd_model::job::apply::OpTarget::Step(alloc::string::String)
+pub openjd_model::job::apply::OpTarget::StepTasks(alloc::string::String)
+impl core::clone::Clone for openjd_model::job::apply::OpTarget
+pub fn openjd_model::job::apply::OpTarget::clone(&self) -> openjd_model::job::apply::OpTarget
+impl core::cmp::Eq for openjd_model::job::apply::OpTarget
+impl core::cmp::PartialEq for openjd_model::job::apply::OpTarget
+pub fn openjd_model::job::apply::OpTarget::eq(&self, &openjd_model::job::apply::OpTarget) -> bool
+impl core::fmt::Debug for openjd_model::job::apply::OpTarget
+pub fn openjd_model::job::apply::OpTarget::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::apply::OpTarget
+pub fn openjd_model::job::apply::OpTarget::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::apply::OpTarget
+#[non_exhaustive] pub struct openjd_model::job::apply::ApplyOp
+pub openjd_model::job::apply::ApplyOp::action: openjd_model::job::apply::OpAction
+pub openjd_model::job::apply::ApplyOp::kinds: alloc::collections::btree::set::BTreeSet<openjd_model::job::apply::MutationKind>
+pub openjd_model::job::apply::ApplyOp::target: openjd_model::job::apply::OpTarget
+impl core::clone::Clone for openjd_model::job::apply::ApplyOp
+pub fn openjd_model::job::apply::ApplyOp::clone(&self) -> openjd_model::job::apply::ApplyOp
+impl core::cmp::Eq for openjd_model::job::apply::ApplyOp
+impl core::cmp::PartialEq for openjd_model::job::apply::ApplyOp
+pub fn openjd_model::job::apply::ApplyOp::eq(&self, &openjd_model::job::apply::ApplyOp) -> bool
+impl core::fmt::Debug for openjd_model::job::apply::ApplyOp
+pub fn openjd_model::job::apply::ApplyOp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::apply::ApplyOp
+pub fn openjd_model::job::apply::ApplyOp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::apply::ApplyOp
+pub struct openjd_model::job::apply::ApplyPlan
+impl openjd_model::job::apply::ApplyPlan
+pub fn openjd_model::job::apply::ApplyPlan::is_empty(&self) -> bool
+pub fn openjd_model::job::apply::ApplyPlan::ops(&self) -> &[openjd_model::job::apply::ApplyOp]
+impl core::clone::Clone for openjd_model::job::apply::ApplyPlan
+pub fn openjd_model::job::apply::ApplyPlan::clone(&self) -> openjd_model::job::apply::ApplyPlan
+impl core::cmp::Eq for openjd_model::job::apply::ApplyPlan
+impl core::cmp::PartialEq for openjd_model::job::apply::ApplyPlan
+pub fn openjd_model::job::apply::ApplyPlan::eq(&self, &openjd_model::job::apply::ApplyPlan) -> bool
+impl core::default::Default for openjd_model::job::apply::ApplyPlan
+pub fn openjd_model::job::apply::ApplyPlan::default() -> openjd_model::job::apply::ApplyPlan
+impl core::fmt::Debug for openjd_model::job::apply::ApplyPlan
+pub fn openjd_model::job::apply::ApplyPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::apply::ApplyPlan
+pub fn openjd_model::job::apply::ApplyPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::job::apply::ApplyPlan
+pub fn openjd_model::job::apply::plan(&openjd_model::job::Job, &openjd_model::job::Job) -> core::result::Result<openjd_model::job::apply::ApplyPlan, openjd_model::error::ModelError>
 pub mod openjd_model::job::create_job
 pub mod openjd_model::job::create_job::parameters
 pub struct openjd_model::job::create_job::parameters::MergedParameterDefinition

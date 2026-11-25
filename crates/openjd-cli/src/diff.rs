@@ -9,6 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use clap::Args;
+use openjd_model::job::apply::{plan, ApplyPlan};
 use openjd_model::job::diff::{diff_jobs, DiffTree};
 use openjd_model::job::Job;
 
@@ -21,7 +22,8 @@ Examples:
   openjd diff job.yaml --old-job-param Frames=1-3 --new-job-param Frames=1-5
   openjd diff old.yaml new.yaml
   openjd diff old.yaml new.yaml --new-job-param file://params.json
-  openjd diff job.yaml --new-job-param Frames=1-5 --exit-code";
+  openjd diff job.yaml --new-job-param Frames=1-5 --exit-code
+  openjd diff old.yaml new.yaml --plan";
 
 #[derive(Args)]
 #[command(after_help = EXAMPLES)]
@@ -55,6 +57,10 @@ pub struct DiffArgs {
     /// Exit 0 when the jobs are equal and 3 when they differ. Errors exit 1
     #[arg(long)]
     pub exit_code: bool,
+
+    /// After the diff, print the numbered operations that apply it to a running job
+    #[arg(long)]
+    pub plan: bool,
 }
 
 /// Run `openjd diff` and return the process exit code.
@@ -65,8 +71,13 @@ pub fn execute(args: DiffArgs) -> Result<i32, Box<dyn std::error::Error>> {
     let new =
         build_side(&args, new_path, &args.new_parameters).map_err(|e| format!("new job: {e}"))?;
     let tree = diff_jobs(&old, &new);
+    let plan = if args.plan {
+        Some(plan(&old, &new)?)
+    } else {
+        None
+    };
     let mut out = std::io::stdout().lock();
-    out.write_all(render(&header(&args), &tree).as_bytes())?;
+    out.write_all(render(&header(&args), &tree, plan.as_ref()).as_bytes())?;
     out.flush()?;
     Ok(if args.exit_code && tree.is_changed() {
         EXIT_CHANGED
@@ -104,9 +115,9 @@ fn header(args: &DiffArgs) -> String {
     }
 }
 
-/// The command's output: `header`, then the tree and a count of the steps it
-/// changes, or `no changes`.
-fn render(header: &str, tree: &DiffTree) -> String {
+/// The command's output: `header`, then the tree, a count of the steps it
+/// changes and, when given, `plan:` and the plan; or `no changes`.
+fn render(header: &str, tree: &DiffTree, plan: Option<&ApplyPlan>) -> String {
     if !tree.is_changed() {
         return format!("{header}\nno changes\n");
     }
@@ -117,5 +128,6 @@ fn render(header: &str, tree: &DiffTree) -> String {
         .filter(|c| c.is_changed() && c.segment.starts_with("steps["))
         .count();
     let noun = if steps == 1 { "step" } else { "steps" };
-    format!("{header}\n{tree}{steps} {noun} changed\n")
+    let plan = plan.map(|p| format!("plan:\n{p}")).unwrap_or_default();
+    format!("{header}\n{tree}{steps} {noun} changed\n{plan}")
 }

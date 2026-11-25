@@ -143,6 +143,44 @@ fn unchanged() {
 }
 
 #[test]
+fn plan_follows_the_diff() {
+    let dir = dir_with(&[]);
+    let (code, stdout, stderr) = openjd(
+        dir.path(),
+        &[
+            "job.yaml",
+            "--new-job-param",
+            "Frames=1-5",
+            "--plan",
+            "--exit-code",
+        ],
+    );
+    assert_eq!((code, stderr.as_str()), (3, ""));
+    assert_eq!(
+        stdout,
+        "job.yaml: old parameters -> new parameters\n\
+         ~ parameters[Frames]\n  value: \"1-3\" -> \"1-5\"\n\
+         ~ steps[Render]\n  ~ parameterSpace\n    ~ taskParameterDefinitions[Frame]\n      \
+         range: \"1-3\" -> \"1-5\"\n\
+         1 step changed\n\
+         plan:\n\
+         1. parameter Frames: modify [ParameterValue]\n\
+         2. tasks of step Render: replace [TaskReplace]\n"
+    );
+}
+
+#[test]
+fn plan_of_equal_jobs_prints_only_no_changes() {
+    let dir = dir_with(&[]);
+    let (code, stdout, stderr) = openjd(dir.path(), &["job.yaml", "--plan"]);
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    assert_eq!(
+        stdout,
+        "job.yaml: old parameters -> new parameters\nno changes\n"
+    );
+}
+
+#[test]
 fn exit_code_is_3_only_when_the_jobs_differ_and_it_is_asked_for() {
     let dir = dir_with(&[]);
     let changed = ["job.yaml", "--new-job-param", "Label=y"];

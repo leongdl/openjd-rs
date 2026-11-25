@@ -14,7 +14,7 @@ parameter change does to the job.
 
 ```
 openjd diff <OLD> [NEW] [-p <PARAM>]... [--old-job-param <PARAM>]... [--new-job-param <PARAM>]...
-            [--environment <FILE>]... [--extensions <EXT>] [--exit-code]
+            [--environment <FILE>]... [--extensions <EXT>] [--exit-code] [--plan]
 ```
 
 | Argument | Description |
@@ -26,6 +26,7 @@ openjd diff <OLD> [NEW] [-p <PARAM>]... [--old-job-param <PARAM>]... [--new-job-
 | `--environment` | Environment template file, for both sides; repeatable. Alias `--env` |
 | `--extensions` | Extensions to support, as for `summary` |
 | `--exit-code` | See "Exit codes" |
+| `--plan` | Also print the plan for applying the diff to a running job; see "Plan" |
 
 Each side's job is built by `job_from_file::create_job_from_file`, the function `summary`
 uses: the template is decoded with the CLI's caller limits, its directory sets relative
@@ -61,6 +62,33 @@ render_v1.yaml -> render_v2.yaml
 
 Output goes to stdout. The command has no `--output` (see "Out of scope").
 
+## Plan
+
+With `--plan`, when the jobs differ, the output ends with a line `plan:` and the
+`Display` of `openjd_model::job::apply::plan` on the two jobs
+([model/job-apply.md](../model/job-apply.md)): one numbered line per operation, naming its
+target, its action and its mutation kinds. A template author sees what a system would do to
+a running job, and which kinds of change it would need to support. When the jobs are equal
+the output is unchanged, since the plan is empty.
+
+```
+$ openjd diff render_v1.yaml render_v2.yaml --plan
+render_v1.yaml -> render_v2.yaml
+~ steps[Render]
+  ~ script
+    ~ onRun
+      command: "render" -> "render-gpu"
++ steps[Encode]
+2 steps changed
+plan:
+1. step Render: modify [StepScript]
+2. step Encode: add [StepAdd]
+3. tasks of step Encode: add [TaskCreate]
+```
+
+`plan` fails only for a job whose steps have no topological order, which `create_job`
+never produces, so `--plan` adds no error case.
+
 ## Exit codes
 
 | case | exit |
@@ -90,5 +118,8 @@ with `--exit-code` must exit 3 unless its output is `no changes`.
   API decision outside this command.
 - Reading a template from stdin. No other command reads one, and a template's directory
   sets relative `PATH` defaults.
+- Which tasks a change keeps, adds or removes. The plan replaces a changed step's tasks
+  whole.
+- Executing the plan, or checking it against the kinds a system supports.
 
 Tests: `crates/openjd-cli/tests/diff_tests.rs`.

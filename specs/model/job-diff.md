@@ -17,8 +17,8 @@ pub fn diff_environments(old: &Environment, new: &Environment) -> DiffTree;
 `diff_steps` and `diff_environments` return the same tree that `diff_jobs`
 builds below that step or environment. They are public so a caller can compare
 one step or environment on its own, such as two steps of one job, or a step
-across jobs whose names differ. A later change uses the tree to plan how to
-apply a change to a running job.
+across jobs whose names differ. `job::apply` plans from the tree how to apply
+a change to a running job ([job-apply.md](job-apply.md)).
 
 Inputs are what `create_job` produces: names unique within each collection,
 no empty optional lists or maps outside the keyed collections (see
@@ -150,8 +150,8 @@ unchanged tree writes nothing.
 
 - Templates. The diff compares created jobs only.
 - Tasks. Which tasks a change adds or removes is not computed.
-- Applying a diff, and any command-line interface. A caller reads an
-  element's name from its `segment` (`collection[name]`).
+- Applying a diff, which `job::apply` plans, and any command-line interface.
+  A caller reads an element's name from its `segment` (`collection[name]`).
 - Options such as a depth limit. `diff_*` always expands every `Modified`
   node.
 

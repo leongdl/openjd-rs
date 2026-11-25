@@ -23,6 +23,8 @@
 //!   iteration, `get(i)` equals the i-th iterated set, and every iterated set
 //!   passes `contains` / `validate_containment`.
 //! - **Topological order** respects every declared dependency.
+//! - **Apply plan order**: a plan adds steps dependencies first and removes
+//!   them dependents first, and a job planned against itself is empty.
 
 use crate::gen::template::{environment_template, job_template, ParamInfo};
 use crate::gen::{self, one_in, pick, upto};
@@ -33,6 +35,7 @@ use openjd_expr::{
     ExprValue, ExpressionError, FormatString, FormatStringOptions, FunctionLibrary, HostContext,
     PathFormat, SymbolTable,
 };
+use openjd_model::job::apply::{plan, ApplyPlan, OpAction, OpTarget};
 use openjd_model::job::diff::{diff_environments, diff_jobs, diff_steps, DiffNode, DiffStatus};
 use openjd_model::job::{Job, Step};
 use openjd_model::template::{EnvironmentTemplate, JobTemplate};
@@ -259,6 +262,7 @@ pub fn pipeline(
             oracle!(j2 == job, "create_job is nondeterministic");
             oracle!(hash_of(&j2) == hash_of(&job), "equal jobs hash differently");
             check_diff(&job);
+            check_plan(&job);
         }
         Err(e) => oracle!(false, "create_job succeeded once then failed: {e}"),
     }
@@ -358,6 +362,66 @@ fn check_diff(job: &Job) {
             && status(&new_name) == Some(DiffStatus::Added),
         "a renamed step is not removed and added:\n{d}"
     );
+}
+
+/// Plan the job against itself, against a copy with its steps reversed, and
+/// to and from a copy with no steps. A job's plan against itself is empty, a
+/// step reorder is one job op, and steps are added dependencies first and
+/// removed dependents first.
+fn check_plan(job: &Job) {
+    let mut reversed = job.clone();
+    reversed.steps.reverse();
+    let mut empty = job.clone();
+    empty.steps.clear();
+    let plans = (
+        plan(job, job),
+        plan(job, &reversed),
+        plan(&empty, job),
+        plan(job, &empty),
+    );
+    let (Ok(same), Ok(reorder), Ok(adds), Ok(removes)) = plans else {
+        oracle!(false, "a created job has no plan: {plans:?}");
+        return;
+    };
+    oracle!(same.is_empty(), "a job's plan against itself:\n{same}");
+    let want = if job.steps.len() > 1 {
+        "1. job: modify [StepReorder]\n"
+    } else {
+        ""
+    };
+    oracle!(
+        reorder.to_string() == want,
+        "a step reorder plans more than one job op:\n{reorder}"
+    );
+    let steps = |p: &ApplyPlan, action: OpAction| -> Vec<String> {
+        p.ops()
+            .iter()
+            .filter_map(|op| match &op.target {
+                OpTarget::Step(name) if op.action == action => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let (added, removed) = (
+        steps(&adds, OpAction::Add),
+        steps(&removes, OpAction::Remove),
+    );
+    oracle!(
+        added.len() == job.steps.len() && removed.len() == job.steps.len(),
+        "not every step is added and removed:\n{adds}\n{removes}"
+    );
+    let at = |list: &[String], name: &str| list.iter().position(|n| n == name);
+    for step in &job.steps {
+        for dep in step.dependencies.iter().flatten() {
+            oracle!(
+                at(&added, &dep.depends_on) < at(&added, &step.name)
+                    && at(&removed, &step.name) < at(&removed, &dep.depends_on),
+                "{} and its dependency {} are out of order:\n{adds}\n{removes}",
+                step.name,
+                dep.depends_on
+            );
+        }
+    }
 }
 
 fn check_dependencies(job: &Job) {

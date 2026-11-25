@@ -51,4 +51,6 @@ mod test_expr_param_constraints;
 #[cfg(test)]
 mod test_instantiate_and_display;
 #[cfg(test)]
+mod test_job_apply;
+#[cfg(test)]
 mod test_job_diff;

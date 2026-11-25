@@ -40,6 +40,7 @@ openjd_model              — crate root re-exports, the main public surface
 ├── format_string         — re-exported from openjd_expr
 ├── job                   — instantiated (resolved) job types
 │   ├── create_job        — pipeline functions + MergedParameterDefinition
+│   ├── apply             — unstable plan for applying a job diff
 │   ├── diff              — unstable diff of jobs, steps, environments
 │   ├── step_param_space  — StepParameterSpaceIterator
 │   └── step_dependency_graph — StepDependencyGraph + friends
@@ -1324,6 +1325,57 @@ pub struct FieldChange {
 - `DiffNode::is_changed` says whether the node's status is not `Unchanged`.
 - `DiffNode::child` returns the child with the given segment, written as the
   diff formats it, such as `steps[Render]`.
+
+## Job Apply (unstable)
+
+**Status: unstable.** `job::apply` may change or be removed in any release
+without notice. Semantics: [job-apply.md](job-apply.md).
+
+```rust
+pub fn plan(old: &Job, new: &Job) -> Result<ApplyPlan, ModelError>;
+
+#[derive(Default)]
+pub struct ApplyPlan { /* private */ }
+impl ApplyPlan {
+    pub fn ops(&self) -> &[ApplyOp];
+    pub fn is_empty(&self) -> bool;
+}
+impl Display for ApplyPlan;
+
+#[non_exhaustive]
+pub struct ApplyOp {
+    pub target: OpTarget,
+    pub action: OpAction,
+    pub kinds: BTreeSet<MutationKind>,
+}
+impl Display for ApplyOp;
+
+#[non_exhaustive]
+pub enum OpTarget { Job, Parameter(String), JobEnvironment(String), Step(String), StepTasks(String) }
+
+#[non_exhaustive]
+pub enum OpAction { Add, Modify, Remove, Replace }
+
+#[non_exhaustive]
+pub enum MutationKind {
+    JobMetadata, JobExtensions, StepReorder, EnvReorder,
+    ParameterAdd, ParameterRemove, ParameterValue,
+    EnvAdd, EnvRemove, EnvMetadata, EnvVariables, EnvScript, EnvSymbols,
+    StepAdd, StepRemove, StepMetadata, StepScript, StepHostRequirements,
+    StepDependencies, StepSymbols, TaskCreate, TaskReplace,
+}
+```
+
+- `plan` returns the operations that change a running job from `old` to
+  `new`, in the order a system applies them. It fails with the
+  `StepDependencyGraph` error when either job's steps depend on an unknown step
+  or form a cycle.
+- `ApplyPlan::ops` returns the operations in order; `is_empty` says whether
+  there are none. `Display` writes one numbered line per op.
+- `ApplyOp` names its target by name, how it changes it, and what it changes.
+  `kinds` is never empty. `Display` writes `{target}: {action} [{kinds}]`.
+- `OpTarget`, `OpAction` and `MutationKind` implement `Display`; a kind
+  displays as its variant name.
 
 ## Step Dependency Graph
 
