@@ -52,6 +52,7 @@ src/
     │   └── ranges.rs         # Range expression evaluation
     ├── apply.rs              # Unstable plan for applying a job diff
     ├── task_delta.rs         # Unstable task delta of a parameter space change
+    ├── template_diff.rs      # Unstable template diff: the origin of each job diff change
     ├── diff.rs               # Unstable job/step/environment diff
     ├── step_param_space.rs   # Lazy parameter space iteration
     └── step_dependency_graph.rs # Step dependency graph

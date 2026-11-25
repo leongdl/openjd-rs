@@ -44,6 +44,7 @@ openjd_model              — crate root re-exports, the main public surface
 │   ├── diff              — unstable diff of jobs, steps, environments
 │   ├── step_param_space  — StepParameterSpaceIterator
 │   ├── task_delta        — unstable delta of the tasks a parameter space change keeps
+│   ├── template_diff     — unstable job diff of two templates, with each change's origin
 │   └── step_dependency_graph — StepDependencyGraph + friends
 ├── symbol_table          — re-exported from openjd_expr
 ├── template              — unresolved/parsed template types (public module)
@@ -1304,6 +1305,7 @@ pub struct DiffNode {
     pub status: DiffStatus,
     pub field_changes: Vec<FieldChange>,
     pub children: Vec<DiffNode>,
+    pub origin: Option<Origin>,
 }
 impl DiffNode {
     pub fn is_changed(&self) -> bool;
@@ -1318,6 +1320,7 @@ pub struct FieldChange {
     pub field: String,
     pub before: serde_json::Value,
     pub after: serde_json::Value,
+    pub origin: Option<Origin>,
 }
 ```
 
@@ -1326,6 +1329,8 @@ pub struct FieldChange {
 - `DiffNode::is_changed` says whether the node's status is not `Unchanged`.
 - `DiffNode::child` returns the child with the given segment, written as the
   diff formats it, such as `steps[Render]`.
+- `origin` is `None` in a tree from `diff_*`. `diff_templates` sets it on every
+  field change and on every added or removed node.
 
 ## Job Apply (unstable)
 
@@ -1438,6 +1443,58 @@ impl Display for FallbackReason;
   writes `name=values` per parameter, comma-separated.
 - `FallbackReason` displays as a short phrase naming the parameter, such as
   `task parameter Eye added, removed or retyped`.
+
+## Template Diff (unstable)
+
+**Status: unstable.** `job::template_diff` may change or be removed in any
+release without notice. Semantics: [template-diff.md](template-diff.md).
+
+```rust
+pub fn diff_templates(old: &TemplateInput<'_>, new: &TemplateInput<'_>) -> Result<TemplateDiff, TemplateDiffError>;
+
+pub struct TemplateInput<'a> {
+    pub template: &'a JobTemplate,
+    pub environments: &'a [EnvironmentTemplate],
+    pub parameters: &'a JobParameterInputValues,
+    pub path_options: PathParameterOptions<'a>,
+    pub ctx: &'a ValidationContext,
+}
+impl TemplateInput<'_> {
+    pub fn build(&self) -> Result<Job, ModelError>;
+}
+
+#[non_exhaustive]
+pub struct TemplateDiff {
+    pub tree: DiffTree,
+    pub old: Job,
+    pub new: Job,
+    pub cross_build_error: Option<ModelError>,
+}
+
+#[non_exhaustive]
+pub enum TemplateDiffError { Old(ModelError), New(ModelError) }
+impl Display for TemplateDiffError;
+impl Error for TemplateDiffError;
+
+#[non_exhaustive]
+pub enum Origin { Template, Parameters, Both }
+impl Display for Origin;
+```
+
+- `diff_templates` builds both sides' jobs and diffs them. Every field change
+  and every added or removed node in `tree` has an `origin`, and `tree` also
+  holds the template changes the jobs cannot show, with origin `Template`. It
+  fails with `TemplateDiffError::Old` when the old side's job does not build,
+  else with `New` for the new side's; the error displays as `old job: …` or
+  `new job: …`.
+- `TemplateInput` is one side: `parameters` are the values as given, before
+  defaults. `build` runs `preprocess_job_parameters` and `create_job`, and
+  returns the first error.
+- `TemplateDiff::old` and `new` are the two jobs, for `job::apply::plan`.
+  `cross_build_error` is the error of the job origins come from, the new side
+  with the old values, when it did not build; every change the jobs show is
+  then `Both`.
+- `Origin` displays as `template`, `parameters` or `both`.
 
 ## Step Dependency Graph
 

@@ -10,11 +10,12 @@ use std::path::{Path, PathBuf};
 
 use clap::Args;
 use openjd_model::job::apply::{plan, ApplyOp, ApplyPlan, OpTarget};
-use openjd_model::job::diff::{diff_jobs, DiffTree};
 use openjd_model::job::task_delta::{TaskBox, TaskDelta};
-use openjd_model::job::Job;
+use openjd_model::job::template_diff::{diff_templates, TemplateDiff};
 
-/// The exit code of `--exit-code` when the jobs differ. `openjd` exits 1 on
+use crate::job_from_file::TemplateFile;
+
+/// The exit code of `--exit-code` when the diff has a change. `openjd` exits 1 on
 /// any error and clap exits 2 on a usage error, so a difference gets 3.
 const EXIT_CHANGED: i32 = 3;
 
@@ -55,7 +56,7 @@ pub struct DiffArgs {
     #[arg(long = "environment", alias = "env")]
     pub environments: Vec<PathBuf>,
 
-    /// Exit 0 when the jobs are equal and 3 when they differ. Errors exit 1
+    /// Exit 0 when the diff has no change and 3 when it has one. Errors exit 1
     #[arg(long)]
     pub exit_code: bool,
 
@@ -68,41 +69,35 @@ pub struct DiffArgs {
 pub fn execute(args: DiffArgs) -> Result<i32, Box<dyn std::error::Error>> {
     let new_path = args.new.as_ref().unwrap_or(&args.old);
     let old =
-        build_side(&args, &args.old, &args.old_parameters).map_err(|e| format!("old job: {e}"))?;
+        load_side(&args, &args.old, &args.old_parameters).map_err(|e| format!("old job: {e}"))?;
     let new =
-        build_side(&args, new_path, &args.new_parameters).map_err(|e| format!("new job: {e}"))?;
-    let tree = diff_jobs(&old, &new);
-    let plan = plan(&old, &new)?;
+        load_side(&args, new_path, &args.new_parameters).map_err(|e| format!("new job: {e}"))?;
+    let diff = diff_templates(&old.input(), &new.input())?;
+    let plan = plan(&diff.old, &diff.new)?;
     let mut out = std::io::stdout().lock();
-    out.write_all(render(&header(&args), &tree, &plan, args.plan).as_bytes())?;
+    out.write_all(render(&header(&args), &diff, &plan, args.plan).as_bytes())?;
     out.flush()?;
-    Ok(if args.exit_code && tree.is_changed() {
+    Ok(if args.exit_code && diff.tree.is_changed() {
         EXIT_CHANGED
     } else {
         0
     })
 }
 
-/// Create one side's job from `path` with `-p` followed by that side's
+/// Read one side's template file with `-p` followed by that side's
 /// parameters, so a side parameter wins over `-p`.
-fn build_side(
+fn load_side(
     args: &DiffArgs,
     path: &Path,
     side_parameters: &[String],
-) -> Result<Job, Box<dyn std::error::Error>> {
+) -> Result<TemplateFile, Box<dyn std::error::Error>> {
     let parameters: Vec<String> = args
         .parameters
         .iter()
         .chain(side_parameters)
         .cloned()
         .collect();
-    let (_, job) = crate::job_from_file::create_job_from_file(
-        path,
-        &parameters,
-        &args.extensions,
-        &args.environments,
-    )?;
-    Ok(job)
+    TemplateFile::load(path, &parameters, &args.extensions, &args.environments)
 }
 
 fn header(args: &DiffArgs) -> String {
@@ -115,7 +110,8 @@ fn header(args: &DiffArgs) -> String {
 /// The command's output: `header`, then the tree, a `tasks:` block when a
 /// step's tasks change, a count of the steps it changes and, with
 /// `show_plan`, `plan:` and the plan; or `no changes`.
-fn render(header: &str, tree: &DiffTree, plan: &ApplyPlan, show_plan: bool) -> String {
+fn render(header: &str, diff: &TemplateDiff, plan: &ApplyPlan, show_plan: bool) -> String {
+    let tree = &diff.tree;
     if !tree.is_changed() {
         return format!("{header}\nno changes\n");
     }
@@ -132,12 +128,19 @@ fn render(header: &str, tree: &DiffTree, plan: &ApplyPlan, show_plan: bool) -> S
     } else {
         format!("tasks:\n{tasks}")
     };
+    let note = match &diff.cross_build_error {
+        Some(e) => format!(
+            "note: every change the jobs show is [both]: the new template does not build \
+             with the old parameters: {e}\n"
+        ),
+        None => String::new(),
+    };
     let plan = if show_plan {
         format!("plan:\n{plan}")
     } else {
         String::new()
     };
-    format!("{header}\n{tree}{tasks}{steps} {noun} changed\n{plan}")
+    format!("{header}\n{tree}{tasks}{steps} {noun} changed\n{note}{plan}")
 }
 
 /// `{step}: {summary}` for a step op whose tasks are added, removed,

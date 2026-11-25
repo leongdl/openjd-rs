@@ -56,3 +56,5 @@ mod test_job_apply;
 mod test_job_diff;
 #[cfg(test)]
 mod test_task_delta;
+#[cfg(test)]
+mod test_template_diff;

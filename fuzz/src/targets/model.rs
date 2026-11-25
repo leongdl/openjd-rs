@@ -27,6 +27,8 @@
 //!   the dropped value respelled), the kept, added and removed boxes are the
 //!   enumerated intersection and differences, and no added or removed box is
 //!   empty.
+//! - **Template diff**: a template diffed against itself is unchanged, and an
+//!   edit to it under the same values is all the template's.
 //! - **Topological order** respects every declared dependency.
 //! - **Apply plan order**: a plan adds steps dependencies first and removes
 //!   them dependents first, a job planned against itself is empty, and only a
@@ -45,8 +47,9 @@ use openjd_expr::{
 use openjd_model::job::apply::{plan, ApplyPlan, OpAction, OpTarget};
 use openjd_model::job::diff::{diff_environments, diff_jobs, diff_steps, DiffNode, DiffStatus};
 use openjd_model::job::task_delta::{task_delta, TaskBox, TaskDelta};
+use openjd_model::job::template_diff::{diff_templates, Origin, TemplateInput};
 use openjd_model::job::{Job, Step, StepParameterSpace, TaskParamRange, TaskParameter};
-use openjd_model::template::{EnvironmentTemplate, JobTemplate};
+use openjd_model::template::{Description, EnvironmentTemplate, JobTemplate};
 use openjd_model::{
     capabilities, create_job, decode_environment_template, decode_job_template, decode_template,
     evaluate_let_bindings, merge_job_parameter_definitions, preprocess_job_parameters,
@@ -271,6 +274,7 @@ pub fn pipeline(
             oracle!(hash_of(&j2) == hash_of(&job), "equal jobs hash differently");
             check_diff(&job);
             check_plan(&job);
+            check_template_diff(template, env_templates, input, &path_options, &ctx, &job);
         }
         Err(e) => oracle!(false, "create_job succeeded once then failed: {e}"),
     }
@@ -370,6 +374,72 @@ fn check_diff(job: &Job) {
         status(&first.name) == Some(DiffStatus::Removed)
             && status(&new_name) == Some(DiffStatus::Added),
         "a renamed step is not removed and added:\n{d}"
+    );
+}
+
+/// Diff the template against itself, and against a copy whose first step's
+/// description changed, under the same values. The first is unchanged and
+/// builds `job`; every change of the second is the template's, since the
+/// values are the same.
+fn check_template_diff(
+    template: &JobTemplate,
+    env_templates: &[EnvironmentTemplate],
+    input: &JobParameterInputValues,
+    path_options: &PathParameterOptions<'_>,
+    ctx: &openjd_model::ValidationContext,
+    job: &Job,
+) {
+    let side = |template| TemplateInput {
+        template,
+        environments: env_templates,
+        parameters: input,
+        path_options: PathParameterOptions {
+            job_template_dir: path_options.job_template_dir,
+            current_working_dir: path_options.current_working_dir,
+            path_format: path_options.path_format,
+            allow_template_dir_walk_up: path_options.allow_template_dir_walk_up,
+            allow_uri_path_values: path_options.allow_uri_path_values,
+        },
+        ctx,
+    };
+    match diff_templates(&side(template), &side(template)) {
+        Ok(d) => oracle!(
+            !d.tree.is_changed() && d.cross_build_error.is_none() && d.old == *job,
+            "a template diffed against itself:\n{}",
+            d.tree
+        ),
+        Err(e) => oracle!(false, "a template that builds does not diff: {e}"),
+    }
+    let mut edited = template.clone();
+    let Some(step) = edited.steps.first_mut() else {
+        return;
+    };
+    let mut text = step.description.take().map(|d| d.0).unwrap_or_default();
+    text.push('x');
+    step.description = Some(Description(text));
+    let Ok(d) = diff_templates(&side(template), &side(&edited)) else {
+        return;
+    };
+    fn origins(n: &DiffNode, out: &mut Vec<Option<Origin>>) {
+        out.extend(n.field_changes.iter().map(|c| c.origin));
+        for c in &n.children {
+            match c.status {
+                DiffStatus::Added | DiffStatus::Removed => out.push(c.origin),
+                _ => origins(c, out),
+            }
+        }
+    }
+    let mut found = Vec::new();
+    origins(d.tree.root(), &mut found);
+    let shown = d.tree.to_string();
+    oracle!(
+        !found.is_empty()
+            && found.iter().all(|o| *o == Some(Origin::Template))
+            && shown
+                .lines()
+                .filter(|l| !l.trim_start().starts_with('~'))
+                .all(|l| l.ends_with(" [template]")),
+        "a template edit under the same values is not all the template's:\n{shown}"
     );
 }
 

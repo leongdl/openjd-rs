@@ -74,9 +74,9 @@ fn one_template_under_two_parameter_sets() {
     assert_eq!(
         stdout,
         "job.yaml: old parameters -> new parameters\n\
-         ~ parameters[Label]\n  value: \"x\" -> \"y\"\n\
+         ~ parameters[Label]\n  value: \"x\" -> \"y\" [parameters]\n\
          ~ steps[Label]\n  resolvedSymTab[Param.Label]: \
-         {\"type\":\"string\",\"value\":\"x\"} -> {\"type\":\"string\",\"value\":\"y\"}\n\
+         {\"type\":\"string\",\"value\":\"x\"} -> {\"type\":\"string\",\"value\":\"y\"} [parameters]\n\
          1 step changed\n"
     );
 }
@@ -101,9 +101,9 @@ fn shared_parameters_apply_to_both_sides_and_side_parameters_win() {
     assert_eq!(
         stdout,
         "job.yaml: old parameters -> new parameters\n\
-         ~ parameters[Label]\n  value: \"x\" -> \"y\"\n\
+         ~ parameters[Label]\n  value: \"x\" -> \"y\" [parameters]\n\
          ~ steps[Label]\n  resolvedSymTab[Param.Label]: \
-         {\"type\":\"string\",\"value\":\"x\"} -> {\"type\":\"string\",\"value\":\"y\"}\n\
+         {\"type\":\"string\",\"value\":\"x\"} -> {\"type\":\"string\",\"value\":\"y\"} [parameters]\n\
          1 step changed\n"
     );
 }
@@ -117,7 +117,7 @@ fn two_templates() {
     assert_eq!(
         stdout,
         "job.yaml -> new.yaml\n\
-         ~ steps[Label]\n  ~ script\n    ~ onRun\n      command: \"echo\" -> \"print\"\n\
+         ~ steps[Label]\n  ~ script\n    ~ onRun\n      command: \"echo\" -> \"print\" [template]\n\
          1 step changed\n"
     );
 }
@@ -130,7 +130,7 @@ fn changes_outside_steps_count_zero_steps() {
     assert_eq!((code, stderr.as_str()), (0, ""));
     assert_eq!(
         stdout,
-        "job.yaml -> new.yaml\nname: \"Job\" -> \"Renamed\"\n0 steps changed\n"
+        "job.yaml -> new.yaml\nname: \"Job\" -> \"Renamed\" [template]\n0 steps changed\n"
     );
 }
 
@@ -159,9 +159,9 @@ fn plan_follows_the_diff() {
     assert_eq!(
         stdout,
         "job.yaml: old parameters -> new parameters\n\
-         ~ parameters[Frames]\n  value: \"1-3\" -> \"1-5\"\n\
+         ~ parameters[Frames]\n  value: \"1-3\" -> \"1-5\" [parameters]\n\
          ~ steps[Render]\n  ~ parameterSpace\n    ~ taskParameterDefinitions[Frame]\n      \
-         range: \"1-3\" -> \"1-5\"\n\
+         range: \"1-3\" -> \"1-5\" [parameters]\n\
          tasks:\n\
          Render: 3 kept, 2 added, 0 removed\n\
          1 step changed\n\
@@ -189,9 +189,9 @@ fn a_step_whose_tasks_change_gets_a_tasks_block_without_plan() {
     assert_eq!(
         stdout,
         "job.yaml: old parameters -> new parameters\n\
-         ~ parameters[Frames]\n  value: \"1-4\" -> \"3-6\"\n\
+         ~ parameters[Frames]\n  value: \"1-4\" -> \"3-6\" [parameters]\n\
          ~ steps[Render]\n  ~ parameterSpace\n    ~ taskParameterDefinitions[Frame]\n      \
-         range: \"1-4\" -> \"3-6\"\n\
+         range: \"1-4\" -> \"3-6\" [parameters]\n\
          tasks:\n\
          Render: 2 kept, 2 added, 2 removed\n\
          1 step changed\n"
@@ -210,7 +210,7 @@ fn a_change_with_no_task_decomposition_replaces_all_tasks() {
     assert_eq!(
         stdout,
         "job.yaml -> new.yaml\n\
-         ~ steps[Render]\n  ~ parameterSpace\n    + taskParameterDefinitions[Eye]\n\
+         ~ steps[Render]\n  ~ parameterSpace\n    + taskParameterDefinitions[Eye] [template]\n\
          tasks:\n\
          Render: all replaced (task parameter Eye added, removed or retyped)\n\
          1 step changed\n\
@@ -230,7 +230,7 @@ fn a_space_change_that_keeps_every_task_has_no_tasks_line() {
         stdout,
         "job.yaml -> new.yaml\n\
          ~ steps[Render]\n  ~ parameterSpace\n    ~ taskParameterDefinitions[Frame]\n      \
-         range: \"1-3\" -> [1,2,3]\n\
+         range: \"1-3\" -> [1,2,3] [template]\n\
          1 step changed\n\
          plan:\n\
          1. step Render: modify [StepParameterSpace]\n"
@@ -250,7 +250,7 @@ fn reordered_task_parameter_definitions_change_the_task_order() {
         stdout,
         "old.yaml -> new.yaml\n\
          ~ steps[Render]\n  ~ parameterSpace\n    \
-         taskParameterDefinitions.order: [\"Frame\",\"Eye\"] -> [\"Eye\",\"Frame\"]\n\
+         taskParameterDefinitions.order: [\"Frame\",\"Eye\"] -> [\"Eye\",\"Frame\"] [template]\n\
          tasks:\n\
          Render: order changed\n\
          1 step changed\n\
@@ -281,6 +281,49 @@ fn exit_code_is_3_only_when_the_jobs_differ_and_it_is_asked_for() {
     let (code, stdout, _) = openjd(dir.path(), &["job.yaml", "--exit-code"]);
     assert_eq!(code, 0);
     assert!(stdout.ends_with("no changes\n"), "{stdout}");
+}
+
+#[test]
+fn a_template_change_the_job_cannot_show_is_a_change() {
+    let new = TEMPLATE.replace("default: a}", "default: a, description: The label}");
+    let dir = dir_with(&[("new.yaml", &new)]);
+    let (code, stdout, stderr) = openjd(dir.path(), &["job.yaml", "new.yaml", "--exit-code"]);
+    assert_eq!((code, stderr.as_str()), (3, ""));
+    assert_eq!(
+        stdout,
+        "job.yaml -> new.yaml\n\
+         ~ parameterDefinitions[Label]\n  description: null -> \"The label\" [template]\n\
+         0 steps changed\n"
+    );
+}
+
+#[test]
+fn an_old_value_the_new_template_rejects_makes_every_job_change_both() {
+    let new = TEMPLATE.replace("default: a}", "default: a, allowedValues: [a, y]}");
+    let dir = dir_with(&[("new.yaml", &new)]);
+    let (code, stdout, stderr) = openjd(
+        dir.path(),
+        &[
+            "job.yaml",
+            "new.yaml",
+            "--old-job-param",
+            "Label=x",
+            "--new-job-param",
+            "Label=y",
+        ],
+    );
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    assert_eq!(
+        stdout,
+        "job.yaml -> new.yaml\n\
+         ~ parameterDefinitions[Label]\n  allowedValues: null -> [\"a\",\"y\"] [template]\n\
+         ~ parameters[Label]\n  value: \"x\" -> \"y\" [both]\n\
+         ~ steps[Label]\n  resolvedSymTab[Param.Label]: \
+         {\"type\":\"string\",\"value\":\"x\"} -> {\"type\":\"string\",\"value\":\"y\"} [both]\n\
+         1 step changed\n\
+         note: every change the jobs show is [both]: the new template does not build with \
+         the old parameters: Validation error: Parameter 'Label': value 'x' is not in allowed values\n"
+    );
 }
 
 #[test]
@@ -338,7 +381,7 @@ fn environment_parameters_apply_to_both_sides() {
     assert_eq!(
         stdout,
         "job.yaml: old parameters -> new parameters\n\
-         ~ parameters[EnvParam]\n  value: \"a\" -> \"b\"\n\
+         ~ parameters[EnvParam]\n  value: \"a\" -> \"b\" [parameters]\n\
          0 steps changed\n"
     );
 }
@@ -352,13 +395,13 @@ fn removed_and_renamed_steps_count_as_removed_and_added() {
     assert_eq!((code, stderr.as_str()), (0, ""));
     assert_eq!(
         stdout,
-        "job.yaml -> removed.yaml\n- steps[Label]\n1 step changed\n"
+        "job.yaml -> removed.yaml\n- steps[Label] [template]\n1 step changed\n"
     );
     let (code, stdout, stderr) = openjd(dir.path(), &["job.yaml", "renamed.yaml"]);
     assert_eq!((code, stderr.as_str()), (0, ""));
     assert_eq!(
         stdout,
-        "job.yaml -> renamed.yaml\n- steps[Label]\n+ steps[Print]\n2 steps changed\n"
+        "job.yaml -> renamed.yaml\n- steps[Label] [template]\n+ steps[Print] [template]\n2 steps changed\n"
     );
 }
 
@@ -373,7 +416,7 @@ fn a_pure_step_reorder_counts_zero_steps() {
     assert_eq!(
         stdout,
         "job.yaml -> reordered.yaml\n\
-         steps.order: [\"Render\",\"Label\"] -> [\"Label\",\"Render\"]\n\
+         steps.order: [\"Render\",\"Label\"] -> [\"Label\",\"Render\"] [template]\n\
          0 steps changed\n"
     );
 }
@@ -405,7 +448,13 @@ fn each_template_sets_its_own_relative_path_defaults() {
     // The values are JSON strings, so a Windows separator is written `\\`.
     let sep = if cfg!(windows) { "\\\\" } else { "/" };
     assert!(old.ends_with(&format!("{sep}out\"")), "{old}");
-    assert_eq!(new, old.replace("out\"", &format!("sub{sep}out\"")));
+    assert_eq!(
+        new,
+        format!(
+            "{} [template]",
+            old.replace("out\"", &format!("sub{sep}out\""))
+        )
+    );
 }
 
 #[test]
@@ -438,7 +487,7 @@ fn a_path_parameter_may_be_a_uri() {
     assert_eq!(
         stdout,
         "path.yaml: old parameters -> new parameters\n\
-         ~ parameters[Out]\n  value: \"s3://bucket/a\" -> \"s3://bucket/b\"\n\
+         ~ parameters[Out]\n  value: \"s3://bucket/a\" -> \"s3://bucket/b\" [parameters]\n\
          0 steps changed\n"
     );
 }
@@ -466,7 +515,7 @@ fn an_environment_float_parameter_reads_a_json_integer_as_a_float() {
     assert_eq!(
         stdout,
         "job.yaml: old parameters -> new parameters\n\
-         ~ parameters[F]\n  value: \"2.0\" -> \"3.0\"\n\
+         ~ parameters[F]\n  value: \"2.0\" -> \"3.0\" [parameters]\n\
          0 steps changed\n"
     );
 }

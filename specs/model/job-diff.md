@@ -31,7 +31,9 @@ attribute every change.
 A `DiffTree` is a tree of `DiffNode`s. The root compares the two arguments.
 Each node has a `segment` (its path step from the parent, such as
 `steps[Render]` or `script`; empty for the root), a `DiffStatus`, its own
-`field_changes`, and its `children`.
+`field_changes`, and its `children`. A `FieldChange`, and an added or removed
+node, has an `origin`, which `diff_*` leaves `None` and `job::template_diff`
+sets ([template-diff.md](template-diff.md)).
 
 | status | meaning | expanded |
 |---|---|---|
@@ -126,7 +128,8 @@ differs only in how it displays (`5,6` and `5-6`) is not a `range` change.
 child is a line with `~` (modified), `+` (added) or `-` (removed) and its
 segment; each field change is a line `field: before -> after`, values as
 compact JSON, under its node. A node's field lines come before its children,
-in the order "Tree shape" lists the fields. The root has no line, and an
+in the order "Tree shape" lists the fields. A field change or node with an
+`origin` ends its line with ` [origin]`. The root has no line, and an
 unchanged tree writes nothing.
 
 ```
@@ -154,7 +157,8 @@ unchanged tree writes nothing.
 
 ## Out of scope
 
-- Templates. The diff compares created jobs only.
+- Templates. The diff compares created jobs only; `job::template_diff` diffs
+  templates through their jobs ([template-diff.md](template-diff.md)).
 - Tasks. `job::task_delta` says which tasks a parameter space change keeps, adds
   and removes ([task-delta.md](task-delta.md)).
 - Applying a diff, which `job::apply` plans, and any command-line interface.

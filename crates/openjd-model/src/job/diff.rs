@@ -17,6 +17,7 @@ use openjd_expr::value::Float64;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::job::template_diff::Origin;
 use crate::job::{
     Action, EmbeddedFile, Environment, EnvironmentActions, EnvironmentScript, HostRequirements,
     Job, JobParameter, ResolvedChunks, Step, StepActions, StepParameterSpace, StepScript,
@@ -54,6 +55,9 @@ pub struct FieldChange {
     pub before: Value,
     /// The new value as JSON; `null` when the field is absent.
     pub after: Value,
+    /// What caused the change: `None` from `diff_*`, set by
+    /// [`diff_templates`](crate::job::template_diff::diff_templates).
+    pub origin: Option<Origin>,
 }
 
 /// One node of a [`DiffTree`]: the comparison of one pair of model values.
@@ -70,6 +74,10 @@ pub struct DiffNode {
     /// One node per pair of sub-values, unchanged ones included. Empty
     /// unless `Modified`.
     pub children: Vec<DiffNode>,
+    /// What added or removed the node: set on `Added` and `Removed` nodes by
+    /// [`diff_templates`](crate::job::template_diff::diff_templates), and
+    /// `None` otherwise.
+    pub origin: Option<Origin>,
 }
 
 impl DiffNode {
@@ -85,12 +93,13 @@ impl DiffNode {
         self.children.iter().find(|c| c.segment == segment)
     }
 
-    fn new(segment: String, status: DiffStatus) -> Self {
+    pub(crate) fn new(segment: String, status: DiffStatus) -> Self {
         Self {
             segment,
             status,
             field_changes: Vec::new(),
             children: Vec::new(),
+            origin: None,
         }
     }
 
@@ -107,6 +116,7 @@ impl DiffNode {
                 field: name.to_string(),
                 before: write(a),
                 after: write(b),
+                origin: None,
             });
         }
     }
@@ -185,6 +195,10 @@ impl DiffTree {
     pub fn is_changed(&self) -> bool {
         self.root.is_changed()
     }
+
+    pub(crate) fn root_mut(&mut self) -> &mut DiffNode {
+        &mut self.root
+    }
 }
 
 impl fmt::Display for DiffTree {
@@ -196,7 +210,8 @@ impl fmt::Display for DiffTree {
 fn write_node(f: &mut fmt::Formatter<'_>, node: &DiffNode, depth: usize) -> fmt::Result {
     let indent = "  ".repeat(depth);
     for c in &node.field_changes {
-        writeln!(f, "{indent}{}: {} -> {}", c.field, c.before, c.after)?;
+        write!(f, "{indent}{}: {} -> {}", c.field, c.before, c.after)?;
+        write_origin(f, c.origin)?;
     }
     for child in node.children.iter().filter(|c| c.is_changed()) {
         let mark = match child.status {
@@ -204,10 +219,19 @@ fn write_node(f: &mut fmt::Formatter<'_>, node: &DiffNode, depth: usize) -> fmt:
             DiffStatus::Removed => '-',
             DiffStatus::Unchanged | DiffStatus::Modified => '~',
         };
-        writeln!(f, "{indent}{mark} {}", child.segment)?;
+        write!(f, "{indent}{mark} {}", child.segment)?;
+        write_origin(f, child.origin)?;
         write_node(f, child, depth + 1)?;
     }
     Ok(())
+}
+
+/// End a line, with ` [origin]` when the change has one.
+fn write_origin(f: &mut fmt::Formatter<'_>, origin: Option<Origin>) -> fmt::Result {
+    match origin {
+        Some(o) => writeln!(f, " [{o}]"),
+        None => writeln!(f),
+    }
 }
 
 /// Diff two jobs.
@@ -387,6 +411,7 @@ fn keyed_fields<T: PartialEq + Serialize + ?Sized>(
             field: collection.to_string(),
             before: a,
             after: b,
+            origin: None,
         });
     }
 }

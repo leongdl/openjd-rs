@@ -132,6 +132,7 @@ writes nothing.
 - A store or applier trait that executes the plan.
 - A policy that checks an op's kinds against the ones a system supports.
 - Executing, validating against a store, or resuming a plan.
-- Which changes come from the template and which from the parameters.
+- Which changes come from the template and which from the parameters, which
+  `job::template_diff` says ([template-diff.md](template-diff.md)).
 
 Tests: `crates/openjd-model/src/test_job_apply.rs`.

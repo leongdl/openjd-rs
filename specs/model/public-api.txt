@@ -313,6 +313,7 @@ impl core::marker::StructuralPartialEq for openjd_model::job::diff::DiffStatus
 #[non_exhaustive] pub struct openjd_model::job::diff::DiffNode
 pub openjd_model::job::diff::DiffNode::children: alloc::vec::Vec<openjd_model::job::diff::DiffNode>
 pub openjd_model::job::diff::DiffNode::field_changes: alloc::vec::Vec<openjd_model::job::diff::FieldChange>
+pub openjd_model::job::diff::DiffNode::origin: core::option::Option<openjd_model::job::template_diff::Origin>
 pub openjd_model::job::diff::DiffNode::segment: alloc::string::String
 pub openjd_model::job::diff::DiffNode::status: openjd_model::job::diff::DiffStatus
 impl openjd_model::job::diff::DiffNode
@@ -342,6 +343,7 @@ impl core::marker::StructuralPartialEq for openjd_model::job::diff::DiffTree
 pub openjd_model::job::diff::FieldChange::after: serde_json::value::Value
 pub openjd_model::job::diff::FieldChange::before: serde_json::value::Value
 pub openjd_model::job::diff::FieldChange::field: alloc::string::String
+pub openjd_model::job::diff::FieldChange::origin: core::option::Option<openjd_model::job::template_diff::Origin>
 impl core::clone::Clone for openjd_model::job::diff::FieldChange
 pub fn openjd_model::job::diff::FieldChange::clone(&self) -> openjd_model::job::diff::FieldChange
 impl core::cmp::PartialEq for openjd_model::job::diff::FieldChange
@@ -452,6 +454,46 @@ impl core::fmt::Display for openjd_model::job::task_delta::TaskBox
 pub fn openjd_model::job::task_delta::TaskBox::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for openjd_model::job::task_delta::TaskBox
 pub fn openjd_model::job::task_delta::task_delta(core::option::Option<&openjd_model::job::StepParameterSpace>, core::option::Option<&openjd_model::job::StepParameterSpace>) -> core::option::Option<openjd_model::job::task_delta::TaskDelta>
+pub mod openjd_model::job::template_diff
+#[non_exhaustive] pub enum openjd_model::job::template_diff::Origin
+pub openjd_model::job::template_diff::Origin::Both
+pub openjd_model::job::template_diff::Origin::Parameters
+pub openjd_model::job::template_diff::Origin::Template
+impl core::clone::Clone for openjd_model::job::template_diff::Origin
+pub fn openjd_model::job::template_diff::Origin::clone(&self) -> openjd_model::job::template_diff::Origin
+impl core::cmp::Eq for openjd_model::job::template_diff::Origin
+impl core::cmp::PartialEq for openjd_model::job::template_diff::Origin
+pub fn openjd_model::job::template_diff::Origin::eq(&self, &openjd_model::job::template_diff::Origin) -> bool
+impl core::fmt::Debug for openjd_model::job::template_diff::Origin
+pub fn openjd_model::job::template_diff::Origin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::Origin
+pub fn openjd_model::job::template_diff::Origin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for openjd_model::job::template_diff::Origin
+impl core::marker::StructuralPartialEq for openjd_model::job::template_diff::Origin
+#[non_exhaustive] pub enum openjd_model::job::template_diff::TemplateDiffError
+pub openjd_model::job::template_diff::TemplateDiffError::New(openjd_model::error::ModelError)
+pub openjd_model::job::template_diff::TemplateDiffError::Old(openjd_model::error::ModelError)
+impl core::error::Error for openjd_model::job::template_diff::TemplateDiffError
+impl core::fmt::Debug for openjd_model::job::template_diff::TemplateDiffError
+pub fn openjd_model::job::template_diff::TemplateDiffError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::template_diff::TemplateDiffError
+pub fn openjd_model::job::template_diff::TemplateDiffError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct openjd_model::job::template_diff::TemplateDiff
+pub openjd_model::job::template_diff::TemplateDiff::cross_build_error: core::option::Option<openjd_model::error::ModelError>
+pub openjd_model::job::template_diff::TemplateDiff::new: openjd_model::job::Job
+pub openjd_model::job::template_diff::TemplateDiff::old: openjd_model::job::Job
+pub openjd_model::job::template_diff::TemplateDiff::tree: openjd_model::job::diff::DiffTree
+impl core::fmt::Debug for openjd_model::job::template_diff::TemplateDiff
+pub fn openjd_model::job::template_diff::TemplateDiff::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct openjd_model::job::template_diff::TemplateInput<'a>
+pub openjd_model::job::template_diff::TemplateInput::ctx: &'a openjd_model::types::ValidationContext
+pub openjd_model::job::template_diff::TemplateInput::environments: &'a [openjd_model::template::EnvironmentTemplate]
+pub openjd_model::job::template_diff::TemplateInput::parameters: &'a openjd_model::types::JobParameterInputValues
+pub openjd_model::job::template_diff::TemplateInput::path_options: openjd_model::job::create_job::parameters::PathParameterOptions<'a>
+pub openjd_model::job::template_diff::TemplateInput::template: &'a openjd_model::template::JobTemplate
+impl openjd_model::job::template_diff::TemplateInput<'_>
+pub fn openjd_model::job::template_diff::TemplateInput<'_>::build(&self) -> core::result::Result<openjd_model::job::Job, openjd_model::error::ModelError>
+pub fn openjd_model::job::template_diff::diff_templates(&openjd_model::job::template_diff::TemplateInput<'_>, &openjd_model::job::template_diff::TemplateInput<'_>) -> core::result::Result<openjd_model::job::template_diff::TemplateDiff, openjd_model::job::template_diff::TemplateDiffError>
 pub enum openjd_model::job::CancelationMode
 pub openjd_model::job::CancelationMode::DeferredMode
 pub openjd_model::job::CancelationMode::DeferredMode::mode: openjd_expr::format_string::FormatString

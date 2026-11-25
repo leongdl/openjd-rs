@@ -780,6 +780,7 @@ fn a_job_child_outside_the_planned_collections_is_an_error() {
         status,
         field_changes: Vec::new(),
         children: Vec::new(),
+        origin: None,
     };
     let mut root = node("", DiffStatus::Modified);
     root.children = vec![

@@ -105,6 +105,7 @@ Template parsing, validation, and job creation. Parses YAML/JSON templates, vali
 - **Job diff** (`src/job/diff.rs`) — Unstable structural diff of two instantiated jobs, steps, or environments.
 - **Job apply** (`src/job/apply.rs`) — Unstable plan of the operations that change a running job from one job to another.
 - **Task delta** (`src/job/task_delta.rs`) — Unstable delta of the tasks a parameter space change keeps, adds and removes.
+- **Template diff** (`src/job/template_diff.rs`) — Unstable job diff of two templates and their parameter values, with the origin of each change.
 - **Capabilities** (`src/capabilities.rs`) — Host requirement capability matching.
 
 Spec entry point: `specs/model/README.md`

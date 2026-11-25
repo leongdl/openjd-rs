@@ -22,8 +22,8 @@ src/
 ├── main.rs       # Entry point: Cli/Commands structs, SessionLogger, tokio::main
 ├── check.rs      # CheckArgs + execute(): template validation
 ├── summary.rs    # SummaryArgs + execute(): job/step summary output
-├── diff.rs       # DiffArgs + execute(): job diff of two templates or parameter sets (unstable)
-├── job_from_file.rs # create_job_from_file(): template file and -p arguments to a Job, for summary and diff
+├── diff.rs       # DiffArgs + execute(): template diff of two templates or parameter sets (unstable)
+├── job_from_file.rs # TemplateFile: template file and -p arguments to a TemplateInput or a Job, for summary and diff
 ├── run/
 │   ├── mod.rs    # RunArgs, RunContext, lifecycle primitives
 │   ├── execution.rs # Preflight, step/task execution, reporting phases

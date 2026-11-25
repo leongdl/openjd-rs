@@ -5,10 +5,11 @@ without notice. `openjd --help` lists the command with `(unstable)`.
 
 ## Purpose
 
-`openjd diff` creates two jobs and prints `openjd_model::job::diff::diff_jobs` on them
-([model/job-diff.md](../model/job-diff.md)). It compares two job templates, or one template
-under two sets of job parameters, so a template author can see what an edit or a
-parameter change does to the job.
+`openjd diff` creates two jobs and prints `openjd_model::job::template_diff::diff_templates`
+on them ([model/template-diff.md](../model/template-diff.md)): the job diff of
+[model/job-diff.md](../model/job-diff.md), with what caused each change. It compares two
+job templates, or one template under two sets of job parameters, so a template author can
+see what an edit or a parameter change does to the job, and which of the two did it.
 
 ## Interface
 
@@ -28,11 +29,12 @@ openjd diff <OLD> [NEW] [-p <PARAM>]... [--old-job-param <PARAM>]... [--new-job-
 | `--exit-code` | See "Exit codes" |
 | `--plan` | Also print the plan for applying the diff to a running job; see "Plan" |
 
-Each side's job is built by `job_from_file::create_job_from_file`, the function `summary`
-uses: the template is decoded with the CLI's caller limits, its directory sets relative
-`PATH` defaults, parameters are parsed by `parse_cli_parameters`
-([parameter-parsing.md](parameter-parsing.md)) and checked against the template and the
-environments, and `create_job` builds the job. `run` keeps its own copy of these steps,
+Each side is read by `job_from_file::TemplateFile::load`, as `summary` reads its template:
+the template is decoded with the CLI's caller limits, its directory sets relative `PATH`
+defaults, and parameters are parsed by `parse_cli_parameters`
+([parameter-parsing.md](parameter-parsing.md)). `diff_templates` then checks them against
+the template and the environments and builds each side's job, through the
+`TemplateInput::build` that `summary` also calls. `run` keeps its own copy of these steps,
 because it also loads path-mapping rules and appends the template's help to errors.
 
 A side's parameters are its `-p` values followed by its `--old-job-param` or
@@ -42,12 +44,20 @@ the side flag wins over `-p` wherever it appears on the command line.
 ## Output
 
 The first line names the two sides: `OLD -> NEW`, or `OLD: old parameters -> new
-parameters` when there is one template, each path as given. When the jobs are equal, the
-second and last line is `no changes`. Otherwise the tree's `Display` follows, then a line
-counting the changed, added and removed steps: `1 step changed`, `2 steps changed`, or
-`0 steps changed` when only the job's own fields, parameters or job environments differ.
-A step that is renamed counts twice, as one removed and one added. A pure reorder of the
-steps changes only the job's `steps.order` field, so it counts 0 steps.
+parameters` when there is one template, each path as given. When the diff has no change,
+the second and last line is `no changes`. Otherwise the tree's `Display` follows, then a
+line counting the changed, added and removed steps: `1 step changed`, `2 steps changed`,
+or `0 steps changed` when only the job's own fields, parameters, parameter definitions or
+job environments differ. A step that is renamed counts twice, as one removed and one added.
+A pure reorder of the steps changes only the job's `steps.order` field, so it counts 0
+steps.
+
+Each field change, and each added or removed node, ends with its origin: `[template]`,
+`[parameters]` or `[both]`. A user who changes a template and its parameters at once sees
+which caused what. The tree also has the template changes a job cannot show, such as a
+parameter definition's `default` under `parameterDefinitions[NAME]`, each `[template]`.
+When the origins cannot be split, the counting line is followed by `note: every change the
+jobs show is [both]: the new template does not build with the old parameters: {error}`.
 
 When a step's tasks change, a `tasks:` block follows the tree, before the count, with one
 line `{step}: …` per such step in plan order, read from the `tasks` of the step's op in
@@ -63,24 +73,27 @@ list of its values, gets no line.
 $ openjd diff frames.yaml --old-job-param Frames=1-100 --new-job-param Frames=1-200
 frames.yaml: old parameters -> new parameters
 ~ parameters[Frames]
-  value: "1-100" -> "1-200"
+  value: "1-100" -> "1-200" [parameters]
 ~ steps[Render]
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
-      range: "1-100" -> "1-200"
+      range: "1-100" -> "1-200" [parameters]
 tasks:
 Render: 100 kept, 100 added, 0 removed
 1 step changed
 ```
 
 ```
-$ openjd diff render_v1.yaml render_v2.yaml
+$ openjd diff render_v1.yaml render_v2.yaml --new-job-param Quality=final
 render_v1.yaml -> render_v2.yaml
+~ parameters[Quality]
+  value: "draft" -> "final" [parameters]
 ~ steps[Render]
+  resolvedSymTab[Param.Quality]: {"type":"string","value":"draft"} -> {"type":"string","value":"final"} [parameters]
   ~ script
     ~ onRun
-      command: "render" -> "render-gpu"
-+ steps[Encode]
+      command: "render" -> "render-gpu" [template]
++ steps[Encode] [template]
 2 steps changed
 ```
 
@@ -88,13 +101,15 @@ Output goes to stdout. The command has no `--output` (see "Out of scope").
 
 ## Plan
 
-With `--plan`, when the jobs differ, the output ends with a line `plan:` and the
+With `--plan`, when the diff has a change, the output ends with a line `plan:` and the
 `Display` of `openjd_model::job::apply::plan` on the two jobs
 ([model/job-apply.md](../model/job-apply.md)): one numbered line per operation, naming its
 target, its action and any mutation kinds, followed by its task ops: one indented `add` or
 `remove` line per box of tasks, or `replace all tasks`. A template author sees what a
 system would do to a running job, and which kinds of change it would need to support.
-When the jobs are equal the output is unchanged, since the plan is empty.
+When the diff has no change the output is unchanged, since the plan is empty. A change
+only the template layer shows, such as a parameter definition's `description`, gets no op,
+since the plan compares the jobs.
 
 ```
 $ openjd diff render_v1.yaml render_v2.yaml --plan
@@ -102,8 +117,8 @@ render_v1.yaml -> render_v2.yaml
 ~ steps[Render]
   ~ script
     ~ onRun
-      command: "render" -> "render-gpu"
-+ steps[Encode]
+      command: "render" -> "render-gpu" [template]
++ steps[Encode] [template]
 2 steps changed
 plan:
 1. step Render: modify [StepScript]
@@ -119,16 +134,17 @@ error case.
 
 | case | exit |
 |---|---|
-| success, without `--exit-code` | 0, whether or not the jobs differ |
-| `--exit-code`, jobs equal | 0 |
-| `--exit-code`, jobs differ | 3 |
+| success, without `--exit-code` | 0, whether or not the diff has a change |
+| `--exit-code`, no change | 0 |
+| `--exit-code`, a change | 3 |
 | any error | 1, with `ERROR: …` on stderr |
 | usage error (clap) | 2 |
 
 `git diff --exit-code` exits 1 for a difference, but `openjd` exits 1 for every error, so
 a difference gets the next free code. An error names the side whose job failed to build:
-`ERROR: old job: …` or `ERROR: new job: …`. The old side is built first, so an error in a
-`-p` value names the old side.
+`ERROR: old job: …` or `ERROR: new job: …`. Both sides are read before either job is
+built, and the old side comes first at each stage, so an error in a `-p` value names the
+old side.
 
 ## Examples
 

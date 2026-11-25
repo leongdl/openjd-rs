@@ -16,19 +16,20 @@ and the new side 1-5.
 $ openjd diff frames.yaml --old-job-param Frames=1-3 --new-job-param Frames=1-5
 frames.yaml: old parameters -> new parameters
 ~ parameters[Frames]
-  value: "1-3" -> "1-5"
+  value: "1-3" -> "1-5" [parameters]
 ~ steps[Render]
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
-      range: "1-3" -> "1-5"
+      range: "1-3" -> "1-5" [parameters]
 tasks:
 Render: 3 kept, 2 added, 0 removed
 1 step changed
 ```
 
 `~` marks a changed part of the job, and each `field: before -> after` line is one field
-that differs. A side's parameters that match its template's defaults create the same job,
-so this diff is empty:
+that differs. The tag at the end of the line says what caused it: `[parameters]` here,
+since both sides use the same template. A side's parameters that match its template's
+defaults create the same job, so this diff is empty:
 
 ```console
 $ openjd diff frames.yaml --old-job-param Frames=1-3
@@ -39,7 +40,7 @@ no changes
 ## Two templates
 
 `render_v2.yaml` changes the command `Render` runs and adds an `Encode` step. `+` marks the
-added step.
+added step, and `[template]` says the template edit caused each change.
 
 ```console
 $ openjd diff render_v1.yaml render_v2.yaml
@@ -47,8 +48,8 @@ render_v1.yaml -> render_v2.yaml
 ~ steps[Render]
   ~ script
     ~ onRun
-      command: "render" -> "render-gpu"
-+ steps[Encode]
+      command: "render" -> "render-gpu" [template]
++ steps[Encode] [template]
 2 steps changed
 ```
 
@@ -56,27 +57,54 @@ render_v1.yaml -> render_v2.yaml
 
 `--new-job-param` takes the same forms as `-p`, including a JSON or YAML file. Here the new
 side reads `Frames` and `Quality` from `shot.json`. The `resolvedSymTab` line shows the
-`Render` step reading the changed `Quality`.
+`Render` step reading the changed `Quality`. The template edit and the parameter changes
+land on the same step, and each line keeps its own cause: the command is the template's,
+the frame range and the `Quality` it reads are the parameters'.
 
 ```console
 $ openjd diff render_v1.yaml render_v2.yaml --new-job-param file://shot.json
 render_v1.yaml -> render_v2.yaml
 ~ parameters[Frames]
-  value: "1-3" -> "1-4"
+  value: "1-3" -> "1-4" [parameters]
 ~ parameters[Quality]
-  value: "draft" -> "final"
+  value: "draft" -> "final" [parameters]
 ~ steps[Render]
-  resolvedSymTab[Param.Quality]: {"type":"string","value":"draft"} -> {"type":"string","value":"final"}
+  resolvedSymTab[Param.Quality]: {"type":"string","value":"draft"} -> {"type":"string","value":"final"} [parameters]
   ~ script
     ~ onRun
-      command: "render" -> "render-gpu"
+      command: "render" -> "render-gpu" [template]
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
-      range: "1-3" -> "1-4"
-+ steps[Encode]
+      range: "1-3" -> "1-4" [parameters]
++ steps[Encode] [template]
 tasks:
 Render: 3 kept, 1 added, 0 removed
 2 steps changed
+```
+
+## Template and parameters on one field
+
+`frames_v2.yaml` gives `Frames` a longer default and a description, and the new side sets
+`Frames` itself. A parameter definition is not part of the job, so its changes show under
+`parameterDefinitions[Frames]`, as the template's. The value of `Frames`, and the frame
+range it sets, are `[both]`: the new template alone would make them 1-10, and the new
+value makes them 1-4.
+
+```console
+$ openjd diff frames.yaml frames_v2.yaml --new-job-param Frames=1-4
+frames.yaml -> frames_v2.yaml
+~ parameterDefinitions[Frames]
+  description: null -> "The frames to render" [template]
+  default: "1-3" -> "1-10" [template]
+~ parameters[Frames]
+  value: "1-3" -> "1-4" [both]
+~ steps[Render]
+  ~ parameterSpace
+    ~ taskParameterDefinitions[Frame]
+      range: "1-3" -> "1-4" [both]
+tasks:
+Render: 3 kept, 1 added, 0 removed
+1 step changed
 ```
 
 ## A plan for a running job
@@ -92,18 +120,18 @@ changed, and `TasksAdded` that the change adds tasks, which the indented line na
 $ openjd diff render_v1.yaml render_v2.yaml --new-job-param file://shot.json --plan
 render_v1.yaml -> render_v2.yaml
 ~ parameters[Frames]
-  value: "1-3" -> "1-4"
+  value: "1-3" -> "1-4" [parameters]
 ~ parameters[Quality]
-  value: "draft" -> "final"
+  value: "draft" -> "final" [parameters]
 ~ steps[Render]
-  resolvedSymTab[Param.Quality]: {"type":"string","value":"draft"} -> {"type":"string","value":"final"}
+  resolvedSymTab[Param.Quality]: {"type":"string","value":"draft"} -> {"type":"string","value":"final"} [parameters]
   ~ script
     ~ onRun
-      command: "render" -> "render-gpu"
+      command: "render" -> "render-gpu" [template]
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
-      range: "1-3" -> "1-4"
-+ steps[Encode]
+      range: "1-3" -> "1-4" [parameters]
++ steps[Encode] [template]
 tasks:
 Render: 3 kept, 1 added, 0 removed
 2 steps changed
@@ -126,11 +154,11 @@ adds 100:
 $ openjd diff frames.yaml --old-job-param Frames=1-100 --new-job-param Frames=1-200 --plan
 frames.yaml: old parameters -> new parameters
 ~ parameters[Frames]
-  value: "1-100" -> "1-200"
+  value: "1-100" -> "1-200" [parameters]
 ~ steps[Render]
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
-      range: "1-100" -> "1-200"
+      range: "1-100" -> "1-200" [parameters]
 tasks:
 Render: 100 kept, 100 added, 0 removed
 1 step changed
@@ -142,18 +170,18 @@ plan:
 
 ## In a script
 
-`--exit-code` exits 3 when the jobs differ and 0 when they do not, so a script can test
-for a change. Errors exit 1.
+`--exit-code` exits 3 when the diff has a change and 0 when it does not, so a script can
+test for a change. Errors exit 1.
 
 ```console
 $ openjd diff frames.yaml --new-job-param Frames=1-5 --exit-code; echo $?
 frames.yaml: old parameters -> new parameters
 ~ parameters[Frames]
-  value: "1-3" -> "1-5"
+  value: "1-3" -> "1-5" [parameters]
 ~ steps[Render]
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
-      range: "1-3" -> "1-5"
+      range: "1-3" -> "1-5" [parameters]
 tasks:
 Render: 3 kept, 2 added, 0 removed
 1 step changed
