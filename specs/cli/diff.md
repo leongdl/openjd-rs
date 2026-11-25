@@ -22,7 +22,7 @@ openjd diff <OLD> [NEW] [-p <PARAM>]... [--old-job-param <PARAM>]... [--new-job-
 | `OLD` | The old side's job template file |
 | `NEW` | The new side's job template file. When omitted, `OLD` is both sides, which then differ only by their parameters |
 | `-p`, `--job-param` | Job parameter for both sides. Alias `--parameter` |
-| `--old-job-param`, `--new-job-param` | Job parameter for one side. Aliases `--old-parameter`, `--new-parameter` |
+| `--old-job-param`, `--new-job-param` | Job parameter for one side |
 | `--environment` | Environment template file, for both sides; repeatable. Alias `--env` |
 | `--extensions` | Extensions to support, as for `summary` |
 | `--exit-code` | See "Exit codes" |
@@ -31,8 +31,8 @@ Each side's job is built by `job_from_file::create_job_from_file`, the function 
 uses: the template is decoded with the CLI's caller limits, its directory sets relative
 `PATH` defaults, parameters are parsed by `parse_cli_parameters`
 ([parameter-parsing.md](parameter-parsing.md)) and checked against the template and the
-environments, and `create_job` builds the job. `run` builds its job with its own copy of
-these steps.
+environments, and `create_job` builds the job. `run` keeps its own copy of these steps,
+because it also loads path-mapping rules and appends the template's help to errors.
 
 A side's parameters are its `-p` values followed by its `--old-job-param` or
 `--new-job-param` values. `parse_cli_parameters` keeps the last value of a parameter, so
@@ -45,6 +45,8 @@ parameters` when there is one template, each path as given. When the jobs are eq
 second and last line is `no changes`. Otherwise the tree's `Display` follows, then a line
 counting the changed, added and removed steps: `1 step changed`, `2 steps changed`, or
 `0 steps changed` when only the job's own fields, parameters or job environments differ.
+A step that is renamed counts twice, as one removed and one added. A pure reorder of the
+steps changes only the job's `steps.order` field, so it counts 0 steps.
 
 ```
 $ openjd diff render_v1.yaml render_v2.yaml
@@ -77,10 +79,10 @@ a difference gets the next free code. An error names the side whose job failed t
 ## Examples
 
 `crates/openjd-cli/examples/diff/` holds small templates and a `README.md` that walks
-through them with their real output. `openjd diff --help` ends with commands from that
-README. `tests/diff_tests.rs` runs each README command and compares its output with the
-README, fails when a file in the directory is not used by a command, and runs each
-`--help` example, which must also be a README command.
+through them with their real output. `tests/diff_tests.rs` runs each README command and
+compares its output with the README, and fails when a file in the directory is not used
+by a command. A command ending in `; echo $?` also prints its exit code, and a command
+with `--exit-code` must exit 3 unless its output is `no changes`.
 
 ## Out of scope
 

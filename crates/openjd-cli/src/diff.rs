@@ -14,16 +14,14 @@ use openjd_model::job::Job;
 
 /// The exit code of `--exit-code` when the jobs differ. `openjd` exits 1 on
 /// any error and clap exits 2 on a usage error, so a difference gets 3.
-pub const EXIT_CHANGED: i32 = 3;
+const EXIT_CHANGED: i32 = 3;
 
 const EXAMPLES: &str = "\
-Examples, run from crates/openjd-cli/examples/diff in the openjd-rs repository:
-  openjd diff frames.yaml --old-job-param Frames=1-3 --new-job-param Frames=1-5
-  openjd diff render_v1.yaml render_v2.yaml
-  openjd diff render_v1.yaml render_v2.yaml --new-job-param file://shot.json
-  openjd diff frames.yaml --new-job-param Frames=1-5 --exit-code
-
-README.md in that directory walks through them with their output.";
+Examples:
+  openjd diff job.yaml --old-job-param Frames=1-3 --new-job-param Frames=1-5
+  openjd diff old.yaml new.yaml
+  openjd diff old.yaml new.yaml --new-job-param file://params.json
+  openjd diff job.yaml --new-job-param Frames=1-5 --exit-code";
 
 #[derive(Args)]
 #[command(after_help = EXAMPLES)]
@@ -39,11 +37,11 @@ pub struct DiffArgs {
     pub parameters: Vec<String>,
 
     /// Job parameters for the old side only, in the same forms as -p. Applied after -p, so they win
-    #[arg(long = "old-job-param", alias = "old-parameter")]
+    #[arg(long = "old-job-param")]
     pub old_parameters: Vec<String>,
 
     /// Job parameters for the new side only, in the same forms as -p. Applied after -p, so they win
-    #[arg(long = "new-job-param", alias = "new-parameter")]
+    #[arg(long = "new-job-param")]
     pub new_parameters: Vec<String>,
 
     /// Extensions to support (comma-separated). Empty string disables all.

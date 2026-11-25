@@ -23,7 +23,6 @@ src/
 ├── check.rs      # CheckArgs + execute(): template validation
 ├── summary.rs    # SummaryArgs + execute(): job/step summary output
 ├── diff.rs       # DiffArgs + execute(): job diff of two templates or parameter sets (unstable)
-├── common.rs     # Shared helpers: input files, caller limits, extensions, output
 ├── job_from_file.rs # create_job_from_file(): template file and -p arguments to a Job, for summary and diff
 ├── run/
 │   ├── mod.rs    # RunArgs, RunContext, lifecycle primitives

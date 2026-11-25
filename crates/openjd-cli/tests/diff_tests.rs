@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 //! Tests of `openjd diff`, including the curated examples in
-//! `examples/diff/` and the examples its `--help` ends with.
+//! `examples/diff/`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -216,6 +216,146 @@ fn environment_parameters_apply_to_both_sides() {
 }
 
 #[test]
+fn removed_and_renamed_steps_count_as_removed_and_added() {
+    let removed = TEMPLATE[..TEMPLATE.find("  - name: Label").unwrap()].to_string();
+    let renamed = TEMPLATE.replace("- name: Label", "- name: Print");
+    let dir = dir_with(&[("removed.yaml", &removed), ("renamed.yaml", &renamed)]);
+    let (code, stdout, stderr) = openjd(dir.path(), &["job.yaml", "removed.yaml"]);
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    assert_eq!(
+        stdout,
+        "job.yaml -> removed.yaml\n- steps[Label]\n1 step changed\n"
+    );
+    let (code, stdout, stderr) = openjd(dir.path(), &["job.yaml", "renamed.yaml"]);
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    assert_eq!(
+        stdout,
+        "job.yaml -> renamed.yaml\n- steps[Label]\n+ steps[Print]\n2 steps changed\n"
+    );
+}
+
+#[test]
+fn a_pure_step_reorder_counts_zero_steps() {
+    let render = &TEMPLATE
+        [TEMPLATE.find("  - name: Render").unwrap()..TEMPLATE.find("  - name: Label").unwrap()];
+    let reordered = format!("{}{render}", TEMPLATE.replace(render, ""));
+    let dir = dir_with(&[("reordered.yaml", &reordered)]);
+    let (code, stdout, stderr) = openjd(dir.path(), &["job.yaml", "reordered.yaml"]);
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    assert_eq!(
+        stdout,
+        "job.yaml -> reordered.yaml\n\
+         steps.order: [\"Render\",\"Label\"] -> [\"Label\",\"Render\"]\n\
+         0 steps changed\n"
+    );
+}
+
+const PATH_TEMPLATE: &str = "specificationVersion: jobtemplate-2023-09\n\
+    extensions: [EXPR]\n\
+    name: Job\n\
+    parameterDefinitions:\n  - {name: Out, type: PATH, default: ./out}\n\
+    steps:\n  - name: S\n    script: {actions: {onRun: {command: s}}}\n";
+
+#[test]
+fn each_template_sets_its_own_relative_path_defaults() {
+    let dir = dir_with(&[("path.yaml", PATH_TEMPLATE)]);
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/path.yaml"), PATH_TEMPLATE).unwrap();
+    let (code, stdout, stderr) = openjd(dir.path(), &["path.yaml", "sub/path.yaml"]);
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 4, "{stdout}");
+    assert_eq!(
+        lines[..2],
+        ["path.yaml -> sub/path.yaml", "~ parameters[Out]"]
+    );
+    assert_eq!(lines[3], "0 steps changed");
+    let (old, new) = lines[2]
+        .strip_prefix("  value: ")
+        .and_then(|l| l.split_once(" -> "))
+        .unwrap_or_else(|| panic!("{stdout}"));
+    // The values are JSON strings, so a Windows separator is written `\\`.
+    let sep = if cfg!(windows) { "\\\\" } else { "/" };
+    assert!(old.ends_with(&format!("{sep}out\"")), "{old}");
+    assert_eq!(new, old.replace("out\"", &format!("sub{sep}out\"")));
+}
+
+#[test]
+fn a_path_default_may_not_walk_up_from_its_template() {
+    let up = PATH_TEMPLATE.replace("./out", "../out");
+    let dir = dir_with(&[("path.yaml", PATH_TEMPLATE), ("up.yaml", &up)]);
+    let (code, stdout, stderr) = openjd(dir.path(), &["path.yaml", "up.yaml"]);
+    assert_eq!((code, stdout.as_str()), (1, ""));
+    assert!(
+        stderr.starts_with("ERROR: new job: ")
+            && stderr.contains("Walking up from the template directory is not permitted"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_path_parameter_may_be_a_uri() {
+    let dir = dir_with(&[("path.yaml", PATH_TEMPLATE)]);
+    let (code, stdout, stderr) = openjd(
+        dir.path(),
+        &[
+            "path.yaml",
+            "--old-job-param",
+            "Out=s3://bucket/a",
+            "--new-job-param",
+            "Out=s3://bucket/b",
+        ],
+    );
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    assert_eq!(
+        stdout,
+        "path.yaml: old parameters -> new parameters\n\
+         ~ parameters[Out]\n  value: \"s3://bucket/a\" -> \"s3://bucket/b\"\n\
+         0 steps changed\n"
+    );
+}
+
+#[test]
+fn an_environment_float_parameter_reads_a_json_integer_as_a_float() {
+    let env = "specificationVersion: environment-2023-09\n\
+               parameterDefinitions:\n  - {name: F, type: FLOAT, default: 1.5}\n\
+               environment:\n  name: E\n  variables: {V: \"{{Param.F}}\"}\n";
+    let dir = dir_with(&[("env.yaml", env)]);
+    // A JSON number given to a FLOAT is a float, which is written `2.0`, not `2`.
+    let (code, stdout, stderr) = openjd(
+        dir.path(),
+        &[
+            "job.yaml",
+            "--environment",
+            "env.yaml",
+            "--old-job-param",
+            r#"{"F": 2}"#,
+            "--new-job-param",
+            r#"{"F": 3}"#,
+        ],
+    );
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    assert_eq!(
+        stdout,
+        "job.yaml: old parameters -> new parameters\n\
+         ~ parameters[F]\n  value: \"2.0\" -> \"3.0\"\n\
+         0 steps changed\n"
+    );
+}
+
+#[test]
+fn job_creation_enforces_the_cli_argument_length_limit() {
+    let dir = dir_with(&[]);
+    let long = format!("Label={}", "a".repeat(40_000));
+    let (code, stdout, stderr) = openjd(dir.path(), &["job.yaml", "--new-job-param", &long]);
+    assert_eq!((code, stdout.as_str()), (1, ""));
+    assert!(
+        stderr.starts_with("ERROR: new job: ") && stderr.contains("exceeding the maximum of 32768"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn help_marks_the_command_unstable() {
     let output = Command::new(env!("CARGO_BIN_EXE_openjd"))
         .arg("--help")
@@ -233,22 +373,6 @@ fn example_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(EXAMPLE_DIR)
 }
 
-/// The `$ openjd diff ...` commands of the README's `console` blocks.
-fn readme_commands(readme: &str) -> Vec<String> {
-    let mut in_console = false;
-    let mut commands = Vec::new();
-    for line in readme.lines() {
-        if line.starts_with("```") {
-            in_console = line == "```console";
-        } else if in_console {
-            if let Some(command) = line.strip_prefix("$ ") {
-                commands.push(command.to_string());
-            }
-        }
-    }
-    commands
-}
-
 /// `command`'s arguments after `openjd diff`. Commands use no shell quoting.
 fn diff_args(command: &str) -> Vec<&str> {
     let words: Vec<&str> = command.split_whitespace().collect();
@@ -256,21 +380,33 @@ fn diff_args(command: &str) -> Vec<&str> {
     words[2..].to_vec()
 }
 
-/// Run `command` from the example directory. Only `--exit-code` may exit 3.
+/// `command` without a trailing `; echo $?`, and whether it had one.
+fn split_echo(command: &str) -> (&str, bool) {
+    match command.strip_suffix("; echo $?") {
+        Some(command) => (command, true),
+        None => (command, false),
+    }
+}
+
+/// Run `command` from the example directory, and append its exit code when
+/// it ends in `; echo $?`. With `--exit-code` it must exit 3 unless the jobs
+/// are equal; otherwise it must exit 0.
 fn run_example(command: &str) -> String {
+    let (command, echo) = split_echo(command);
     let args = diff_args(command);
     let (code, stdout, stderr) = openjd(&example_dir(), &args);
-    let expected = if args.contains(&"--exit-code") {
-        [0, 3]
+    let expected = if args.contains(&"--exit-code") && !stdout.ends_with("\nno changes\n") {
+        3
     } else {
-        [0, 0]
+        0
     };
-    assert!(
-        expected.contains(&code),
-        "{command} exited {code}: {stderr}"
-    );
+    assert_eq!(code, expected, "{command}: {stderr}");
     assert_eq!(stderr, "", "{command}");
-    stdout
+    if echo {
+        format!("{stdout}{code}\n")
+    } else {
+        stdout
+    }
 }
 
 /// The README with each console block's output replaced by its command's
@@ -289,7 +425,7 @@ fn regenerate_readme(readme: &str) -> (String, Vec<String>) {
                 out.push_str(line);
                 out.push('\n');
                 out.push_str(&run_example(command));
-                for arg in diff_args(command) {
+                for arg in diff_args(split_echo(command).0) {
                     used.push(arg.trim_start_matches("file://").to_string());
                 }
                 skipping = true;
@@ -331,30 +467,4 @@ fn curated_examples_readme_is_up_to_date() {
          it with:\n  {UPDATE}=1 cargo test -p openjd-cli --test diff_tests\n\n\
          --- README:\n{current}\n--- with the real output:\n{updated}"
     );
-}
-
-#[test]
-fn help_examples_run_and_are_in_the_readme() {
-    let output = Command::new(env!("CARGO_BIN_EXE_openjd"))
-        .args(["diff", "--help"])
-        .output()
-        .unwrap();
-    let help = String::from_utf8_lossy(&output.stdout);
-    let examples: Vec<&str> = help
-        .lines()
-        .filter_map(|l| {
-            l.strip_prefix("  ")
-                .filter(|c| c.starts_with("openjd diff "))
-        })
-        .collect();
-    assert!(examples.len() >= 3, "{help}");
-    let readme = std::fs::read_to_string(example_dir().join("README.md")).unwrap();
-    let readme_commands = readme_commands(&readme);
-    for example in examples {
-        assert!(
-            readme_commands.iter().any(|c| c == example),
-            "the --help example `{example}` is not a README command"
-        );
-        run_example(example);
-    }
 }

@@ -60,7 +60,7 @@ side reads `Frames` and `Quality` from `shot.json`. The `resolvedSymTab` line sh
 $ openjd diff render_v1.yaml render_v2.yaml --new-job-param file://shot.json
 render_v1.yaml -> render_v2.yaml
 ~ parameters[Frames]
-  value: "1-3" -> "1-2"
+  value: "1-3" -> "1-4"
 ~ parameters[Quality]
   value: "draft" -> "final"
 ~ steps[Render]
@@ -70,7 +70,7 @@ render_v1.yaml -> render_v2.yaml
       command: "render" -> "render-gpu"
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
-      range: "1-3" -> "1,2"
+      range: "1-3" -> "1-4"
 + steps[Encode]
 2 steps changed
 ```
@@ -81,7 +81,7 @@ render_v1.yaml -> render_v2.yaml
 for a change. Errors exit 1.
 
 ```console
-$ openjd diff frames.yaml --new-job-param Frames=1-5 --exit-code
+$ openjd diff frames.yaml --new-job-param Frames=1-5 --exit-code; echo $?
 frames.yaml: old parameters -> new parameters
 ~ parameters[Frames]
   value: "1-3" -> "1-5"
@@ -90,4 +90,5 @@ frames.yaml: old parameters -> new parameters
     ~ taskParameterDefinitions[Frame]
       range: "1-3" -> "1-5"
 1 step changed
+3
 ```

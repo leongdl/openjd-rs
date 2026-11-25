@@ -245,5 +245,5 @@ re-exported by the public `run` module, and are called by `run` and by
 `crate::run::parse_cli_parameters()` and `crate::run::float_parameter_names()`.
 
 This cross-module dependency exists because `summary`, `diff` and `run` need to parse `-p`
-arguments identically. The function could be extracted to a shared module, but with only
-two callers the current arrangement is simpler.
+arguments identically. The function could be extracted to a shared module, but with one
+caller outside `run` the current arrangement is simpler.
