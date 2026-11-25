@@ -9,6 +9,7 @@
 use std::collections::BTreeSet;
 
 use crate::job::apply::{plan, ApplyPlan, MutationKind, OpAction, OpTarget};
+use crate::job::task_delta::TaskDelta;
 use crate::job::{Job, StepDependency};
 use crate::types::ModelExtension;
 use crate::{create_job, decode_job_template, preprocess_job_parameters, CallerLimits};
@@ -118,8 +119,30 @@ fn a_parameter_space_change_is_a_kind_of_its_step_op() {
     assert_eq!(
         plan_text(&job(BASE), &new),
         "1. parameter Last: modify\n\
-         2. step Render: modify [StepScript, StepParameterSpace]\n"
+         2. step Render: modify [StepScript, StepParameterSpace, TasksAdded]\n   \
+         add 2 tasks: Frame=4,5\n"
     );
+}
+
+#[test]
+fn a_parameter_space_change_carries_its_task_delta() {
+    let p = plan(&job(BASE), &job_with(BASE, &[("Last", "5")])).unwrap();
+    let [param, step] = p.ops() else {
+        panic!("{p}");
+    };
+    assert_eq!(param.tasks, None);
+    let Some(TaskDelta::Product(d)) = &step.tasks else {
+        panic!("{step:?}");
+    };
+    assert_eq!(d.kept.len(), 3);
+    assert_eq!(d.added.len(), 1);
+    assert!(d.removed.is_empty());
+    // Ops other than a step modify of its parameter space carry no delta.
+    let p = plan(&job(BASE), &job(&format!("{BASE}{ENCODE}"))).unwrap();
+    assert!(p.ops().iter().all(|op| op.tasks.is_none()), "{p}");
+    let yaml = edited(BASE, "command: render,", "command: render-gpu,");
+    let p = plan(&job(BASE), &job(&yaml)).unwrap();
+    assert!(p.ops().iter().all(|op| op.tasks.is_none()), "{p}");
 }
 
 const ENCODE: &str = r#"
@@ -322,7 +345,7 @@ fn a_job_whose_steps_have_no_order_is_an_error() {
 
 /// Every kind, indexed by `index`, whose exhaustive match fails to compile
 /// when a kind is added.
-const ALL: [MutationKind; 16] = [
+const ALL: [MutationKind; 19] = [
     MutationKind::JobMetadata,
     MutationKind::JobExtensions,
     MutationKind::StepReorder,
@@ -339,6 +362,9 @@ const ALL: [MutationKind; 16] = [
     MutationKind::StepDependencies,
     MutationKind::StepSymbols,
     MutationKind::StepParameterSpace,
+    MutationKind::TasksAdded,
+    MutationKind::TasksRemoved,
+    MutationKind::TasksReplaced,
 ];
 
 fn index(kind: MutationKind) -> usize {
@@ -360,6 +386,9 @@ fn index(kind: MutationKind) -> usize {
         StepDependencies => 13,
         StepSymbols => 14,
         StepParameterSpace => 15,
+        TasksAdded => 16,
+        TasksRemoved => 17,
+        TasksReplaced => 18,
     }
 }
 
@@ -548,10 +577,36 @@ fn single_edits() {
             "1. step Encode: remove\n",
         ),
         (
-            "task range",
+            "task range grown",
             base.clone(),
             job_with(BASE, &[("Last", "5")]),
-            "1. parameter Last: modify\n2. step Render: modify [StepParameterSpace]\n",
+            "1. parameter Last: modify\n\
+             2. step Render: modify [StepParameterSpace, TasksAdded]\n   \
+             add 2 tasks: Frame=4,5\n",
+        ),
+        (
+            "task range shrunk",
+            base.clone(),
+            job_with(BASE, &[("Last", "2")]),
+            "1. parameter Last: modify\n\
+             2. step Render: modify [StepParameterSpace, TasksRemoved]\n   \
+             remove 1 task: Frame=3\n",
+        ),
+        (
+            "task range written as a list",
+            base.clone(),
+            edit("range: \"1-{{Param.Last}}\"", "range: [1, 2, 3]"),
+            "1. step Render: modify [StepParameterSpace]\n",
+        ),
+        (
+            "task parameter added",
+            base.clone(),
+            edit(
+                "- {name: Frame, type: INT, range: \"1-{{Param.Last}}\"}",
+                "- {name: Frame, type: INT, range: \"1-{{Param.Last}}\"}\n        - {name: Eye, type: STRING, range: [left]}",
+            ),
+            "1. step Render: modify [StepParameterSpace, TasksReplaced]\n   \
+             replace all tasks: task parameter Eye added\n",
         ),
     ];
     let mut planned = BTreeSet::new();

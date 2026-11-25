@@ -27,7 +27,7 @@ lists, so this happens only if the diff gains one.
 
 ## Ops
 
-An `ApplyOp` has a `target`, an `action` and a set of `kinds`.
+An `ApplyOp` has a `target`, an `action`, a set of `kinds`, and `tasks`.
 
 | target | segment it comes from | actions |
 |---|---|---|
@@ -45,6 +45,12 @@ Kinds name what a `Modify` changes inside its target, so a `Modify` of the job,
 a job environment or a step has at least one. An `Add` or `Remove` creates or
 deletes the whole target, and a parameter is one value, so those ops have no
 kinds.
+
+`tasks` is `Some` exactly for a step `Modify` whose `parameterSpace` child
+changed: the `TaskDelta` from the old step's parameter space to the new one's
+([task-delta.md](task-delta.md)). A system keeps the kept tasks with their
+state, creates the added ones and deletes the removed ones, or replaces all of
+them for a `Fallback`.
 
 ## Order
 
@@ -87,7 +93,14 @@ name.
 | `StepHostRequirements` | step child `hostRequirements` |
 | `StepDependencies` | step field `dependencies` |
 | `StepSymbols` | step field `resolvedSymTab[NAME]` or `resolvedSymTab` |
-| `StepParameterSpace` | step child `parameterSpace`: all of the step's tasks are replaced by those of its new parameter space |
+| `StepParameterSpace` | step child `parameterSpace` |
+| `TasksAdded`, `TasksRemoved` | the op's `tasks` is a `Product` with an `added` or a `removed` box |
+| `TasksReplaced` | the op's `tasks` is a `Fallback` |
+
+`StepParameterSpace` says the step's stored parameter space changes; the task
+kinds say what happens to its tasks. A system that stores the space updates it
+even when no task changes, as when a range expression is rewritten as the list
+of its values: that op has `StepParameterSpace` and no task kind.
 
 A step environment's kinds are its step's. A step environment has no symbol
 table of its own (see [job-diff.md](job-diff.md) "Resolved symbol tables"), so
@@ -98,11 +111,17 @@ step's `name` never differs, since elements are matched by name.
 
 `Display` writes one line per op, numbered from 1: `{n}. {target}: {action}`,
 then ` [{kinds}]` when the op has kinds, comma-separated in declaration order.
-An empty plan writes nothing.
+Under an op with `tasks`, it writes the task ops, indented three spaces: `add {n}
+tasks: {box}` for each added box, then `remove {n} tasks: {box}` for each
+removed box (`task` when `n` is 1), or `replace all tasks: {reason}` for a
+`Fallback`. A box displays as `name=values` per parameter, comma-separated: a
+range expression in its canonical form, a list as compact JSON. An empty plan
+writes nothing.
 
 ```
 1. parameter Frames: modify
-2. step Render: modify [StepScript, StepParameterSpace]
+2. step Render: modify [StepScript, StepParameterSpace, TasksAdded]
+   add 2 tasks: Frame=4,5
 3. step Encode: add
 ```
 
@@ -111,7 +130,6 @@ An empty plan writes nothing.
 - A store or applier trait that executes the plan.
 - A policy that checks an op's kinds against the ones a system supports.
 - Executing, validating against a store, or resuming a plan.
-- Which tasks a parameter space change keeps, adds or removes.
 - Which changes come from the template and which from the parameters.
 
 Tests: `crates/openjd-model/src/test_job_apply.rs`.

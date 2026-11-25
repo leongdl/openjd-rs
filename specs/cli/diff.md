@@ -49,6 +49,26 @@ counting the changed, added and removed steps: `1 step changed`, `2 steps change
 A step that is renamed counts twice, as one removed and one added. A pure reorder of the
 steps changes only the job's `steps.order` field, so it counts 0 steps.
 
+A changed step whose tasks change ends its block with a line `  tasks: …`, read from the
+`tasks` of the step's op in `openjd_model::job::apply::plan`
+([model/task-delta.md](../model/task-delta.md)): `{k} kept, {a} added, {r} removed`, or
+`all replaced ({reason})` when the change has no product decomposition. The counts come
+from the boxes, so the line costs nothing for a large range. A parameter space change that
+keeps every task, such as a range rewritten as the list of its values, gets no line.
+
+```
+$ openjd diff frames.yaml --old-job-param Frames=1-100 --new-job-param Frames=1-200
+frames.yaml: old parameters -> new parameters
+~ parameters[Frames]
+  value: "1-100" -> "1-200"
+~ steps[Render]
+  ~ parameterSpace
+    ~ taskParameterDefinitions[Frame]
+      range: "1-100" -> "1-200"
+  tasks: 100 kept, 100 added, 0 removed
+1 step changed
+```
+
 ```
 $ openjd diff render_v1.yaml render_v2.yaml
 render_v1.yaml -> render_v2.yaml
@@ -67,9 +87,10 @@ Output goes to stdout. The command has no `--output` (see "Out of scope").
 With `--plan`, when the jobs differ, the output ends with a line `plan:` and the
 `Display` of `openjd_model::job::apply::plan` on the two jobs
 ([model/job-apply.md](../model/job-apply.md)): one numbered line per operation, naming its
-target, its action and any mutation kinds. A template author sees what a system would do to
-a running job, and which kinds of change it would need to support. When the jobs are equal
-the output is unchanged, since the plan is empty.
+target, its action and any mutation kinds, followed by its task ops: one indented `add` or
+`remove` line per box of tasks, or `replace all tasks`. A template author sees what a
+system would do to a running job, and which kinds of change it would need to support.
+When the jobs are equal the output is unchanged, since the plan is empty.
 
 ```
 $ openjd diff render_v1.yaml render_v2.yaml --plan
@@ -85,9 +106,10 @@ plan:
 2. step Encode: add
 ```
 
-`plan` fails only for a job whose steps have no topological order, which `create_job`
-never produces, or for a diff field it has no kind for, which its tests rule out, so
-`--plan` adds no error case.
+The command computes the plan with or without `--plan`, for the `tasks:` lines. `plan`
+fails only for a job whose steps have no topological order, which `create_job` never
+produces, or for a diff field it has no kind for, which its tests rule out, so it adds no
+error case.
 
 ## Exit codes
 
@@ -118,8 +140,8 @@ with `--exit-code` must exit 3 unless its output is `no changes`.
   API decision outside this command.
 - Reading a template from stdin. No other command reads one, and a template's directory
   sets relative `PATH` defaults.
-- Which tasks a change keeps, adds or removes. A parameter space change replaces the
-  step's tasks whole.
+- Listing each task a change adds or removes. The plan names boxes of tasks, and a box
+  can hold more tasks than a terminal shows.
 - Executing the plan, or checking it against the kinds a system supports.
 
 Tests: `crates/openjd-cli/tests/diff_tests.rs`.

@@ -15,7 +15,8 @@ use std::fmt;
 use crate::error::ModelError;
 use crate::job::diff::{diff_jobs, DiffNode, DiffStatus};
 use crate::job::step_dependency_graph::StepDependencyGraph;
-use crate::job::Job;
+use crate::job::task_delta::{task_delta, TaskDelta};
+use crate::job::{Job, Step};
 
 /// What a `Modify` [`ApplyOp`] changes inside its target. A system that
 /// supports only some changes checks each op's kinds against the ones it
@@ -54,8 +55,16 @@ pub enum MutationKind {
     StepDependencies,
     /// A step's resolved symbol table: a parameter it reads changed.
     StepSymbols,
-    /// A step's parameter space, which replaces all of its tasks.
+    /// A step's parameter space definition. The task kinds say what happens
+    /// to its tasks; with none of them, every task is kept.
     StepParameterSpace,
+    /// Tasks added to a step: [`ApplyOp::tasks`] names them.
+    TasksAdded,
+    /// Tasks removed from a step: [`ApplyOp::tasks`] names them.
+    TasksRemoved,
+    /// All of a step's tasks replaced by those of its new parameter space,
+    /// for a change [`task_delta`] does not decompose.
+    TasksReplaced,
 }
 
 impl fmt::Display for MutationKind {
@@ -113,7 +122,7 @@ impl fmt::Display for OpAction {
 }
 
 /// One operation of an [`ApplyPlan`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct ApplyOp {
     /// What the op applies to.
@@ -123,6 +132,9 @@ pub struct ApplyOp {
     /// What it changes inside the target: never empty for a `Modify` of a
     /// job, job environment or step, and empty otherwise.
     pub kinds: BTreeSet<MutationKind>,
+    /// For a step `Modify` whose parameter space changed, which tasks it
+    /// keeps, adds and removes; `None` otherwise.
+    pub tasks: Option<TaskDelta>,
 }
 
 impl fmt::Display for ApplyOp {
@@ -142,7 +154,7 @@ impl fmt::Display for ApplyOp {
 ///
 /// `Display` writes one line per op, numbered from 1, in the format
 /// `specs/model/job-apply.md` "Display" gives.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ApplyPlan {
     ops: Vec<ApplyOp>,
 }
@@ -165,6 +177,23 @@ impl fmt::Display for ApplyPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (i, op) in self.ops.iter().enumerate() {
             writeln!(f, "{}. {op}", i + 1)?;
+            match &op.tasks {
+                Some(TaskDelta::Product(d)) => {
+                    for (verb, b) in d
+                        .added
+                        .iter()
+                        .map(|b| ("add", b))
+                        .chain(d.removed.iter().map(|b| ("remove", b)))
+                    {
+                        let noun = if b.len() == 1 { "task" } else { "tasks" };
+                        writeln!(f, "   {verb} {} {noun}: {b}", b.len())?;
+                    }
+                }
+                Some(TaskDelta::Fallback { reason }) => {
+                    writeln!(f, "   replace all tasks: {reason}")?;
+                }
+                Some(TaskDelta::Unchanged) | None => {}
+            }
         }
         Ok(())
     }
@@ -184,11 +213,12 @@ pub fn plan(old: &Job, new: &Job) -> Result<ApplyPlan, ModelError> {
     let tree = diff_jobs(old, new);
     let root = tree.root();
     let mut ops = Vec::new();
-    let mut push = |target, action, kinds| {
+    let mut push = |target, action, kinds, tasks| {
         ops.push(ApplyOp {
             target,
             action,
             kinds,
+            tasks,
         })
     };
 
@@ -198,7 +228,7 @@ pub fn plan(old: &Job, new: &Job) -> Result<ApplyPlan, ModelError> {
             .iter()
             .map(|c| job_kind(&c.field))
             .collect::<Result<_, _>>()?;
-        push(OpTarget::Job, OpAction::Modify, kinds);
+        push(OpTarget::Job, OpAction::Modify, kinds, None);
     }
     check_job_children(root)?;
 
@@ -207,6 +237,7 @@ pub fn plan(old: &Job, new: &Job) -> Result<ApplyPlan, ModelError> {
             OpTarget::Parameter(name.into()),
             action(node.status),
             BTreeSet::new(),
+            None,
         );
     }
 
@@ -231,6 +262,7 @@ pub fn plan(old: &Job, new: &Job) -> Result<ApplyPlan, ModelError> {
             OpTarget::JobEnvironment(name.into()),
             action(node.status),
             env_kinds(node)?,
+            None,
         );
     }
 
@@ -238,14 +270,25 @@ pub fn plan(old: &Job, new: &Job) -> Result<ApplyPlan, ModelError> {
     // dependencies exist before it gains them; then removes in reverse order
     // of the old graph, once nothing in the new job depends on them.
     let steps: HashMap<&str, &DiffNode> = elements(root, "steps").into_iter().collect();
+    let old_steps: HashMap<&str, &Step> = old.steps.iter().map(|s| (s.name.as_str(), s)).collect();
     for step in new_order.iter().filter_map(|&i| new.steps.get(i)) {
         let Some(node) = steps.get(step.name.as_str()) else {
             continue;
         };
         let target = OpTarget::Step(step.name.clone());
         match node.status {
-            DiffStatus::Added => push(target, OpAction::Add, BTreeSet::new()),
-            DiffStatus::Modified => push(target, OpAction::Modify, step_kinds(node)?),
+            DiffStatus::Added => push(target, OpAction::Add, BTreeSet::new(), None),
+            DiffStatus::Modified => {
+                let mut kinds = step_kinds(node)?;
+                let tasks = kinds.contains(&MutationKind::StepParameterSpace).then(|| {
+                    let old_space = old_steps
+                        .get(step.name.as_str())
+                        .and_then(|s| s.parameter_space.as_ref());
+                    task_delta(old_space, step.parameter_space.as_ref())
+                });
+                kinds.extend(tasks.as_ref().map_or(Vec::new(), task_kinds));
+                push(target, OpAction::Modify, kinds, tasks);
+            }
             DiffStatus::Unchanged | DiffStatus::Removed => {}
         }
     }
@@ -258,10 +301,26 @@ pub fn plan(old: &Job, new: &Job) -> Result<ApplyPlan, ModelError> {
                 OpTarget::Step(step.name.clone()),
                 OpAction::Remove,
                 BTreeSet::new(),
+                None,
             );
         }
     }
     Ok(ApplyPlan { ops })
+}
+
+/// What happens to a step's tasks under `delta`.
+fn task_kinds(delta: &TaskDelta) -> Vec<MutationKind> {
+    match delta {
+        TaskDelta::Product(d) => [
+            (!d.added.is_empty()).then_some(MutationKind::TasksAdded),
+            (!d.removed.is_empty()).then_some(MutationKind::TasksRemoved),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        TaskDelta::Fallback { .. } => vec![MutationKind::TasksReplaced],
+        TaskDelta::Unchanged => Vec::new(),
+    }
 }
 
 fn action(status: DiffStatus) -> OpAction {

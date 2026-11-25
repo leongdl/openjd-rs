@@ -22,6 +22,9 @@
 //! - **Parameter-space consistency**: `len` matches
 //!   iteration, `get(i)` equals the i-th iterated set, and every iterated set
 //!   passes `contains` / `validate_containment`.
+//! - **Task delta**: between a small step parameter space and a copy with
+//!   each range's first value dropped and a new one appended, the kept, added
+//!   and removed boxes are the enumerated intersection and differences.
 //! - **Topological order** respects every declared dependency.
 //! - **Apply plan order**: a plan adds steps dependencies first and removes
 //!   them dependents first, a job planned against itself is empty, and only a
@@ -38,7 +41,8 @@ use openjd_expr::{
 };
 use openjd_model::job::apply::{plan, ApplyPlan, OpAction, OpTarget};
 use openjd_model::job::diff::{diff_environments, diff_jobs, diff_steps, DiffNode, DiffStatus};
-use openjd_model::job::{Job, Step};
+use openjd_model::job::task_delta::{task_delta, TaskBox, TaskDelta};
+use openjd_model::job::{Job, Step, StepParameterSpace, TaskParamRange, TaskParameter};
 use openjd_model::template::{EnvironmentTemplate, JobTemplate};
 use openjd_model::{
     capabilities, create_job, decode_environment_template, decode_job_template, decode_template,
@@ -271,6 +275,7 @@ pub fn pipeline(
     surface(template, &job, &ctx);
     check_dependencies(&job);
     for step in &job.steps {
+        check_task_delta(step);
         let tasks = check_param_space(step);
         run_time_resolution(template, &job, step, &values, &tasks, u);
     }
@@ -652,6 +657,140 @@ fn sets_eq(a: &[TaskParameterSet], b: &[TaskParameterSet]) -> bool {
 }
 
 /// Parameter-space invariants. Returns a few task parameter sets to resolve.
+/// Compare `task_delta` with enumeration, both ways, between the step's
+/// space (at most 64 tasks and 64 values a parameter) and a copy with each
+/// range's first value dropped and a new value appended.
+fn check_task_delta(step: &Step) {
+    let Some(space) = &step.parameter_space else {
+        return;
+    };
+    oracle!(
+        task_delta(Some(space), Some(space)) == TaskDelta::Unchanged,
+        "a space's delta to itself is not Unchanged: {space:?}"
+    );
+    let small = StepParameterSpaceIterator::new(space).is_ok_and(|it| it.len() <= 64)
+        && space.task_parameter_definitions.values().all(|p| match p {
+            TaskParameter::Int {
+                range: TaskParamRange::RangeExpr(r),
+                ..
+            } => r.len() <= 64,
+            _ => true,
+        });
+    if !small {
+        return;
+    }
+    let shifted = StepParameterSpace {
+        task_parameter_definitions: space
+            .task_parameter_definitions
+            .iter()
+            .map(|(n, p)| (n.clone(), shift(p)))
+            .collect(),
+        combination: space.combination.clone(),
+    };
+    for (old, new) in [(space, &shifted), (&shifted, space)] {
+        match task_delta(Some(old), Some(new)) {
+            TaskDelta::Product(d) => {
+                let (o, n) = (enumerate(old), enumerate(new));
+                let (Some(o), Some(n)) = (o, n) else {
+                    return;
+                };
+                let kept = tasks_of(std::slice::from_ref(&d.kept));
+                let added = tasks_of(&d.added);
+                let removed = tasks_of(&d.removed);
+                oracle!(
+                    kept == Some(&o & &n) && added == Some(&n - &o) && removed == Some(&o - &n),
+                    "task delta disagrees with enumeration: {old:?} -> {new:?}: {d:?}"
+                );
+            }
+            TaskDelta::Fallback { reason } => {
+                oracle!(!reason.to_string().is_empty(), "an empty fallback reason");
+            }
+            d => oracle!(old == new, "{d:?} for unequal spaces {old:?} -> {new:?}"),
+        }
+    }
+}
+
+/// `p` with its first value dropped and a value it lacks appended.
+fn shift(p: &TaskParameter) -> TaskParameter {
+    match p {
+        TaskParameter::Int {
+            range,
+            chunks: None,
+        } => {
+            let mut v: Vec<i64> = match range {
+                TaskParamRange::List(v) => v.clone(),
+                TaskParamRange::RangeExpr(r) => r.iter().collect(),
+            };
+            let next = v.iter().max().map_or(Some(0), |m| m.checked_add(1));
+            v = v.into_iter().skip(1).chain(next).collect();
+            let range = match range {
+                TaskParamRange::RangeExpr(_) => openjd_expr::RangeExpr::from_values(v.clone())
+                    .map_or(TaskParamRange::List(v), TaskParamRange::RangeExpr),
+                TaskParamRange::List(_) => TaskParamRange::List(v),
+            };
+            TaskParameter::Int {
+                range,
+                chunks: None,
+            }
+        }
+        TaskParameter::String { range } => TaskParameter::String {
+            range: range
+                .iter()
+                .skip(1)
+                .cloned()
+                .chain(["shifted".to_string()])
+                .collect(),
+        },
+        TaskParameter::Path { range } => TaskParameter::Path {
+            range: range
+                .iter()
+                .skip(1)
+                .cloned()
+                .chain(["/shifted".to_string()])
+                .collect(),
+        },
+        TaskParameter::Float { range } => TaskParameter::Float {
+            range: range.iter().skip(1).cloned().collect(),
+        },
+        other => other.clone(),
+    }
+}
+
+/// Each task as text with its parameters sorted by name, or `None` when a
+/// task repeats.
+fn enumerate(space: &StepParameterSpace) -> Option<std::collections::BTreeSet<String>> {
+    let mut all = std::collections::BTreeSet::new();
+    for t in StepParameterSpaceIterator::new(space).ok()? {
+        let mut kv: Vec<String> = t
+            .iter()
+            .map(|(k, v)| format!("{k}={:?}", v.value))
+            .collect();
+        kv.sort();
+        if !all.insert(kv.join(",")) {
+            return None;
+        }
+    }
+    Some(all)
+}
+
+/// The union of disjoint boxes whose `len` is their task count, or `None`.
+fn tasks_of(boxes: &[TaskBox]) -> Option<std::collections::BTreeSet<String>> {
+    let mut all = std::collections::BTreeSet::new();
+    for b in boxes {
+        let _ = b.to_string();
+        let tasks = enumerate(b.space())?;
+        if u64::try_from(tasks.len()).ok()? != b.len() || b.is_empty() != tasks.is_empty() {
+            return None;
+        }
+        let before = all.len();
+        all.extend(tasks);
+        if all.len() - before != usize::try_from(b.len()).ok()? {
+            return None;
+        }
+    }
+    Some(all)
+}
+
 fn check_param_space(step: &Step) -> Vec<TaskParameterSet> {
     let Some(space) = &step.parameter_space else {
         return vec![TaskParameterSet::new()];

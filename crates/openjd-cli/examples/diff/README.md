@@ -21,6 +21,7 @@ frames.yaml: old parameters -> new parameters
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
       range: "1-3" -> "1-5"
+  tasks: 3 kept, 2 added, 0 removed
 1 step changed
 ```
 
@@ -71,6 +72,7 @@ render_v1.yaml -> render_v2.yaml
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
       range: "1-3" -> "1-4"
+  tasks: 3 kept, 1 added, 0 removed
 + steps[Encode]
 2 steps changed
 ```
@@ -81,8 +83,8 @@ render_v1.yaml -> render_v2.yaml
 the old side to the new one. Each line names what the operation applies to and how it
 changes it; a modify of the job, an environment or a step lists the kinds of change in
 brackets, so a system can refuse kinds it does not support. The new `Encode` step comes
-after `Render`, which it depends on, and `StepParameterSpace` says a changed frame range
-replaces all of `Render`'s tasks.
+after `Render`, which it depends on. `StepParameterSpace` says `Render`'s frame range
+changed, and `TasksAdded` that the change adds tasks, which the indented line names.
 
 ```console
 $ openjd diff render_v1.yaml render_v2.yaml --new-job-param file://shot.json --plan
@@ -99,13 +101,38 @@ render_v1.yaml -> render_v2.yaml
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
       range: "1-3" -> "1-4"
+  tasks: 3 kept, 1 added, 0 removed
 + steps[Encode]
 2 steps changed
 plan:
 1. parameter Frames: modify
 2. parameter Quality: modify
-3. step Render: modify [StepScript, StepSymbols, StepParameterSpace]
+3. step Render: modify [StepScript, StepSymbols, StepParameterSpace, TasksAdded]
+   add 1 task: Frame=4
 4. step Encode: add
+```
+
+## Which tasks change
+
+A system that applies the plan keeps the state of the tasks a change does not touch. The
+`tasks:` line under a step counts the tasks the change keeps, adds and removes, without
+listing them. Doubling the frame range keeps the first 100 frames and adds 100:
+
+```console
+$ openjd diff frames.yaml --old-job-param Frames=1-100 --new-job-param Frames=1-200 --plan
+frames.yaml: old parameters -> new parameters
+~ parameters[Frames]
+  value: "1-100" -> "1-200"
+~ steps[Render]
+  ~ parameterSpace
+    ~ taskParameterDefinitions[Frame]
+      range: "1-100" -> "1-200"
+  tasks: 100 kept, 100 added, 0 removed
+1 step changed
+plan:
+1. parameter Frames: modify
+2. step Render: modify [StepParameterSpace, TasksAdded]
+   add 100 tasks: Frame=101-200
 ```
 
 ## In a script
@@ -122,6 +149,7 @@ frames.yaml: old parameters -> new parameters
   ~ parameterSpace
     ~ taskParameterDefinitions[Frame]
       range: "1-3" -> "1-5"
+  tasks: 3 kept, 2 added, 0 removed
 1 step changed
 3
 ```

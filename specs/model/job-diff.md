@@ -149,7 +149,8 @@ unchanged tree writes nothing.
 ## Out of scope
 
 - Templates. The diff compares created jobs only.
-- Tasks. Which tasks a change adds or removes is not computed.
+- Tasks. `job::task_delta` says which tasks a parameter space change keeps, adds
+  and removes ([task-delta.md](task-delta.md)).
 - Applying a diff, which `job::apply` plans, and any command-line interface.
   A caller reads an element's name from its `segment` (`collection[name]`).
 - Options such as a depth limit. `diff_*` always expands every `Modified`

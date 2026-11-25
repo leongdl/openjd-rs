@@ -162,10 +162,75 @@ fn plan_follows_the_diff() {
          ~ parameters[Frames]\n  value: \"1-3\" -> \"1-5\"\n\
          ~ steps[Render]\n  ~ parameterSpace\n    ~ taskParameterDefinitions[Frame]\n      \
          range: \"1-3\" -> \"1-5\"\n\
+         \x20 tasks: 3 kept, 2 added, 0 removed\n\
          1 step changed\n\
          plan:\n\
          1. parameter Frames: modify\n\
-         2. step Render: modify [StepParameterSpace]\n"
+         2. step Render: modify [StepParameterSpace, TasksAdded]\n\
+         \x20  add 2 tasks: Frame=4,5\n"
+    );
+}
+
+#[test]
+fn a_step_whose_tasks_change_gets_a_tasks_line_without_plan() {
+    let dir = dir_with(&[]);
+    let (code, stdout, stderr) = openjd(
+        dir.path(),
+        &[
+            "job.yaml",
+            "--old-job-param",
+            "Frames=1-4",
+            "--new-job-param",
+            "Frames=3-6",
+        ],
+    );
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    assert_eq!(
+        stdout,
+        "job.yaml: old parameters -> new parameters\n\
+         ~ parameters[Frames]\n  value: \"1-4\" -> \"3-6\"\n\
+         ~ steps[Render]\n  ~ parameterSpace\n    ~ taskParameterDefinitions[Frame]\n      \
+         range: \"1-4\" -> \"3-6\"\n\
+         \x20 tasks: 2 kept, 2 added, 2 removed\n\
+         1 step changed\n"
+    );
+}
+
+#[test]
+fn a_change_with_no_task_decomposition_replaces_all_tasks() {
+    let new = TEMPLATE.replace(
+        "- {name: Frame, type: INT, range: \"{{Param.Frames}}\"}",
+        "- {name: Frame, type: INT, range: \"{{Param.Frames}}\"}\n        - {name: Eye, type: STRING, range: [left]}",
+    );
+    let dir = dir_with(&[("new.yaml", &new)]);
+    let (code, stdout, stderr) = openjd(dir.path(), &["job.yaml", "new.yaml", "--plan"]);
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    assert_eq!(
+        stdout,
+        "job.yaml -> new.yaml\n\
+         ~ steps[Render]\n  ~ parameterSpace\n    + taskParameterDefinitions[Eye]\n\
+         \x20 tasks: all replaced (task parameter Eye added)\n\
+         1 step changed\n\
+         plan:\n\
+         1. step Render: modify [StepParameterSpace, TasksReplaced]\n\
+         \x20  replace all tasks: task parameter Eye added\n"
+    );
+}
+
+#[test]
+fn a_space_change_that_keeps_every_task_has_no_tasks_line() {
+    let new = TEMPLATE.replace("range: \"{{Param.Frames}}\"", "range: [1, 2, 3]");
+    let dir = dir_with(&[("new.yaml", &new)]);
+    let (code, stdout, stderr) = openjd(dir.path(), &["job.yaml", "new.yaml", "--plan"]);
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    assert_eq!(
+        stdout,
+        "job.yaml -> new.yaml\n\
+         ~ steps[Render]\n  ~ parameterSpace\n    ~ taskParameterDefinitions[Frame]\n      \
+         range: \"1-3\" -> [1,2,3]\n\
+         1 step changed\n\
+         plan:\n\
+         1. step Render: modify [StepParameterSpace]\n"
     );
 }
 

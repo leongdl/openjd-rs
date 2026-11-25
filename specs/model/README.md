@@ -26,6 +26,7 @@ but redesigned for Rust's type system and performance characteristics.
 | [step-dependencies.md](step-dependencies.md) | Step dependency graph: construction, topological sort, cycle detection |
 | [job-diff.md](job-diff.md) | Unstable structural diff of two instantiated jobs, steps, or environments |
 | [job-apply.md](job-apply.md) | Unstable plan of the operations that change a running job from one job to another |
+| [task-delta.md](task-delta.md) | Unstable delta of the tasks a parameter space change keeps, adds and removes |
 | [capabilities.md](capabilities.md) | Standard capability constants, name validation functions, regex patterns |
 | [error-handling.md](error-handling.md) | Error types, structured error paths, validation error accumulation |
 

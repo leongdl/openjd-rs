@@ -9,8 +9,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use clap::Args;
-use openjd_model::job::apply::{plan, ApplyPlan};
+use openjd_model::job::apply::{plan, ApplyPlan, OpTarget};
 use openjd_model::job::diff::{diff_jobs, DiffTree};
+use openjd_model::job::task_delta::{TaskBox, TaskDelta};
 use openjd_model::job::Job;
 
 /// The exit code of `--exit-code` when the jobs differ. `openjd` exits 1 on
@@ -71,13 +72,9 @@ pub fn execute(args: DiffArgs) -> Result<i32, Box<dyn std::error::Error>> {
     let new =
         build_side(&args, new_path, &args.new_parameters).map_err(|e| format!("new job: {e}"))?;
     let tree = diff_jobs(&old, &new);
-    let plan = if args.plan {
-        Some(plan(&old, &new)?)
-    } else {
-        None
-    };
+    let plan = plan(&old, &new)?;
     let mut out = std::io::stdout().lock();
-    out.write_all(render(&header(&args), &tree, plan.as_ref()).as_bytes())?;
+    out.write_all(render(&header(&args), &tree, &plan, args.plan).as_bytes())?;
     out.flush()?;
     Ok(if args.exit_code && tree.is_changed() {
         EXIT_CHANGED
@@ -115,9 +112,10 @@ fn header(args: &DiffArgs) -> String {
     }
 }
 
-/// The command's output: `header`, then the tree, a count of the steps it
-/// changes and, when given, `plan:` and the plan; or `no changes`.
-fn render(header: &str, tree: &DiffTree, plan: Option<&ApplyPlan>) -> String {
+/// The command's output: `header`, then the tree with a `tasks:` line under
+/// each step whose tasks change, a count of the steps it changes and, with
+/// `show_plan`, `plan:` and the plan; or `no changes`.
+fn render(header: &str, tree: &DiffTree, plan: &ApplyPlan, show_plan: bool) -> String {
     if !tree.is_changed() {
         return format!("{header}\nno changes\n");
     }
@@ -128,6 +126,47 @@ fn render(header: &str, tree: &DiffTree, plan: Option<&ApplyPlan>) -> String {
         .filter(|c| c.is_changed() && c.segment.starts_with("steps["))
         .count();
     let noun = if steps == 1 { "step" } else { "steps" };
-    let plan = plan.map(|p| format!("plan:\n{p}")).unwrap_or_default();
+    let tree = with_task_lines(&tree.to_string(), plan);
+    let plan = if show_plan {
+        format!("plan:\n{plan}")
+    } else {
+        String::new()
+    };
     format!("{header}\n{tree}{steps} {noun} changed\n{plan}")
+}
+
+/// `tree` with a line `  tasks: …` ending the block of each step whose
+/// tasks the plan adds, removes or replaces.
+fn with_task_lines(tree: &str, plan: &ApplyPlan) -> String {
+    let mut lines: Vec<String> = tree.lines().map(str::to_string).collect();
+    for op in plan.ops() {
+        let (OpTarget::Step(name), Some(delta)) = (&op.target, &op.tasks) else {
+            continue;
+        };
+        let summary = match delta {
+            TaskDelta::Product(d) if d.added.is_empty() && d.removed.is_empty() => continue,
+            TaskDelta::Product(d) => {
+                let count = |boxes: &[TaskBox]| boxes.iter().map(TaskBox::len).sum::<u64>();
+                format!(
+                    "{} kept, {} added, {} removed",
+                    d.kept.len(),
+                    count(&d.added),
+                    count(&d.removed)
+                )
+            }
+            TaskDelta::Fallback { reason } => format!("all replaced ({reason})"),
+            _ => continue,
+        };
+        let head = format!("~ steps[{name}]");
+        let Some(at) = lines.iter().position(|l| *l == head) else {
+            continue;
+        };
+        let end = lines
+            .iter()
+            .skip(at + 1)
+            .position(|l| !l.starts_with("  "))
+            .map_or(lines.len(), |n| at + 1 + n);
+        lines.insert(end, format!("  tasks: {summary}"));
+    }
+    lines.iter().map(|l| format!("{l}\n")).collect()
 }

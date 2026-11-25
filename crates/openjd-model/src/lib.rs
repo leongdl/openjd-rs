@@ -54,3 +54,5 @@ mod test_instantiate_and_display;
 mod test_job_apply;
 #[cfg(test)]
 mod test_job_diff;
+#[cfg(test)]
+mod test_task_delta;

@@ -43,6 +43,7 @@ openjd_model              — crate root re-exports, the main public surface
 │   ├── apply             — unstable plan for applying a job diff
 │   ├── diff              — unstable diff of jobs, steps, environments
 │   ├── step_param_space  — StepParameterSpaceIterator
+│   ├── task_delta        — unstable delta of the tasks a parameter space change keeps
 │   └── step_dependency_graph — StepDependencyGraph + friends
 ├── symbol_table          — re-exported from openjd_expr
 ├── template              — unresolved/parsed template types (public module)
@@ -1346,6 +1347,7 @@ pub struct ApplyOp {
     pub target: OpTarget,
     pub action: OpAction,
     pub kinds: BTreeSet<MutationKind>,
+    pub tasks: Option<TaskDelta>,
 }
 impl Display for ApplyOp;
 
@@ -1361,6 +1363,7 @@ pub enum MutationKind {
     EnvAdd, EnvRemove, EnvMetadata, EnvVariables, EnvScript, EnvSymbols,
     StepMetadata, StepScript, StepHostRequirements,
     StepDependencies, StepSymbols, StepParameterSpace,
+    TasksAdded, TasksRemoved, TasksReplaced,
 }
 ```
 
@@ -1369,13 +1372,69 @@ pub enum MutationKind {
   `StepDependencyGraph` error when either job's steps depend on an unknown step
   or form a cycle, and with `DecodeValidation` for a diff field no kind maps.
 - `ApplyPlan::ops` returns the operations in order; `is_empty` says whether
-  there are none. `Display` writes one numbered line per op.
+  there are none. `Display` writes one numbered line per op, and under an op
+  with `tasks` one indented line per task op.
 - `ApplyOp` names its target by name, how it changes it, and what it changes
   inside it: `kinds` is non-empty exactly for a `Modify` of the job, a job
-  environment or a step. `Display` writes `{target}: {action}`, then
-  ` [{kinds}]` when there are kinds.
+  environment or a step. `tasks` is the `TaskDelta` of a step `Modify` whose
+  parameter space changed, and `None` otherwise. `Display` writes
+  `{target}: {action}`, then ` [{kinds}]` when there are kinds.
 - `OpTarget`, `OpAction` and `MutationKind` implement `Display`; a kind
-  displays as its variant name.
+  displays as its variant name. `StepParameterSpace` is the step's space
+  definition; `TasksAdded`, `TasksRemoved` and `TasksReplaced` say what happens
+  to its tasks.
+
+## Task Delta (unstable)
+
+**Status: unstable.** `job::task_delta` may change or be removed in any
+release without notice. Semantics: [task-delta.md](task-delta.md).
+
+```rust
+pub fn task_delta(old: Option<&StepParameterSpace>, new: Option<&StepParameterSpace>) -> TaskDelta;
+
+#[non_exhaustive]
+pub enum TaskDelta {
+    Unchanged,
+    Product(ProductDelta),
+    Fallback { reason: FallbackReason },
+}
+
+#[non_exhaustive]
+pub struct ProductDelta {
+    pub kept: TaskBox,
+    pub added: Vec<TaskBox>,
+    pub removed: Vec<TaskBox>,
+}
+
+pub struct TaskBox { /* private */ }
+impl TaskBox {
+    pub fn space(&self) -> &StepParameterSpace;
+    pub fn len(&self) -> u64;
+    pub fn is_empty(&self) -> bool;
+}
+impl Display for TaskBox;
+
+#[non_exhaustive]
+pub enum FallbackReason {
+    SpaceAddedOrRemoved, NotProduct, Chunked(String), RepeatedValue(String),
+    TaskCountOverflow, ParameterAdded(String), ParameterRemoved(String),
+    ParameterRetyped(String), RangeTooComplex(String),
+}
+impl Display for FallbackReason;
+```
+
+- `task_delta` never fails and never enumerates tasks. `None` is a step
+  without a parameter space. It returns `Unchanged` for equal spaces, a
+  `Product` when both are plain products over the same parameters, and a
+  `Fallback` naming the first rule a side breaks otherwise.
+- `ProductDelta`: `kept` holds the tasks both spaces have and may be empty;
+  `added` and `removed` are disjoint, non-empty boxes whose unions are the
+  tasks only the new space has and only the old space has.
+- `TaskBox::space` is a `StepParameterSpace` with no `combination` that
+  `StepParameterSpaceIterator` iterates; `len` is its task count. `Display`
+  writes `name=values` per parameter, comma-separated.
+- `FallbackReason` displays as a short phrase naming the parameter, such as
+  `task parameter Eye added`.
 
 ## Step Dependency Graph
 
