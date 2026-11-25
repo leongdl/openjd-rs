@@ -78,10 +78,11 @@ render_v1.yaml -> render_v2.yaml
 ## A plan for a running job
 
 `--plan` adds the operations a system performs, in order, to change a running job from
-the old side to the new one. Each line names what the operation applies to, how it
-changes it, and the kinds of change in brackets, so a system can refuse kinds it does not
-support. The new `Encode` step comes after `Render`, which it depends on, and a changed
-frame range replaces all of `Render`'s tasks.
+the old side to the new one. Each line names what the operation applies to and how it
+changes it; a modify of the job, an environment or a step lists the kinds of change in
+brackets, so a system can refuse kinds it does not support. The new `Encode` step comes
+after `Render`, which it depends on, and `StepParameterSpace` says a changed frame range
+replaces all of `Render`'s tasks.
 
 ```console
 $ openjd diff render_v1.yaml render_v2.yaml --new-job-param file://shot.json --plan
@@ -101,12 +102,10 @@ render_v1.yaml -> render_v2.yaml
 + steps[Encode]
 2 steps changed
 plan:
-1. parameter Frames: modify [ParameterValue]
-2. parameter Quality: modify [ParameterValue]
-3. step Render: modify [StepScript, StepSymbols]
-4. tasks of step Render: replace [TaskReplace]
-5. step Encode: add [StepAdd]
-6. tasks of step Encode: add [TaskCreate]
+1. parameter Frames: modify
+2. parameter Quality: modify
+3. step Render: modify [StepScript, StepSymbols, StepParameterSpace]
+4. step Encode: add
 ```
 
 ## In a script

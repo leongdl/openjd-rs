@@ -164,8 +164,8 @@ fn plan_follows_the_diff() {
          range: \"1-3\" -> \"1-5\"\n\
          1 step changed\n\
          plan:\n\
-         1. parameter Frames: modify [ParameterValue]\n\
-         2. tasks of step Render: replace [TaskReplace]\n"
+         1. parameter Frames: modify\n\
+         2. step Render: modify [StepParameterSpace]\n"
     );
 }
 

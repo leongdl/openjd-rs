@@ -24,7 +24,8 @@
 //!   passes `contains` / `validate_containment`.
 //! - **Topological order** respects every declared dependency.
 //! - **Apply plan order**: a plan adds steps dependencies first and removes
-//!   them dependents first, and a job planned against itself is empty.
+//!   them dependents first, a job planned against itself is empty, and only a
+//!   modify of the job, a job environment or a step has kinds.
 
 use crate::gen::template::{environment_template, job_template, ParamInfo};
 use crate::gen::{self, one_in, pick, upto};
@@ -367,7 +368,8 @@ fn check_diff(job: &Job) {
 /// Plan the job against itself, against a copy with its steps reversed, and
 /// to and from a copy with no steps. A job's plan against itself is empty, a
 /// step reorder is one job op, and steps are added dependencies first and
-/// removed dependents first.
+/// removed dependents first. Only a modify of the job, a job environment or
+/// a step has kinds.
 fn check_plan(job: &Job) {
     let mut reversed = job.clone();
     reversed.steps.reverse();
@@ -384,6 +386,17 @@ fn check_plan(job: &Job) {
         return;
     };
     oracle!(same.is_empty(), "a job's plan against itself:\n{same}");
+    for op in [&reorder, &adds, &removes]
+        .into_iter()
+        .flat_map(|p| p.ops())
+    {
+        let has_kinds =
+            op.action == OpAction::Modify && !matches!(op.target, OpTarget::Parameter(_));
+        oracle!(
+            op.kinds.is_empty() != has_kinds,
+            "an op's kinds do not fit its action: {op}"
+        );
+    }
     let want = if job.steps.len() > 1 {
         "1. job: modify [StepReorder]\n"
     } else {

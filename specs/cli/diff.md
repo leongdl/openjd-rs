@@ -67,7 +67,7 @@ Output goes to stdout. The command has no `--output` (see "Out of scope").
 With `--plan`, when the jobs differ, the output ends with a line `plan:` and the
 `Display` of `openjd_model::job::apply::plan` on the two jobs
 ([model/job-apply.md](../model/job-apply.md)): one numbered line per operation, naming its
-target, its action and its mutation kinds. A template author sees what a system would do to
+target, its action and any mutation kinds. A template author sees what a system would do to
 a running job, and which kinds of change it would need to support. When the jobs are equal
 the output is unchanged, since the plan is empty.
 
@@ -82,12 +82,12 @@ render_v1.yaml -> render_v2.yaml
 2 steps changed
 plan:
 1. step Render: modify [StepScript]
-2. step Encode: add [StepAdd]
-3. tasks of step Encode: add [TaskCreate]
+2. step Encode: add
 ```
 
 `plan` fails only for a job whose steps have no topological order, which `create_job`
-never produces, so `--plan` adds no error case.
+never produces, or for a diff field it has no kind for, which its tests rule out, so
+`--plan` adds no error case.
 
 ## Exit codes
 

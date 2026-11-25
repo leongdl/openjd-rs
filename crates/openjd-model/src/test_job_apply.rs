@@ -97,7 +97,7 @@ fn a_parameter_read_by_one_step_modifies_that_step_only() {
     let new = job_with(BASE, &[("Scene", "b.blend")]);
     assert_eq!(
         plan_text(&old, &new),
-        "1. parameter Scene: modify [ParameterValue]\n\
+        "1. parameter Scene: modify\n\
          2. step Prep: modify [StepSymbols]\n"
     );
 }
@@ -107,36 +107,19 @@ fn a_parameter_read_by_a_job_environment_modifies_it() {
     let new = job_with(BASE, &[("Quality", "high")]);
     assert_eq!(
         plan_text(&job(BASE), &new),
-        "1. parameter Quality: modify [ParameterValue]\n\
+        "1. parameter Quality: modify\n\
          2. job environment Conda: modify [EnvSymbols]\n"
     );
 }
 
 #[test]
-fn a_task_range_change_replaces_the_tasks_and_not_the_step() {
-    let new = job_with(BASE, &[("Last", "5")]);
-    let p = plan(&job(BASE), &new).unwrap();
-    assert_eq!(
-        p.to_string(),
-        "1. parameter Last: modify [ParameterValue]\n\
-         2. tasks of step Render: replace [TaskReplace]\n"
-    );
-    let op = &p.ops()[1];
-    assert_eq!(
-        (&op.target, op.action),
-        (&OpTarget::StepTasks("Render".into()), OpAction::Replace)
-    );
-}
-
-#[test]
-fn a_step_change_with_a_task_change_writes_the_step_then_its_tasks() {
+fn a_parameter_space_change_is_a_kind_of_its_step_op() {
     let yaml = edited(BASE, "command: render,", "command: render-gpu,");
     let new = job_with(&yaml, &[("Last", "5")]);
     assert_eq!(
         plan_text(&job(BASE), &new),
-        "1. parameter Last: modify [ParameterValue]\n\
-         2. step Render: modify [StepScript]\n\
-         3. tasks of step Render: replace [TaskReplace]\n"
+        "1. parameter Last: modify\n\
+         2. step Render: modify [StepScript, StepParameterSpace]\n"
     );
 }
 
@@ -148,14 +131,10 @@ const ENCODE: &str = r#"
 "#;
 
 #[test]
-fn an_added_step_creates_its_tasks_after_its_dependency() {
+fn an_added_step_comes_after_its_dependency() {
     // Encode is listed first but depends on Render, which is unchanged.
     let yaml = edited(BASE, "steps:\n", &format!("steps:{ENCODE}"));
-    assert_eq!(
-        plan_text(&job(BASE), &job(&yaml)),
-        "1. step Encode: add [StepAdd]\n\
-         2. tasks of step Encode: add [TaskCreate]\n"
-    );
+    assert_eq!(plan_text(&job(BASE), &job(&yaml)), "1. step Encode: add\n");
 }
 
 #[test]
@@ -171,16 +150,14 @@ fn a_step_and_its_dependency_both_added_go_in_dependency_order() {
     let yaml = edited(BASE, "steps:\n", &format!("steps:{added}"));
     assert_eq!(
         plan_text(&job(BASE), &job(&yaml)),
-        "1. step B: add [StepAdd]\n\
-         2. tasks of step B: add [TaskCreate]\n\
-         3. step A: add [StepAdd]\n\
-         4. tasks of step A: add [TaskCreate]\n"
+        "1. step B: add\n\
+         2. step A: add\n"
     );
     // Reversed, the removes go dependents first.
     assert_eq!(
         plan_text(&job(&yaml), &job(BASE)),
-        "1. step A: remove [StepRemove]\n\
-         2. step B: remove [StepRemove]\n"
+        "1. step A: remove\n\
+         2. step B: remove\n"
     );
 }
 
@@ -195,7 +172,7 @@ fn a_removed_step_goes_after_its_dependents_drop_it() {
     assert_eq!(
         plan_text(&job(BASE), &job(&yaml)),
         "1. step Render: modify [StepDependencies]\n\
-         2. step Prep: remove [StepRemove]\n"
+         2. step Prep: remove\n"
     );
 }
 
@@ -204,9 +181,8 @@ fn a_step_that_gains_a_dependency_on_an_added_step_comes_after_it() {
     let yaml = edited(BASE, "  - name: Prep\n", "  - name: Pre\n    script: {actions: {onRun: {command: pre}}}\n  - name: Prep\n    dependencies: [{dependsOn: Pre}]\n");
     assert_eq!(
         plan_text(&job(BASE), &job(&yaml)),
-        "1. step Pre: add [StepAdd]\n\
-         2. tasks of step Pre: add [TaskCreate]\n\
-         3. step Prep: modify [StepDependencies]\n"
+        "1. step Pre: add\n\
+         2. step Prep: modify [StepDependencies]\n"
     );
 }
 
@@ -235,8 +211,8 @@ steps:
 "#;
     assert_eq!(
         plan_text(&job(old), &job(new)),
-        "1. step Late: remove [StepRemove]\n\
-         2. step Early: remove [StepRemove]\n"
+        "1. step Late: remove\n\
+         2. step Early: remove\n"
     );
 }
 
@@ -316,9 +292,9 @@ fn job_environment_removes_come_first_then_adds_in_new_order() {
     assert_eq!(
         plan_text(&old, &new),
         "1. job: modify [EnvReorder]\n\
-         2. job environment B: remove [EnvRemove]\n\
+         2. job environment B: remove\n\
          3. job environment C: modify [EnvVariables]\n\
-         4. job environment X: add [EnvAdd]\n\
+         4. job environment X: add\n\
          5. job environment A: modify [EnvVariables]\n"
     );
 }
@@ -347,29 +323,23 @@ fn a_job_whose_steps_have_no_order_is_an_error() {
 
 /// Every kind, indexed by `index`, whose exhaustive match fails to compile
 /// when a kind is added.
-const ALL: [MutationKind; 22] = [
+const ALL: [MutationKind; 16] = [
     MutationKind::JobMetadata,
     MutationKind::JobExtensions,
     MutationKind::StepReorder,
     MutationKind::EnvReorder,
-    MutationKind::ParameterAdd,
-    MutationKind::ParameterRemove,
-    MutationKind::ParameterValue,
     MutationKind::EnvAdd,
     MutationKind::EnvRemove,
     MutationKind::EnvMetadata,
     MutationKind::EnvVariables,
     MutationKind::EnvScript,
     MutationKind::EnvSymbols,
-    MutationKind::StepAdd,
-    MutationKind::StepRemove,
     MutationKind::StepMetadata,
     MutationKind::StepScript,
     MutationKind::StepHostRequirements,
     MutationKind::StepDependencies,
     MutationKind::StepSymbols,
-    MutationKind::TaskCreate,
-    MutationKind::TaskReplace,
+    MutationKind::StepParameterSpace,
 ];
 
 fn index(kind: MutationKind) -> usize {
@@ -379,24 +349,18 @@ fn index(kind: MutationKind) -> usize {
         JobExtensions => 1,
         StepReorder => 2,
         EnvReorder => 3,
-        ParameterAdd => 4,
-        ParameterRemove => 5,
-        ParameterValue => 6,
-        EnvAdd => 7,
-        EnvRemove => 8,
-        EnvMetadata => 9,
-        EnvVariables => 10,
-        EnvScript => 11,
-        EnvSymbols => 12,
-        StepAdd => 13,
-        StepRemove => 14,
-        StepMetadata => 15,
-        StepScript => 16,
-        StepHostRequirements => 17,
-        StepDependencies => 18,
-        StepSymbols => 19,
-        TaskCreate => 20,
-        TaskReplace => 21,
+        EnvAdd => 4,
+        EnvRemove => 5,
+        EnvMetadata => 6,
+        EnvVariables => 7,
+        EnvScript => 8,
+        EnvSymbols => 9,
+        StepMetadata => 10,
+        StepScript => 11,
+        StepHostRequirements => 12,
+        StepDependencies => 13,
+        StepSymbols => 14,
+        StepParameterSpace => 15,
     }
 }
 
@@ -422,7 +386,18 @@ fn single_edits() {
         &format!("parameterDefinitions:\n{extra}"),
     );
     let cases: Vec<(&str, Job, Job, &str)> = vec![
-        ("job name", base.clone(), edit("name: Demo", "name: Demo2"), "1. job: modify [JobMetadata]\n"),
+        (
+            "job name",
+            base.clone(),
+            edit("name: Demo", "name: Demo2"),
+            "1. job: modify [JobMetadata]\n",
+        ),
+        (
+            "job description",
+            base.clone(),
+            edit("name: Demo\n", "name: Demo\ndescription: d\n"),
+            "1. job: modify [JobMetadata]\n",
+        ),
         (
             "job extensions",
             base.clone(),
@@ -445,31 +420,34 @@ fn single_edits() {
             "parameter added",
             base.clone(),
             with_extra.clone(),
-            "1. parameter Extra: add [ParameterAdd]\n",
+            "1. parameter Extra: add\n",
         ),
         (
             "parameter removed",
             with_extra,
             base.clone(),
-            "1. parameter Extra: remove [ParameterRemove]\n",
+            "1. parameter Extra: remove\n",
         ),
         (
             "parameter value",
             base.clone(),
             job_with(BASE, &[("Scene", "b.blend")]),
-            "1. parameter Scene: modify [ParameterValue]\n2. step Prep: modify [StepSymbols]\n",
+            "1. parameter Scene: modify\n2. step Prep: modify [StepSymbols]\n",
         ),
         (
             "job environment added",
             base.clone(),
-            edit("jobEnvironments:\n", "jobEnvironments:\n  - {name: New, variables: {A: b}}\n"),
-            "1. job environment New: add [EnvAdd]\n",
+            edit(
+                "jobEnvironments:\n",
+                "jobEnvironments:\n  - {name: New, variables: {A: b}}\n",
+            ),
+            "1. job environment New: add\n",
         ),
         (
             "job environment removed",
             base.clone(),
             edit("  - name: Log\n    variables: {LEVEL: info}\n", ""),
-            "1. job environment Log: remove [EnvRemove]\n",
+            "1. job environment Log: remove\n",
         ),
         (
             "job environment description",
@@ -493,7 +471,7 @@ fn single_edits() {
             "job environment symbols",
             base.clone(),
             job_with(BASE, &[("Quality", "high")]),
-            "1. parameter Quality: modify [ParameterValue]\n2. job environment Conda: modify [EnvSymbols]\n",
+            "1. parameter Quality: modify\n2. job environment Conda: modify [EnvSymbols]\n",
         ),
         (
             "step description",
@@ -522,7 +500,10 @@ fn single_edits() {
         (
             "step environment added",
             base.clone(),
-            edit("{name: Lic, variables: {Y: b}}", "{name: Lic, variables: {Y: b}}, {name: New, variables: {Z: c}}"),
+            edit(
+                "{name: Lic, variables: {Y: b}}",
+                "{name: Lic, variables: {Y: b}}, {name: New, variables: {Z: c}}",
+            ),
             "1. step Render: modify [EnvAdd]\n",
         ),
         (
@@ -538,6 +519,15 @@ fn single_edits() {
             "1. step Render: modify [EnvVariables]\n",
         ),
         (
+            "step environment description",
+            base.clone(),
+            edit(
+                "{name: Gpu, variables",
+                "{name: Gpu, description: g, variables",
+            ),
+            "1. step Render: modify [EnvMetadata]\n",
+        ),
+        (
             "step environment order",
             base.clone(),
             edit(
@@ -550,19 +540,19 @@ fn single_edits() {
             "step added",
             base.clone(),
             job(&format!("{BASE}{ENCODE}")),
-            "1. step Encode: add [StepAdd]\n2. tasks of step Encode: add [TaskCreate]\n",
+            "1. step Encode: add\n",
         ),
         (
             "step removed",
             job(&format!("{BASE}{ENCODE}")),
             base.clone(),
-            "1. step Encode: remove [StepRemove]\n",
+            "1. step Encode: remove\n",
         ),
         (
             "task range",
             base.clone(),
             job_with(BASE, &[("Last", "5")]),
-            "1. parameter Last: modify [ParameterValue]\n2. tasks of step Render: replace [TaskReplace]\n",
+            "1. parameter Last: modify\n2. step Render: modify [StepParameterSpace]\n",
         ),
     ];
     let mut planned = BTreeSet::new();
@@ -570,7 +560,10 @@ fn single_edits() {
         let p = plan(old, new).unwrap();
         assert_eq!(p.to_string(), *want, "{name}");
         for op in p.ops() {
-            assert!(!op.kinds.is_empty(), "{name}: {op}");
+            // Only a modify of a job, job environment or step has kinds.
+            let has_kinds =
+                op.action == OpAction::Modify && !matches!(op.target, OpTarget::Parameter(_));
+            assert_eq!(!op.kinds.is_empty(), has_kinds, "{name}: {op}");
             planned.extend(op.kinds.iter().copied());
         }
     }
@@ -590,7 +583,7 @@ fn a_step_environment_script_and_symbols_are_kinds_of_its_step() {
     let new = job_with(&yaml, &[("Scene", "b.blend")]);
     assert_eq!(
         plan_text(&job(&yaml), &new),
-        "1. parameter Scene: modify [ParameterValue]\n\
+        "1. parameter Scene: modify\n\
          2. step Prep: modify [StepSymbols]\n\
          3. step Render: modify [StepSymbols]\n"
     );
@@ -611,20 +604,15 @@ fn op_parts_display_as_the_plan_writes_them() {
             op.action,
             op.kinds.iter().copied().collect::<Vec<_>>()
         ),
-        (
-            &OpTarget::Step("Encode".into()),
-            OpAction::Add,
-            vec![MutationKind::StepAdd]
-        )
+        (&OpTarget::Step("Encode".into()), OpAction::Add, vec![])
     );
-    assert_eq!(op.to_string(), "step Encode: add [StepAdd]");
+    assert_eq!(op.to_string(), "step Encode: add");
     assert!(!p.is_empty());
     for (target, text) in [
         (OpTarget::Job, "job"),
         (OpTarget::Parameter("P".into()), "parameter P"),
         (OpTarget::JobEnvironment("E".into()), "job environment E"),
         (OpTarget::Step("S".into()), "step S"),
-        (OpTarget::StepTasks("S".into()), "tasks of step S"),
     ] {
         assert_eq!(target.to_string(), text);
     }
@@ -632,12 +620,82 @@ fn op_parts_display_as_the_plan_writes_them() {
         (OpAction::Add, "add"),
         (OpAction::Modify, "modify"),
         (OpAction::Remove, "remove"),
-        (OpAction::Replace, "replace"),
     ] {
         assert_eq!(action.to_string(), text);
     }
     assert_eq!(
         MutationKind::StepHostRequirements.to_string(),
         "StepHostRequirements"
+    );
+}
+
+#[test]
+fn every_tree_shape_field_has_its_kind() {
+    use crate::job::apply::{env_kind, job_kind, step_kind};
+    use MutationKind::*;
+    // The own fields job-diff.md "Tree shape" lists for each node with kinds;
+    // a parameter's fields need none, since its op is the whole value.
+    let job_fields = [
+        ("name", JobMetadata),
+        ("description", JobMetadata),
+        ("extensions", JobExtensions),
+        ("jobEnvironments.order", EnvReorder),
+        ("steps.order", StepReorder),
+    ];
+    let step_fields = [
+        ("name", StepMetadata),
+        ("description", StepMetadata),
+        ("dependencies", StepDependencies),
+        ("resolvedSymTab[Param.A]", StepSymbols),
+        ("resolvedSymTab", StepSymbols),
+        ("stepEnvironments.order", EnvReorder),
+    ];
+    let env_fields = [
+        ("name", EnvMetadata),
+        ("description", EnvMetadata),
+        ("variables[K]", EnvVariables),
+        ("variables", EnvVariables),
+        ("resolvedSymTab[Param.A]", EnvSymbols),
+        ("resolvedSymTab", EnvSymbols),
+    ];
+    for (field, kind) in job_fields {
+        assert_eq!(job_kind(field).unwrap(), kind, "{field}");
+    }
+    for (field, kind) in step_fields {
+        assert_eq!(step_kind(field).unwrap(), kind, "{field}");
+    }
+    for (field, kind) in env_fields {
+        assert_eq!(env_kind(field).unwrap(), kind, "{field}");
+    }
+    assert_eq!(
+        job_kind("other").unwrap_err().to_string(),
+        "Validation error: the job diff names job field `other`, which no mutation kind maps"
+    );
+    for field in ["other", "variables", "variablesX", "extensions"] {
+        assert!(step_kind(field).is_err(), "{field}");
+    }
+    for field in ["other", "dependencies", "resolvedSymTabX"] {
+        assert!(env_kind(field).is_err(), "{field}");
+    }
+}
+
+#[test]
+fn whole_collection_fields_plan_their_kind() {
+    // A collection that differs with no entry differing is one field named
+    // for the collection, such as no `variables` against an empty map.
+    use openjd_expr::SerializedSymbolTable;
+    let base = job(BASE);
+    let mut new = base.clone();
+    new.job_environments.as_mut().unwrap()[1].variables = None;
+    new.steps[0].resolved_symtab = Some(SerializedSymbolTable::from_value(serde_json::json!({})));
+    new.job_environments.as_mut().unwrap()[0].resolved_symtab =
+        Some(SerializedSymbolTable::from_value(serde_json::json!({})));
+    let mut old = base;
+    old.job_environments.as_mut().unwrap()[1].variables = Some(Default::default());
+    assert_eq!(
+        plan_text(&old, &new),
+        "1. job environment Conda: modify [EnvSymbols]\n\
+         2. job environment Log: modify [EnvVariables]\n\
+         3. step Prep: modify [StepSymbols]\n"
     );
 }

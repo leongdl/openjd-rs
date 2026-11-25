@@ -155,19 +155,13 @@ pub openjd_model::job::apply::MutationKind::EnvSymbols
 pub openjd_model::job::apply::MutationKind::EnvVariables
 pub openjd_model::job::apply::MutationKind::JobExtensions
 pub openjd_model::job::apply::MutationKind::JobMetadata
-pub openjd_model::job::apply::MutationKind::ParameterAdd
-pub openjd_model::job::apply::MutationKind::ParameterRemove
-pub openjd_model::job::apply::MutationKind::ParameterValue
-pub openjd_model::job::apply::MutationKind::StepAdd
 pub openjd_model::job::apply::MutationKind::StepDependencies
 pub openjd_model::job::apply::MutationKind::StepHostRequirements
 pub openjd_model::job::apply::MutationKind::StepMetadata
-pub openjd_model::job::apply::MutationKind::StepRemove
+pub openjd_model::job::apply::MutationKind::StepParameterSpace
 pub openjd_model::job::apply::MutationKind::StepReorder
 pub openjd_model::job::apply::MutationKind::StepScript
 pub openjd_model::job::apply::MutationKind::StepSymbols
-pub openjd_model::job::apply::MutationKind::TaskCreate
-pub openjd_model::job::apply::MutationKind::TaskReplace
 impl core::clone::Clone for openjd_model::job::apply::MutationKind
 pub fn openjd_model::job::apply::MutationKind::clone(&self) -> openjd_model::job::apply::MutationKind
 impl core::cmp::Eq for openjd_model::job::apply::MutationKind
@@ -181,15 +175,12 @@ impl core::fmt::Debug for openjd_model::job::apply::MutationKind
 pub fn openjd_model::job::apply::MutationKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for openjd_model::job::apply::MutationKind
 pub fn openjd_model::job::apply::MutationKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::hash::Hash for openjd_model::job::apply::MutationKind
-pub fn openjd_model::job::apply::MutationKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::Copy for openjd_model::job::apply::MutationKind
 impl core::marker::StructuralPartialEq for openjd_model::job::apply::MutationKind
 #[non_exhaustive] pub enum openjd_model::job::apply::OpAction
 pub openjd_model::job::apply::OpAction::Add
 pub openjd_model::job::apply::OpAction::Modify
 pub openjd_model::job::apply::OpAction::Remove
-pub openjd_model::job::apply::OpAction::Replace
 impl core::clone::Clone for openjd_model::job::apply::OpAction
 pub fn openjd_model::job::apply::OpAction::clone(&self) -> openjd_model::job::apply::OpAction
 impl core::cmp::Eq for openjd_model::job::apply::OpAction
@@ -206,7 +197,6 @@ pub openjd_model::job::apply::OpTarget::Job
 pub openjd_model::job::apply::OpTarget::JobEnvironment(alloc::string::String)
 pub openjd_model::job::apply::OpTarget::Parameter(alloc::string::String)
 pub openjd_model::job::apply::OpTarget::Step(alloc::string::String)
-pub openjd_model::job::apply::OpTarget::StepTasks(alloc::string::String)
 impl core::clone::Clone for openjd_model::job::apply::OpTarget
 pub fn openjd_model::job::apply::OpTarget::clone(&self) -> openjd_model::job::apply::OpTarget
 impl core::cmp::Eq for openjd_model::job::apply::OpTarget
