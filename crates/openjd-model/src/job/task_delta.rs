@@ -179,6 +179,16 @@ fn product_delta<'a>(
     {
         return Err(FallbackReason::ParameterMismatch(name.clone()));
     }
+    // Every type is checked before any dimension is built, so a retyped
+    // parameter wins over another's range that is too complex.
+    let kind = std::mem::discriminant::<TaskParameter>;
+    if let Some(name) = n
+        .iter()
+        .find(|(k, np)| o.get(*k).is_some_and(|op| kind(op) != kind(np)))
+        .map(|(k, _)| k)
+    {
+        return Err(FallbackReason::ParameterMismatch(name.clone()));
+    }
     let dims = n
         .iter()
         .filter_map(|(name, np)| o.get(name).map(|op| dim(name, op, np)))
@@ -491,7 +501,7 @@ fn intersect(a: &[IntRange], b: &[IntRange]) -> Option<Vec<IntRange>> {
     let mut out = Vec::new();
     let (mut i, mut j) = (0, 0);
     while let (Some(x), Some(y)) = (a.get(i), b.get(j)) {
-        if let Some(r) = intersect_run(x, y)? {
+        for r in intersect_run(x, y)?.into_iter().flatten() {
             push_run(&mut out, r.start(), r.end(), r.step())?;
         }
         if x.end() < y.end() {
@@ -520,14 +530,16 @@ fn subtract(a: &[IntRange], b: &[IntRange]) -> Option<Vec<IntRange>> {
             if y.start() > x.end() {
                 break;
             }
-            let (Some(c), Some(common)) = (cursor, intersect_run(x, y)?) else {
-                continue;
-            };
-            if let Some(end) = common.start().checked_sub(step) {
-                push_run(&mut out, c, end, step)?;
+            for common in intersect_run(x, y)?.into_iter().flatten() {
+                let Some(c) = cursor else {
+                    break;
+                };
+                if let Some(end) = common.start().checked_sub(step) {
+                    push_run(&mut out, c, end, step)?;
+                }
+                push_gaps(&mut out, step, &common)?;
+                cursor = common.end().checked_add(step);
             }
-            push_gaps(&mut out, step, &common)?;
-            cursor = common.end().checked_add(step);
         }
         if let Some(c) = cursor {
             push_run(&mut out, c, x.end(), step)?;
@@ -590,12 +602,12 @@ fn merge(a: &IntRange, b: &IntRange) -> Option<IntRange> {
     }
 }
 
-/// The values two runs share: `Ok(None)` for none, `None` when the result
-/// does not fit an `IntRange`.
-fn intersect_run(a: &IntRange, b: &IntRange) -> Option<Option<IntRange>> {
+/// The values two runs share, as at most two ascending runs; `None` when a
+/// run does not fit an `IntRange`.
+fn intersect_run(a: &IntRange, b: &IntRange) -> Option<[Option<IntRange>; 2]> {
     let (lo, hi) = (a.start().max(b.start()), a.end().min(b.end()));
     if lo > hi {
-        return Some(None);
+        return Some([None, None]);
     }
     let (s1, s2) = (i128::from(a.step()), i128::from(b.step()));
     let (r1, r2) = (i128::from(a.start()), i128::from(b.start()));
@@ -603,7 +615,7 @@ fn intersect_run(a: &IntRange, b: &IntRange) -> Option<Option<IntRange>> {
     // and then x0 = r1 + s1·t with t = ((r2 - r1)/g)·inv(s1/g) mod (s2/g).
     let g = gcd(s1, s2);
     if (r2 - r1) % g != 0 {
-        return Some(None);
+        return Some([None, None]);
     }
     let m = s2 / g;
     let t = ((r2 - r1) / g).rem_euclid(m) * inverse(s1 / g, m) % m;
@@ -611,14 +623,19 @@ fn intersect_run(a: &IntRange, b: &IntRange) -> Option<Option<IntRange>> {
     let (lo, hi) = (i128::from(lo), i128::from(hi));
     let first = lo + (r1 + s1 * t - lo).rem_euclid(lcm);
     if first > hi {
-        return Some(None);
+        return Some([None, None]);
     }
     let last = first + (hi - first) / lcm * lcm;
-    let step = if first == last { 1 } else { lcm };
     let narrow = |v: i128| i64::try_from(v).ok();
-    Some(Some(
-        IntRange::new(narrow(first)?, narrow(last)?, narrow(step)?).ok()?,
-    ))
+    let run = |s: i64, e: i64, step: i64| IntRange::new(s, e, step).ok().map(Some);
+    let (first, last) = (narrow(first)?, narrow(last)?);
+    // An lcm past i64 exceeds the span of any two i64 values, so the runs
+    // then share at most `first` and `last`, each kept as a one-value run.
+    Some(match narrow(lcm) {
+        _ if first == last => [run(first, first, 1)?, None],
+        Some(step) => [run(first, last, step)?, None],
+        None => [run(first, first, 1)?, run(last, last, 1)?],
+    })
 }
 
 fn gcd(mut a: i128, mut b: i128) -> i128 {

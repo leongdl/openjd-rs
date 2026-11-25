@@ -291,6 +291,7 @@ fn order_changes_keep_every_task() {
             false,
         ),
         (with_combination(ab.clone(), "*"), false),
+        (with_combination(ab.clone(), " * "), false),
     ] {
         let d = check(&ab, &new);
         assert_eq!(counts(&d), (4, 0, 0), "{new:?}");
@@ -496,6 +497,20 @@ fn every_fallback_reason() {
         ),
         "task parameter N needs more runs than a range holds"
     );
+    // Every parameter's type is checked before any range is split, so a
+    // retyped S wins over N's too-complex result, though N comes first.
+    let (old, new) = (
+        space(vec![("N", ints(old)), ("S", strs(&["a"]))]),
+        space(vec![("N", ints(new)), ("S", paths(&["a"]))]),
+    );
+    for (a, b) in [(&old, &new), (&new, &old)] {
+        assert_eq!(
+            task_delta(Some(a), Some(b)),
+            Some(TaskDelta::Fallback {
+                reason: FallbackReason::ParameterMismatch("S".into())
+            })
+        );
+    }
 }
 
 #[test]
@@ -651,6 +666,36 @@ fn coprime_steps_past_i64_meet_in_one_value() {
     );
     assert_eq!(counts(&d), (1, 2, 2));
     assert_eq!(d.kept.to_string(), "N=0");
+}
+
+/// Steps whose lcm does not fit an `i64` can still meet twice, at the ends
+/// of a span wider than `i64::MAX`: here `±3·2^61`, kept as two runs.
+#[test]
+fn steps_past_i64_meet_in_two_values() {
+    let v = 3_i64 << 61;
+    let (d, _) = both_ways(
+        &space(vec![("N", ints(&format!("{}-{v}:{v}", -v)))]),
+        &space(vec![("N", ints(&format!("{}-{v}:{}", -v, 1_i64 << 62)))]),
+    );
+    assert_eq!(counts(&d), (2, 2, 1));
+    assert_eq!(d.kept.to_string(), format!("N={},{v}", -v));
+}
+
+/// Subtracting every second value of 10^18 leaves one run, found from the
+/// runs alone.
+#[test]
+fn a_large_stepped_subtraction_is_one_run() {
+    let d = task_delta(
+        Some(&space(vec![("N", ints("1-1000000000000000000"))])),
+        Some(&space(vec![("N", ints("1-1000000000000000000:2"))])),
+    );
+    let Some(TaskDelta::Product(d)) = d else {
+        panic!("{d:?}");
+    };
+    let half = 500_000_000_000_000_000;
+    assert_eq!(counts(&d), (half, 0, half));
+    assert_eq!(d.removed.len(), 1);
+    assert_eq!(d.removed[0].to_string(), "N=2-1000000000000000000:2");
 }
 
 /// A range of 10^18 values costs its run count, so this returns at once;
