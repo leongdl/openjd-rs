@@ -90,8 +90,5 @@ with `--exit-code` must exit 3 unless its output is `no changes`.
   API decision outside this command.
 - Reading a template from stdin. No other command reads one, and a template's directory
   sets relative `PATH` defaults.
-- Which tasks a change keeps, adds or removes, and a plan for applying the diff to a
-  running job.
-- Which changes come from the template and which from the parameters.
 
 Tests: `crates/openjd-cli/tests/diff_tests.rs`.

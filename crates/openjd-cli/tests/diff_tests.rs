@@ -356,6 +356,36 @@ fn job_creation_enforces_the_cli_argument_length_limit() {
 }
 
 #[test]
+fn an_empty_extensions_argument_rejects_a_declared_extension() {
+    let dir = dir_with(&[("path.yaml", PATH_TEMPLATE)]);
+    let (code, stdout, stderr) = openjd(dir.path(), &["path.yaml", "job.yaml", "--extensions", ""]);
+    assert_eq!((code, stdout.as_str()), (1, ""));
+    assert!(stderr.starts_with("ERROR: old job: "), "{stderr}");
+    assert!(stderr.contains("Unsupported extension names"), "{stderr}");
+}
+
+#[test]
+fn an_empty_extensions_argument_rejects_an_environment_extension() {
+    let env = "specificationVersion: environment-2023-09\n\
+               extensions: [EXPR]\n\
+               environment:\n  name: E\n  variables: {V: v}\n";
+    let dir = dir_with(&[("env.yaml", env)]);
+    let args = ["job.yaml", "--environment", "env.yaml"];
+    let (code, _, stderr) = openjd(dir.path(), &args);
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    let (code, stdout, stderr) = openjd(dir.path(), &[&args[..], &["--extensions", ""]].concat());
+    assert_eq!((code, stdout.as_str()), (1, ""));
+    assert!(stderr.starts_with("ERROR: old job: "), "{stderr}");
+    assert!(stderr.contains("Unsupported extension names"), "{stderr}");
+}
+
+#[test]
+fn no_arguments_is_a_usage_error() {
+    let dir = dir_with(&[]);
+    assert_eq!(openjd(dir.path(), &[]).0, 2);
+}
+
+#[test]
 fn help_marks_the_command_unstable() {
     let output = Command::new(env!("CARGO_BIN_EXE_openjd"))
         .arg("--help")
