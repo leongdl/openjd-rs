@@ -43,7 +43,7 @@ openjd-rs/
 │   │           ├── src/        # Helper protocol and output framing, Unix and Windows runners, process trees
 │   │           └── tests/      # Helper protocol tests
 │   ├── openjd-cli/             # The `openjd` binary
-│   │   └── src/                # main.rs (subcommand dispatch), check, summary, help, shared helpers
+│   │   └── src/                # main.rs (subcommand dispatch), check, summary, diff, help, shared helpers
 │   │       └── run/            # `openjd run`: parameters, execution, result reporting
 │   ├── openjd-snapshots/       # Job attachments snapshots (experimental)
 │   │   └── src/                # lib.rs plus manifest types, the codec (v2023 and v2025 encode and decode),

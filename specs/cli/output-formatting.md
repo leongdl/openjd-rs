@@ -13,6 +13,7 @@ terminal output) and programmatic consumption (parseable structured output).
 | `check` | No | Plain text only |
 | `summary` | Yes | `human-readable` |
 | `run` | Yes | `human-readable` |
+| `diff` | No | Plain text only |
 
 The `check` command produces only a single success/error message and doesn't benefit from
 structured output. Adding `--output` support would be straightforward but low value.

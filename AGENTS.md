@@ -122,11 +122,12 @@ Spec entry point: `specs/sessions/README.md`
 
 ### openjd-cli (`crates/openjd-cli`)
 
-CLI binary (`openjd`) with `check`, `summary`, and `run` subcommands.
+CLI binary (`openjd`) with `check`, `summary`, `run`, and `diff` (unstable) subcommands.
 
 - **check** (`src/check.rs`) — Template validation.
 - **summary** (`src/summary.rs`) — Job/step summary display.
 - **run** (`src/run/`) — Local job execution using the sessions runtime.
+- **diff** (`src/diff.rs`) — Unstable job diff of two templates, or one template under two parameter sets.
 - **help** (`src/help.rs`) — Context-aware help text with markdown stripping for terminal display.
 
 Spec entry point: `specs/cli/README.md`

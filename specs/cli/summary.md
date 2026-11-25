@@ -45,20 +45,20 @@ pub struct SummaryArgs {
 ```
 execute(args)
   │
-  ├── Read and parse template (same pattern as check: common::read_input_file)
-  ├── Resolve extensions list
-  ├── decode_job_template()
+  ├── job_from_file::create_job_from_file() → (JobTemplate, Job); diff uses it too
+  │   ├── Read and parse template (same pattern as check: common::read_input_file)
+  │   ├── Resolve extensions list
+  │   ├── decode_job_template(), and decode each --environment template
+  │   ├── Parse CLI parameters via run::parse_cli_parameters()
+  │   ├── Resolve job_template_dir and current_working_dir
+  │   ├── preprocess_job_parameters() → param_values
+  │   └── create_job() → Job
+  │         context: job_template.default_validation_context() with
+  │         common::caller_limits() layered on — the same limits the decode
+  │         ran under (see run.md § Session Configuration / check.md § Caller-Limits Policy)
   │
   ├── Preserve parameter definition order from template
   │   └── param_order: Vec<String> from job_template.parameter_definitions_list()
-  │
-  ├── Parse CLI parameters via run::parse_cli_parameters()
-  ├── Resolve job_template_dir and current_working_dir
-  ├── preprocess_job_parameters() → param_values
-  ├── create_job() → Job
-  │     context: job_template.default_validation_context() with
-  │     common::caller_limits() layered on — the same limits the decode
-  │     ran under (see run.md § Session Configuration / check.md § Caller-Limits Policy)
   │
   └── Dispatch on --step
       ├── Some(step_name) → output_step_summary(&job, step_name, output_format)

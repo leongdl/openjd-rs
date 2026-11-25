@@ -22,6 +22,9 @@ src/
 ├── main.rs       # Entry point: Cli/Commands structs, SessionLogger, tokio::main
 ├── check.rs      # CheckArgs + execute(): template validation
 ├── summary.rs    # SummaryArgs + execute(): job/step summary output
+├── diff.rs       # DiffArgs + execute(): job diff of two templates or parameter sets (unstable)
+├── common.rs     # Shared helpers: input files, caller limits, extensions, output
+├── job_from_file.rs # create_job_from_file(): template file and -p arguments to a Job, for summary and diff
 ├── run/
 │   ├── mod.rs    # RunArgs, RunContext, lifecycle primitives
 │   ├── execution.rs # Preflight, step/task execution, reporting phases
@@ -74,7 +77,8 @@ main()
   └── match cli.command
       ├── Commands::Check(args)   → check::execute(args)
       ├── Commands::Summary(args) → summary::execute(args)
-      └── Commands::Run(args)     → run::execute(args).await
+      ├── Commands::Run(args)     → run::execute(args).await
+      └── Commands::Diff(args)    → diff::execute(args), which returns the exit code
 ```
 
 The help interception happens before clap parsing because clap would consume `-h`/`--help`

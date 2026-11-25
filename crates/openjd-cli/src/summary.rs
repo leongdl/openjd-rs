@@ -6,7 +6,6 @@
 
 use clap::Args;
 use openjd_model::job;
-use openjd_model::template::parse;
 use std::path::PathBuf;
 
 #[derive(Args)]
@@ -36,21 +35,11 @@ pub struct SummaryArgs {
 }
 
 pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let path = &args.path;
-    let content = crate::common::read_input_file(path)?;
-    let template_value = parse::document_string_to_object(
-        &content,
-        crate::common::document_type(path),
-        &crate::common::caller_limits(),
-    )?;
-
-    let exts = crate::common::parse_extensions(&args.extensions)?;
-    let supported_exts: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
-
-    let job_template = parse::decode_job_template(
-        template_value,
-        Some(&supported_exts),
-        &crate::common::caller_limits(),
+    let (job_template, the_job) = crate::job_from_file::create_job_from_file(
+        &args.path,
+        &args.parameters,
+        &args.extensions,
+        &args.environments,
     )?;
 
     // Preserve template parameter definition order
@@ -64,56 +53,6 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .filter_map(|p| p.description().map(|d| (p.name(), d)))
         .collect();
-
-    // Load environment templates
-    let mut env_templates = Vec::new();
-    for env_path in &args.environments {
-        let env_content = std::fs::read_to_string(env_path)?;
-        let env_value = parse::document_string_to_object(
-            &env_content,
-            crate::common::document_type(env_path),
-            &crate::common::caller_limits(),
-        )?;
-        env_templates.push(parse::decode_environment_template(
-            env_value,
-            Some(&supported_exts),
-            &crate::common::caller_limits(),
-        )?);
-    }
-
-    // Parse parameters
-    let input_values = crate::run::parse_cli_parameters(
-        &args.parameters,
-        &crate::run::float_parameter_names(&job_template, &env_templates),
-    )?;
-    let job_template_dir = crate::run::strip_extended_prefix(
-        std::fs::canonicalize(path)?
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new(".")),
-    );
-    let current_working_dir = crate::run::strip_extended_prefix(&std::env::current_dir()?);
-    let param_values = openjd_model::preprocess_job_parameters(
-        &job_template,
-        &input_values,
-        &env_templates,
-        &openjd_model::PathParameterOptions {
-            job_template_dir: job_template_dir.to_str().unwrap_or("."),
-            current_working_dir: current_working_dir.to_str().unwrap_or("."),
-            path_format: openjd_expr::path_mapping::PathFormat::host(),
-            allow_template_dir_walk_up: false,
-            allow_uri_path_values: true,
-        },
-    )?;
-
-    // Derive the context from the template itself — `create_job`
-    // requires the context's revision/extensions to cover the
-    // template's — and carry the CLI's caller limits so job creation
-    // enforces the same caps the decode ran under.
-    let ctx = job_template
-        .default_validation_context()
-        .with_caller_limits(crate::common::caller_limits());
-
-    let the_job = openjd_model::create_job(&job_template, &param_values, &ctx)?;
 
     if let Some(step_name) = &args.step {
         output_step_summary(&the_job, step_name, &args.output)

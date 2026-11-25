@@ -16,6 +16,7 @@ Rust's clap derive API, async runtime (tokio), and the structured logging facade
 | [check.md](check.md) | `check` command: template validation pipeline, extension handling, error reporting |
 | [summary.md](summary.md) | `summary` command: job/step summarization, output formatting, parameter display |
 | [run.md](run.md) | `run` command: full session lifecycle, task iteration, adaptive chunking, environment management |
+| [diff.md](diff.md) | `diff` command (unstable): the job diff of two templates, or of one template under two parameter sets |
 | [help.md](help.md) | Context-aware help: template-driven `--help` output for the `run` command |
 | [logging.md](logging.md) | Session logger: timestamp formatting, `openjd_log_content` filtering, log level control |
 | [output-formatting.md](output-formatting.md) | Structured output: human-readable, JSON, and YAML output modes across all commands |
@@ -43,6 +44,7 @@ implementation:
 | `openjd check <path>` | Validate a job or environment template file |
 | `openjd summary <path>` | Print summary information about a job template |
 | `openjd run <path>` | Run a job template locally in an OpenJD session |
+| `openjd diff <old> [new]` | Compare the jobs two templates create, or one template under two parameter sets (unstable) |
 
 ## Not Yet Implemented
 

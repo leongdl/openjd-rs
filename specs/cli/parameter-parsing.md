@@ -9,7 +9,7 @@ and the rationale for supporting each format.
 ## Job Parameters (`-p` / `--parameter`)
 
 `parse_cli_parameters()` in `run/params.rs` handles the `-p`/`--parameter` argument, which is
-used by both the `summary` and `run` commands. It accepts three input formats and returns
+used by the `summary`, `run` and `diff` commands. It accepts three input formats and returns
 a `HashMap<String, ExprValue>`.
 
 ### Format 1: Key=Value Pairs
@@ -240,9 +240,10 @@ The CLI validates extension names against `ModelExtension::ALL` before template 
 ## Cross-Module Dependency
 
 `parse_cli_parameters()` and `float_parameter_names()` live in `run/params.rs`, are
-re-exported by the public `run` module, and are called by `summary.rs` via
+re-exported by the public `run` module, and are called by `run` and by
+`job_from_file::create_job_from_file` (which `summary` and `diff` use) via
 `crate::run::parse_cli_parameters()` and `crate::run::float_parameter_names()`.
 
-This cross-module dependency exists because both `summary` and `run` need to parse `-p`
+This cross-module dependency exists because `summary`, `diff` and `run` need to parse `-p`
 arguments identically. The function could be extracted to a shared module, but with only
 two callers the current arrangement is simpler.
