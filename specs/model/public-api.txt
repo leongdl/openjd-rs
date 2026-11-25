@@ -230,8 +230,6 @@ pub fn openjd_model::job::apply::ApplyPlan::clone(&self) -> openjd_model::job::a
 impl core::cmp::Eq for openjd_model::job::apply::ApplyPlan
 impl core::cmp::PartialEq for openjd_model::job::apply::ApplyPlan
 pub fn openjd_model::job::apply::ApplyPlan::eq(&self, &openjd_model::job::apply::ApplyPlan) -> bool
-impl core::default::Default for openjd_model::job::apply::ApplyPlan
-pub fn openjd_model::job::apply::ApplyPlan::default() -> openjd_model::job::apply::ApplyPlan
 impl core::fmt::Debug for openjd_model::job::apply::ApplyPlan
 pub fn openjd_model::job::apply::ApplyPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for openjd_model::job::apply::ApplyPlan

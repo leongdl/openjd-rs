@@ -375,18 +375,29 @@ fn check_plan(job: &Job) {
     reversed.steps.reverse();
     let mut empty = job.clone();
     empty.steps.clear();
+    // The first step takes the second's content under its own name and
+    // dependencies, so it is modified and its kinds are computed.
+    let mut swapped = job.clone();
+    if let (Some(first), Some(second)) = (job.steps.first(), job.steps.get(1)) {
+        swapped.steps[0] = Step {
+            name: first.name.clone(),
+            dependencies: first.dependencies.clone(),
+            ..second.clone()
+        };
+    }
     let plans = (
         plan(job, job),
         plan(job, &reversed),
         plan(&empty, job),
         plan(job, &empty),
+        plan(job, &swapped),
     );
-    let (Ok(same), Ok(reorder), Ok(adds), Ok(removes)) = plans else {
+    let (Ok(same), Ok(reorder), Ok(adds), Ok(removes), Ok(modifies)) = plans else {
         oracle!(false, "a created job has no plan: {plans:?}");
         return;
     };
     oracle!(same.is_empty(), "a job's plan against itself:\n{same}");
-    for op in [&reorder, &adds, &removes]
+    for op in [&reorder, &adds, &removes, &modifies]
         .into_iter()
         .flat_map(|p| p.ops())
     {

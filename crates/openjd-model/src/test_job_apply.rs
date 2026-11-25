@@ -87,7 +87,6 @@ fn plan_text(old: &Job, new: &Job) -> String {
 fn identical_jobs_plan_nothing() {
     let p = plan(&job(BASE), &job(BASE)).unwrap();
     assert!(p.is_empty());
-    assert_eq!(p, ApplyPlan::default());
     assert_eq!(p.to_string(), "");
 }
 
@@ -697,5 +696,31 @@ fn whole_collection_fields_plan_their_kind() {
         "1. job environment Conda: modify [EnvSymbols]\n\
          2. job environment Log: modify [EnvVariables]\n\
          3. step Prep: modify [StepSymbols]\n"
+    );
+}
+
+#[test]
+fn a_job_child_outside_the_planned_collections_is_an_error() {
+    // `diff_jobs` gives the job node no such child, so build the node.
+    use crate::job::apply::check_job_children;
+    use crate::job::diff::{DiffNode, DiffStatus};
+    let node = |segment: &str, status| DiffNode {
+        segment: segment.into(),
+        status,
+        field_changes: Vec::new(),
+        children: Vec::new(),
+    };
+    let mut root = node("", DiffStatus::Modified);
+    root.children = vec![
+        node("parameters[A]", DiffStatus::Added),
+        node("jobEnvironments[E]", DiffStatus::Removed),
+        node("steps[S]", DiffStatus::Modified),
+        node("other[X]", DiffStatus::Unchanged),
+    ];
+    assert!(check_job_children(&root).is_ok());
+    root.children.push(node("other[X]", DiffStatus::Added));
+    assert_eq!(
+        check_job_children(&root).unwrap_err().to_string(),
+        "Validation error: the job diff names job child `other[X]`, which no mutation kind maps"
     );
 }

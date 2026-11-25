@@ -1334,7 +1334,6 @@ without notice. Semantics: [job-apply.md](job-apply.md).
 ```rust
 pub fn plan(old: &Job, new: &Job) -> Result<ApplyPlan, ModelError>;
 
-#[derive(Default)]
 pub struct ApplyPlan { /* private */ }
 impl ApplyPlan {
     pub fn ops(&self) -> &[ApplyOp];

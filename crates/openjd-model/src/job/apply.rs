@@ -142,7 +142,7 @@ impl fmt::Display for ApplyOp {
 ///
 /// `Display` writes one line per op, numbered from 1, in the format
 /// `specs/model/job-apply.md` "Display" gives.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyPlan {
     ops: Vec<ApplyOp>,
 }
@@ -200,6 +200,7 @@ pub fn plan(old: &Job, new: &Job) -> Result<ApplyPlan, ModelError> {
             .collect::<Result<_, _>>()?;
         push(OpTarget::Job, OpAction::Modify, kinds);
     }
+    check_job_children(root)?;
 
     for (name, node) in elements(root, "parameters") {
         push(
@@ -311,6 +312,20 @@ pub(crate) fn job_kind(field: &str) -> Result<MutationKind, ModelError> {
         "jobEnvironments.order" => MutationKind::EnvReorder,
         _ => return Err(unmapped("job field", field)),
     })
+}
+
+/// Fail for a changed child of the job node outside the collections `plan`
+/// reads, which would otherwise get no op.
+pub(crate) fn check_job_children(root: &DiffNode) -> Result<(), ModelError> {
+    match changed(root).find(|c| {
+        !matches!(
+            collection(&c.segment),
+            "parameters" | "jobEnvironments" | "steps"
+        )
+    }) {
+        Some(c) => Err(unmapped("job child", &c.segment)),
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn env_kind(field: &str) -> Result<MutationKind, ModelError> {

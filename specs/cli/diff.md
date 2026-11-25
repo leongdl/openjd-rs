@@ -118,8 +118,8 @@ with `--exit-code` must exit 3 unless its output is `no changes`.
   API decision outside this command.
 - Reading a template from stdin. No other command reads one, and a template's directory
   sets relative `PATH` defaults.
-- Which tasks a change keeps, adds or removes. The plan replaces a changed step's tasks
-  whole.
+- Which tasks a change keeps, adds or removes. A parameter space change replaces the
+  step's tasks whole.
 - Executing the plan, or checking it against the kinds a system supports.
 
 Tests: `crates/openjd-cli/tests/diff_tests.rs`.
