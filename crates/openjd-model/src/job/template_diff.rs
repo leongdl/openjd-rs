@@ -385,11 +385,13 @@ fn definition_fields(
     ]
 }
 
-/// A merged `allowedValues` set, sorted: merging keeps it in no fixed order.
+/// A merged `allowedValues` set, sorted and without duplicates: merging keeps
+/// it in no fixed order, and keeps a FLOAT list's duplicates.
 fn sorted<T: Clone + Serialize>(v: &Option<Vec<T>>, cmp: fn(&T, &T) -> Ordering) -> Value {
     to_json(&v.as_ref().map(|v| {
         let mut v = v.clone();
         v.sort_by(cmp);
+        v.dedup_by(|a, b| cmp(a, b) == Ordering::Equal);
         v
     }))
 }

@@ -303,6 +303,18 @@ fn definition_fields() {
             "type: FLOAT, default: 1, allowedValues: [1, 2.5]",
             "allowedValues: [1.0,2.0] -> [1.0,2.5]",
         ),
+        // A duplicate FLOAT value is the same set, as it is for STRING and INT.
+        (
+            "type: FLOAT, default: 1, allowedValues: [1, 2]",
+            "type: FLOAT, default: 1, allowedValues: [1, 2, 2]",
+            "",
+        ),
+        // allowedValues are a set; order only changes how a submitter lists them.
+        (
+            "type: STRING, default: a, allowedValues: [a, b]",
+            "type: STRING, default: a, allowedValues: [b, a]",
+            "",
+        ),
         (
             "type: INT, default: 1, minValue: 0",
             "type: INT, default: 1, minValue: 1",
@@ -489,5 +501,36 @@ fn an_environment_template_definition_change_is_the_templates() {
         diff_with_environments((&job, &old), (&job, &new), &[], &[]).unwrap(),
         "~ parameterDefinitions[Pool]\n  default: \"a\" -> \"b\" [template]\n~ parameters[Pool]\n  \
          value: \"a\" -> \"b\" [template]\n"
+    );
+}
+
+#[test]
+fn a_working_directory_change_is_the_templates() {
+    let t = template(&edited(
+        BASE,
+        &[(
+            "parameterDefinitions:\n",
+            "parameterDefinitions:\n  - {name: Out, type: PATH}\n",
+        )],
+    ));
+    let v = values(&[("Out", "out")]);
+    let ctx = t.default_validation_context();
+    let input = |cwd| TemplateInput {
+        template: &t,
+        environments: &[],
+        parameters: &v,
+        path_options: PathParameterOptions {
+            job_template_dir: "/jobs",
+            current_working_dir: cwd,
+            path_format: openjd_expr::path_mapping::PathFormat::Posix,
+            allow_template_dir_walk_up: false,
+            allow_uri_path_values: true,
+        },
+        ctx: &ctx,
+    };
+    let d = diff_templates(&input("/a"), &input("/b")).unwrap();
+    assert_eq!(
+        d.tree.to_string(),
+        "~ parameters[Out]\n  value: \"/a/out\" -> \"/b/out\" [template]\n"
     );
 }

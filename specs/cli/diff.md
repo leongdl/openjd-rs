@@ -29,7 +29,7 @@ openjd diff <OLD> [NEW] [-p <PARAM>]... [--old-job-param <PARAM>]... [--new-job-
 | `--exit-code` | See "Exit codes" |
 | `--plan` | Also print the plan for applying the diff to a running job; see "Plan" |
 
-Each side is read by `job_from_file::TemplateFile::load`, as `summary` reads its template:
+Each side is read by `job_from_file::load`, as `summary` reads its template:
 the template is decoded with the CLI's caller limits, its directory sets relative `PATH`
 defaults, and parameters are parsed by `parse_cli_parameters`
 ([parameter-parsing.md](parameter-parsing.md)). `diff_templates` then checks them against
