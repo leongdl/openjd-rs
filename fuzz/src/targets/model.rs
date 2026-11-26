@@ -45,9 +45,11 @@ use openjd_expr::{
     PathFormat, SymbolTable,
 };
 use openjd_model::job::apply::{plan, ApplyPlan, OpAction, OpTarget};
-use openjd_model::job::diff::{diff_environments, diff_jobs, diff_steps, DiffNode, DiffStatus};
+use openjd_model::job::diff::{
+    diff_environments, diff_jobs, diff_steps, DiffNode, DiffStatus, Origin,
+};
 use openjd_model::job::task_delta::{task_delta, TaskBox, TaskDelta};
-use openjd_model::job::template_diff::{diff_templates, Origin, TemplateInput};
+use openjd_model::job::template_diff::{diff_templates, TemplateInput};
 use openjd_model::job::{Job, Step, StepParameterSpace, TaskParamRange, TaskParameter};
 use openjd_model::template::{Description, EnvironmentTemplate, JobTemplate};
 use openjd_model::{

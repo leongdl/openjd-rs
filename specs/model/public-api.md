@@ -1322,6 +1322,10 @@ pub struct FieldChange {
     pub after: serde_json::Value,
     pub origin: Option<Origin>,
 }
+
+#[non_exhaustive]
+pub enum Origin { Template, Parameters, Both }
+impl Display for Origin;
 ```
 
 - `DiffTree::root` returns the node that compares the two arguments.
@@ -1330,7 +1334,8 @@ pub struct FieldChange {
 - `DiffNode::child` returns the child with the given segment, written as the
   diff formats it, such as `steps[Render]`.
 - `origin` is `None` in a tree from `diff_*`. `diff_templates` sets it on every
-  field change and on every added or removed node.
+  field change and on every added or removed node. `Origin` displays as
+  `template`, `parameters` or `both`.
 
 ## Job Apply (unstable)
 
@@ -1475,10 +1480,6 @@ pub struct TemplateDiff {
 pub enum TemplateDiffError { Old(ModelError), New(ModelError) }
 impl Display for TemplateDiffError;
 impl Error for TemplateDiffError;
-
-#[non_exhaustive]
-pub enum Origin { Template, Parameters, Both }
-impl Display for Origin;
 ```
 
 - `diff_templates` builds both sides' jobs and diffs them. Every field change
@@ -1494,8 +1495,6 @@ impl Display for Origin;
   `cross_build_error` is the error of the job origins come from, the new side
   with the old values, when it did not build; every change the jobs show is
   then `Both`.
-- `Origin` displays as `template`, `parameters` or `both`.
-
 ## Step Dependency Graph
 
 ```rust

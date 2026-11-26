@@ -17,7 +17,6 @@ use openjd_expr::value::Float64;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::job::template_diff::Origin;
 use crate::job::{
     Action, EmbeddedFile, Environment, EnvironmentActions, EnvironmentScript, HostRequirements,
     Job, JobParameter, ResolvedChunks, Step, StepActions, StepParameterSpace, StepScript,
@@ -37,6 +36,30 @@ pub enum DiffStatus {
     Removed,
     /// Both sides are present and differ.
     Modified,
+}
+
+/// What caused a change, as
+/// [`diff_templates`](crate::job::template_diff::diff_templates) sets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Origin {
+    /// The template: the change happens with the parameter values held fixed.
+    Template,
+    /// The parameter values: the change happens with the template held fixed.
+    Parameters,
+    /// Both, or the split could not be computed.
+    Both,
+}
+
+impl fmt::Display for Origin {
+    /// Writes `template`, `parameters` or `both`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Origin::Template => "template",
+            Origin::Parameters => "parameters",
+            Origin::Both => "both",
+        })
+    }
 }
 
 /// A field of a [`DiffNode`] whose value differs between the two sides.

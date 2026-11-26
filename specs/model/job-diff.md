@@ -32,8 +32,9 @@ A `DiffTree` is a tree of `DiffNode`s. The root compares the two arguments.
 Each node has a `segment` (its path step from the parent, such as
 `steps[Render]` or `script`; empty for the root), a `DiffStatus`, its own
 `field_changes`, and its `children`. A `FieldChange`, and an added or removed
-node, has an `origin`, which `diff_*` leaves `None` and `job::template_diff`
-sets ([template-diff.md](template-diff.md)).
+node, has an `origin`, an `Origin` (`Template`, `Parameters` or `Both`, displayed
+lowercase), which `diff_*` leaves `None` and `job::template_diff` sets
+([template-diff.md](template-diff.md)).
 
 | status | meaning | expanded |
 |---|---|---|

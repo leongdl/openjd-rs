@@ -38,19 +38,17 @@ A change's key is its node's segments from the root with its field name, or with
 `Added` or `Removed` for a whole node. The status is all a whole node's key says, so a step
 the template adds is `Template` even when its contents read a changed parameter.
 
-The values are judged under the new template because the new job runs it. The other
-cross build, the old template with the new values, gets a template that stops reading a
-parameter wrong: with `args: ["{{Param.Quality}}"]` edited to `args: [q]` and `Quality`
-changed from `low` to `high`, the `resolvedSymTab[Param.Quality]` entry the new job drops
-is the template's, but in that order the entry first changes with the value and is then
-dropped, so it would be `Both`.
+The values are judged under the new template because the new job runs it, so a template
+that stops reading a changed parameter drops its `resolvedSymTab` entry as the template's.
 
-`mid`'s values are, for each parameter the new side defines, the old value; for one with
-no default that the old values do not give, the new value, so a template that adds a
-required parameter still builds `mid`, and the new parameter is the template's. A value for
-a parameter the new side no longer defines is dropped, so a removed parameter is the
-template's. A parameter that the old values do not give and the new side gives a default
-takes that default, so a default change the values do not override is the template's.
+`mid`'s values are, for each parameter the new side defines, the old value given. For one
+the old values do not give, `mid` takes the new side's default when it has one, so a
+default change the values do not override is the template's. Without a new default, it
+takes the old job's value, from the old side's default, so a template that drops a default
+the old side relied on leaves a new value the parameters'. Failing both, it takes the new
+value, so a template that adds a required parameter still builds `mid`, and the new
+parameter is the template's. A value for a parameter the new side no longer defines is
+dropped, so a removed parameter is the template's.
 
 When `mid` still does not build, such as for an old value the new template's
 `allowedValues` reject, every change the jobs show is `Both`, and `cross_build_error`
@@ -58,7 +56,9 @@ holds the error.
 
 When the two sides share a template, `mid` is the old job and every change is
 `Parameters`; when they share parameter values, `mid` is the new job and every change is
-`Template`.
+`Template`. A side's PATH options and `create_job` context belong to its template here, so
+two sides that share a template and values but resolve PATH values from different working
+directories show the difference as `Template`.
 
 ## Template layer
 
@@ -73,12 +73,19 @@ each with origin `Template`; a node that gains one is `Modified`, as is the root
 | | `objectType`, `dataFlow` | how a PATH value is checked and moved |
 | `steps[NAME]` | `let` | the step's bindings; the job keeps only the values the step reads |
 
-A definition is compared when both templates define its name; one added or removed shows
-as its `parameters[NAME]` node. A field is `null` when unset. Its type, name and value are
+The definitions compared are each side's `merge_job_parameter_definitions`, so an
+environment template's count, with the `description` of the last template that gives one;
+merging keeps `allowedValues` in no order, so they compare sorted. A definition is compared
+when both sides define its name; one added or removed shows as its `parameters[NAME]` node. A field is `null` when unset. Its type, name and value are
 in the job. `userInterface` is not compared, since it changes only how a submitter
 presents the parameter. A template-scope field that resolves to the same value, such as a
 job `name` of `{{Param.Shot}}` edited to `Shot010` while `Shot` is `Shot010`, builds the
-same job, and is not reported.
+same job, and is not reported. On an otherwise unchanged job, the root and a `steps[NAME]`
+node the layer adds hold only its change, not the unchanged children a `Modified` node
+from `diff_jobs` lists.
+
+Here the old side takes the default 1-3 and the new side sets 1-4, so the value is
+`Both`: the new default alone makes it 1-10, and the new value 1-4.
 
 ```
 ~ parameterDefinitions[Frames]

@@ -6,11 +6,14 @@
 //! parameter values and the `Display` of the diff, so a case shows every
 //! change the diff reports with its origin.
 
-use crate::job::diff::DiffNode;
-use crate::job::template_diff::{diff_templates, Origin, TemplateDiffError, TemplateInput};
-use crate::template::JobTemplate;
+use crate::job::diff::{DiffNode, Origin};
+use crate::job::template_diff::{diff_templates, TemplateDiffError, TemplateInput};
+use crate::template::{EnvironmentTemplate, JobTemplate};
 use crate::types::ModelExtension;
-use crate::{decode_job_template, CallerLimits, JobParameterInputValues, PathParameterOptions};
+use crate::{
+    decode_environment_template, decode_job_template, CallerLimits, JobParameterInputValues,
+    PathParameterOptions,
+};
 
 const BASE: &str = r#"
 specificationVersion: jobtemplate-2023-09
@@ -30,13 +33,21 @@ steps:
         onRun: {command: render, args: ["{{Param.Quality}}"]}
 "#;
 
-fn template(yaml: &str) -> JobTemplate {
-    let v: serde_json::Value = serde_saphyr::from_str(yaml).unwrap();
-    let extensions: Vec<_> = ModelExtension::ALL
+fn extensions() -> Vec<&'static str> {
+    ModelExtension::ALL
         .iter()
         .map(ModelExtension::as_str)
-        .collect();
-    decode_job_template(v, Some(&extensions), &CallerLimits::default()).unwrap()
+        .collect()
+}
+
+fn template(yaml: &str) -> JobTemplate {
+    let v: serde_json::Value = serde_saphyr::from_str(yaml).unwrap();
+    decode_job_template(v, Some(&extensions()), &CallerLimits::default()).unwrap()
+}
+
+fn environment(yaml: &str) -> EnvironmentTemplate {
+    let v: serde_json::Value = serde_saphyr::from_str(yaml).unwrap();
+    decode_environment_template(v, Some(&extensions()), &CallerLimits::default()).unwrap()
 }
 
 fn values(params: &[(&str, &str)]) -> JobParameterInputValues {
@@ -58,15 +69,25 @@ fn diff(
     old_params: &[(&str, &str)],
     new_params: &[(&str, &str)],
 ) -> Result<String, TemplateDiffError> {
+    diff_with_environments((old, &[]), (new, &[]), old_params, new_params)
+}
+
+/// [`diff`], with each side's environment templates.
+fn diff_with_environments(
+    (old, old_envs): (&str, &[EnvironmentTemplate]),
+    (new, new_envs): (&str, &[EnvironmentTemplate]),
+    old_params: &[(&str, &str)],
+    new_params: &[(&str, &str)],
+) -> Result<String, TemplateDiffError> {
     let (old, new) = (template(old), template(new));
     let (old_values, new_values) = (values(old_params), values(new_params));
     let (old_ctx, new_ctx) = (
         old.default_validation_context(),
         new.default_validation_context(),
     );
-    let input = |template, parameters, ctx| TemplateInput {
+    let input = |template, environments, parameters, ctx| TemplateInput {
         template,
-        environments: &[],
+        environments,
         parameters,
         path_options: PathParameterOptions {
             job_template_dir: "/jobs",
@@ -78,8 +99,8 @@ fn diff(
         ctx,
     };
     let d = diff_templates(
-        &input(&old, &old_values, &old_ctx),
-        &input(&new, &new_values, &new_ctx),
+        &input(&old, old_envs, &old_values, &old_ctx),
+        &input(&new, new_envs, &new_values, &new_ctx),
     )?;
     let shown = d.tree.to_string();
     assert_eq!(d.tree.is_changed(), !shown.is_empty(), "{shown}");
@@ -218,6 +239,30 @@ fn origins() {
             &[],
             &[("Frames", "1-4")],
             "~ parameters[Frames]\n  value: \"1-3\" -> \"1-4\" [parameters]\n~ steps[Render]\n  ~ parameterSpace\n    taskParameterDefinitions.order: [\"Frame\",\"Eye\"] -> [\"Eye\",\"Frame\"] [template]\n    ~ taskParameterDefinitions[Frame]\n      range: \"1-3\" -> \"1-4\" [parameters]\n".into(),
+        ),
+        (
+            "an old value from the old default stays the old value when the new template drops the default",
+            &[("{name: Frames, type: STRING, default: \"1-3\"}", "{name: Frames, type: STRING}")],
+            &[],
+            &[("Frames", "1-4")],
+            "~ parameterDefinitions[Frames]\n  default: \"1-3\" -> null [template]\n~ parameters[Frames]\n  value: \"1-3\" -> \"1-4\" [parameters]\n~ steps[Render]\n  ~ parameterSpace\n    ~ taskParameterDefinitions[Frame]\n      range: \"1-3\" -> \"1-4\" [parameters]\n".into(),
+        ),
+        (
+            "a step the template adds is the template's even when it reads a changed parameter",
+            &[("steps:\n", "steps:\n  - name: Encode\n    script: {actions: {onRun: {command: encode, args: [\"{{Param.Quality}}\"]}}}\n")],
+            &[],
+            &[("Quality", "high")],
+            format!("~ parameters[Quality]\n  value: \"low\" -> \"high\" [parameters]\n~ steps[Render]\n  {SYM_LOW_HIGH} [parameters]\n+ steps[Encode] [template]\n"),
+        ),
+        (
+            "a step added when the cross build fails is both",
+            &[
+                ("default: low}", "default: low, allowedValues: [low, mid]}"),
+                ("steps:\n", "steps:\n  - name: Encode\n    script: {actions: {onRun: {command: encode}}}\n"),
+            ],
+            &[("Quality", "high")],
+            &[("Quality", "mid")],
+            "~ parameterDefinitions[Quality]\n  allowedValues: null -> [\"low\",\"mid\"] [template]\n~ parameters[Quality]\n  value: \"high\" -> \"mid\" [both]\n~ steps[Render]\n  resolvedSymTab[Param.Quality]: {\"type\":\"string\",\"value\":\"high\"} -> {\"type\":\"string\",\"value\":\"mid\"} [both]\n+ steps[Encode] [both]\ncross: Validation error: Parameter 'Quality': value 'high' is not in allowed values\n".into(),
         ),
         (
             "a step let changes the step without changing the job",
@@ -379,7 +424,10 @@ fn a_side_that_does_not_build_is_named() {
     let q = [("Quality", "high")];
     let old = diff(&bad, BASE, &q, &q).unwrap_err();
     let new = diff(BASE, &bad, &q, &q).unwrap_err();
-    assert!(matches!(old, TemplateDiffError::Old(_)), "{old}");
+    assert_eq!(
+        old.to_string(),
+        "old job: Validation error: Parameter 'Quality': value 'high' is not in allowed values"
+    );
     assert_eq!(
         new.to_string(),
         "new job: Validation error: Parameter 'Quality': value 'high' is not in allowed values"
@@ -393,4 +441,53 @@ fn origin_displays_lowercase() {
         .map(ToString::to_string)
         .collect();
     assert_eq!(shown, ["template", "parameters", "both"]);
+}
+
+#[test]
+fn a_job_name_edited_to_the_value_it_resolved_to_is_no_change() {
+    let old = edited(
+        BASE,
+        &[
+            ("name: Demo\n", "name: \"{{Param.Shot}}\"\n"),
+            (
+                "parameterDefinitions:\n",
+                "parameterDefinitions:\n  - {name: Shot, type: STRING, default: Shot010}\n",
+            ),
+        ],
+    );
+    let new = edited(&old, &[("name: \"{{Param.Shot}}\"\n", "name: Shot010\n")]);
+    assert_eq!(diff(&old, &new, &[], &[]).unwrap(), "");
+}
+
+/// An environment template's parameter definitions are compared as merged
+/// with the job template's.
+#[test]
+fn an_environment_template_definition_change_is_the_templates() {
+    let env = |def: &str| {
+        environment(&format!(
+            "specificationVersion: environment-2023-09\nparameterDefinitions:\n  \
+             - {{name: Pool, type: STRING, {def}}}\nenvironment:\n  name: Env\n  \
+             variables: {{A: b}}\n"
+        ))
+    };
+    let old = [env("default: a, description: one")];
+    let new = [env("default: b, description: two")];
+    assert_eq!(
+        diff_with_environments((BASE, &old), (BASE, &new), &[], &[]).unwrap(),
+        "~ parameterDefinitions[Pool]\n  description: \"one\" -> \"two\" [template]\n  \
+         default: \"a\" -> \"b\" [template]\n~ parameters[Pool]\n  value: \"a\" -> \"b\" [template]\n"
+    );
+    // The job template's definition comes last, so its description wins.
+    let job = edited(
+        BASE,
+        &[(
+            "parameterDefinitions:\n",
+            "parameterDefinitions:\n  - {name: Pool, type: STRING, description: job}\n",
+        )],
+    );
+    assert_eq!(
+        diff_with_environments((&job, &old), (&job, &new), &[], &[]).unwrap(),
+        "~ parameterDefinitions[Pool]\n  default: \"a\" -> \"b\" [template]\n~ parameters[Pool]\n  \
+         value: \"a\" -> \"b\" [template]\n"
+    );
 }

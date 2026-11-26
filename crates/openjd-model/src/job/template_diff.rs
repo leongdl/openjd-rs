@@ -11,42 +11,22 @@
 //! parameter values or both caused it, and adds the template changes the
 //! jobs cannot show. `specs/model/template-diff.md` gives the semantics.
 
+use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::fmt;
 
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::error::ModelError;
-use crate::job::diff::{diff_jobs, DiffNode, DiffStatus, DiffTree, FieldChange};
+use crate::job::diff::{diff_jobs, DiffNode, DiffStatus, DiffTree, FieldChange, Origin};
 use crate::job::Job;
-use crate::template::{EnvironmentTemplate, JobParameterDefinition, JobTemplate};
+use crate::template::{EnvironmentTemplate, JobTemplate};
 use crate::types::{JobParameterInputValues, ValidationContext};
 use crate::PathParameterOptions;
-use crate::{create_job, merge_job_parameter_definitions, preprocess_job_parameters};
-
-/// What caused a change in a [`TemplateDiff`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Origin {
-    /// The template: the change happens with the parameter values held fixed.
-    Template,
-    /// The parameter values: the change happens with the template held fixed.
-    Parameters,
-    /// Both, or the split could not be computed.
-    Both,
-}
-
-impl fmt::Display for Origin {
-    /// Writes `template`, `parameters` or `both`.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Origin::Template => "template",
-            Origin::Parameters => "parameters",
-            Origin::Both => "both",
-        })
-    }
-}
+use crate::{
+    create_job, merge_job_parameter_definitions, preprocess_job_parameters,
+    MergedParameterDefinition,
+};
 
 /// One side of a [`diff_templates`]: everything that builds its job.
 pub struct TemplateInput<'a> {
@@ -126,8 +106,12 @@ pub fn diff_templates(
 ) -> Result<TemplateDiff, TemplateDiffError> {
     let old_job = old.build().map_err(TemplateDiffError::Old)?;
     let new_job = new.build().map_err(TemplateDiffError::New)?;
+    let old_definitions = merge_job_parameter_definitions(old.template, old.environments)
+        .map_err(TemplateDiffError::Old)?;
+    let new_definitions = merge_job_parameter_definitions(new.template, new.environments)
+        .map_err(TemplateDiffError::New)?;
     let mut tree = diff_jobs(&old_job, &new_job);
-    let cross = cross_parameters(old, new).and_then(|p| new.build_with(&p));
+    let cross = new.build_with(&cross_parameters(old, &old_job, new, &new_definitions));
     let cross_build_error = match cross {
         Ok(mid) => {
             let template = keys(&diff_jobs(&old_job, &mid));
@@ -147,7 +131,11 @@ pub fn diff_templates(
             Some(e)
         }
     };
-    template_layer(old.template, new.template, tree.root_mut());
+    template_layer(
+        (old, &old_definitions),
+        (new, &new_definitions),
+        tree.root_mut(),
+    );
     Ok(TemplateDiff {
         tree,
         old: old_job,
@@ -156,25 +144,31 @@ pub fn diff_templates(
     })
 }
 
-/// The old values of the parameters the new side defines, and the new
-/// values of those it requires and the old values do not give.
+/// For each parameter the new side defines: the old value given; else none
+/// when the new side has a default; else the old job's value, from the old
+/// side's default; else the new value given.
 fn cross_parameters(
     old: &TemplateInput<'_>,
+    old_job: &Job,
     new: &TemplateInput<'_>,
-) -> Result<JobParameterInputValues, ModelError> {
-    let definitions = merge_job_parameter_definitions(new.template, new.environments)?;
+    new_definitions: &[MergedParameterDefinition],
+) -> JobParameterInputValues {
     let mut values = JobParameterInputValues::new();
-    for d in definitions {
+    for d in new_definitions {
         let value = match (old.parameters.get(&d.name), &d.default) {
             (Some(v), _) => Some(v),
-            (None, None) => new.parameters.get(&d.name),
             (None, Some(_)) => None,
+            (None, None) => old_job
+                .parameters
+                .get(&d.name)
+                .map(|p| &p.value)
+                .or_else(|| new.parameters.get(&d.name)),
         };
         if let Some(v) = value {
-            values.insert(d.name, v.clone());
+            values.insert(d.name.clone(), v.clone());
         }
     }
-    Ok(values)
+    values
 }
 
 /// A change's identity: its node's segments from the root, and the field it
@@ -237,24 +231,29 @@ fn tag(node: &mut DiffNode, path: &mut Vec<String>, origin: &dyn Fn(&Key) -> Ori
     }
 }
 
-/// Add the changes the template makes that the jobs cannot show: each
+/// One side of the template layer: its input and its merged parameter
+/// definitions.
+type Side<'s, 'a> = (&'s TemplateInput<'a>, &'s [MergedParameterDefinition]);
+
+/// Add the changes the template makes that the jobs cannot show: each merged
 /// parameter definition's fields other than its type, as a root child
 /// `parameterDefinitions[NAME]`, and a step's `let`, on its `steps[NAME]`
 /// node. Each has origin `Template`, and makes its node `Modified`.
-fn template_layer(old: &JobTemplate, new: &JobTemplate, root: &mut DiffNode) {
-    fn definitions(t: &JobTemplate) -> &[JobParameterDefinition] {
-        t.parameter_definitions.as_deref().unwrap_or_default()
-    }
+fn template_layer(old: Side<'_, '_>, new: Side<'_, '_>, root: &mut DiffNode) {
     let mut nodes = Vec::new();
-    for a in definitions(old) {
-        let Some(b) = definitions(new).iter().find(|b| b.name() == a.name()) else {
+    for a in old.1 {
+        let Some(b) = new.1.iter().find(|b| b.name == a.name) else {
             continue;
         };
         let mut node = DiffNode::new(
-            format!("parameterDefinitions[{}]", a.name()),
+            format!("parameterDefinitions[{}]", a.name),
             DiffStatus::Modified,
         );
-        for ((field, x), (_, y)) in definition_fields(a).into_iter().zip(definition_fields(b)) {
+        let (x, y) = (
+            definition_fields(a, description(old.0, &a.name)),
+            definition_fields(b, description(new.0, &b.name)),
+        );
+        for ((field, x), (_, y)) in x.into_iter().zip(y) {
             push(&mut node, field, x, y);
         }
         if !node.field_changes.is_empty() {
@@ -263,8 +262,8 @@ fn template_layer(old: &JobTemplate, new: &JobTemplate, root: &mut DiffNode) {
     }
     let mut changed = !nodes.is_empty();
     root.children.splice(0..0, nodes);
-    for a in &old.steps {
-        let Some(b) = new.steps.iter().find(|b| b.name == a.name) else {
+    for a in &old.0.template.steps {
+        let Some(b) = new.0.template.steps.iter().find(|b| b.name == a.name) else {
             continue;
         };
         if a.let_bindings == b.let_bindings {
@@ -279,9 +278,6 @@ fn template_layer(old: &JobTemplate, new: &JobTemplate, root: &mut DiffNode) {
         let Some(node) = root.children.iter_mut().find(|c| c.segment == segment) else {
             continue;
         };
-        if matches!(node.status, DiffStatus::Added | DiffStatus::Removed) {
-            continue;
-        }
         node.status = DiffStatus::Modified;
         push(
             node,
@@ -296,6 +292,19 @@ fn template_layer(old: &JobTemplate, new: &JobTemplate, root: &mut DiffNode) {
     }
 }
 
+/// The description of parameter `name` from the last of the side's templates,
+/// environments first, that gives one.
+fn description<'a>(side: &TemplateInput<'a>, name: &str) -> Option<&'a str> {
+    side.environments
+        .iter()
+        .filter_map(|e| e.parameter_definitions.as_deref())
+        .chain(side.template.parameter_definitions.as_deref())
+        .flatten()
+        .rev()
+        .filter(|d| d.name() == name)
+        .find_map(|d| d.description())
+}
+
 fn push(node: &mut DiffNode, field: &str, before: Value, after: Value) {
     if before != after {
         node.field_changes.push(FieldChange {
@@ -307,71 +316,82 @@ fn push(node: &mut DiffNode, field: &str, before: Value, after: Value) {
     }
 }
 
-/// A parameter definition's fields that the job does not carry, in a fixed
-/// order, each `null` when unset: the job keeps only a parameter's name,
-/// type and value. `userInterface` is left out, since it changes only how a
-/// submitter presents the parameter.
-fn definition_fields(d: &JobParameterDefinition) -> [(&'static str, Value); 17] {
+/// A merged parameter definition's fields that the job does not carry, in a
+/// fixed order, each `null` when unset: the job keeps only a parameter's
+/// name, type and value. `userInterface` is left out, since it changes only
+/// how a submitter presents the parameter.
+fn definition_fields(
+    d: &MergedParameterDefinition,
+    description: Option<&str>,
+) -> [(&'static str, Value); 17] {
     let either = |a: Value, b: Value| if a.is_null() { b } else { a };
-    let (object_type, data_flow) = d.path_properties();
     [
-        ("description", to_json(&d.description())),
-        ("default", to_json(&d.default_value())),
+        ("description", to_json(&description)),
+        ("default", to_json(&d.default)),
         (
             "allowedValues",
             either(
                 either(
-                    to_json(&d.allowed_values_i64()),
-                    to_json(&d.allowed_values_f64()),
+                    sorted(&d.allowed_values_int, Ord::cmp),
+                    sorted(&d.allowed_values_float, f64::total_cmp),
                 ),
-                to_json(&d.allowed_values_strings()),
+                sorted(&d.allowed_values_str, Ord::cmp),
             ),
         ),
         (
             "minValue",
-            either(to_json(&d.min_value_i64()), to_json(&d.min_value_f64())),
+            either(to_json(&d.min_value_i64), to_json(&d.min_value_f64)),
         ),
         (
             "maxValue",
-            either(to_json(&d.max_value_i64()), to_json(&d.max_value_f64())),
+            either(to_json(&d.max_value_i64), to_json(&d.max_value_f64)),
         ),
-        ("minLength", to_json(&d.min_length())),
-        ("maxLength", to_json(&d.max_length())),
+        ("minLength", to_json(&d.min_length)),
+        ("maxLength", to_json(&d.max_length)),
         (
             "item.allowedValues",
             either(
                 either(
-                    to_json(&d.item_allowed_values_i64()),
-                    to_json(&d.item_allowed_values_f64()),
+                    sorted(&d.item_allowed_values_int, Ord::cmp),
+                    sorted(&d.item_allowed_values_float, f64::total_cmp),
                 ),
-                to_json(&d.item_allowed_values_strings()),
+                sorted(&d.item_allowed_values_str, Ord::cmp),
             ),
         ),
         (
             "item.minValue",
             either(
-                to_json(&d.item_min_value_i64()),
-                to_json(&d.item_min_value_f64()),
+                to_json(&d.item_min_value_i64),
+                to_json(&d.item_min_value_f64),
             ),
         ),
         (
             "item.maxValue",
             either(
-                to_json(&d.item_max_value_i64()),
-                to_json(&d.item_max_value_f64()),
+                to_json(&d.item_max_value_i64),
+                to_json(&d.item_max_value_f64),
             ),
         ),
-        ("item.minLength", to_json(&d.item_min_length())),
-        ("item.maxLength", to_json(&d.item_max_length())),
+        ("item.minLength", to_json(&d.item_min_length)),
+        ("item.maxLength", to_json(&d.item_max_length)),
         (
             "item.item.allowedValues",
-            to_json(&d.item_item_allowed_values_i64()),
+            sorted(&d.item_item_allowed_values_int, Ord::cmp),
         ),
-        ("item.item.minValue", to_json(&d.item_item_min_value_i64())),
-        ("item.item.maxValue", to_json(&d.item_item_max_value_i64())),
-        ("objectType", to_json(&object_type)),
-        ("dataFlow", to_json(&data_flow)),
+        ("item.item.minValue", to_json(&d.item_item_min_value_i64)),
+        ("item.item.maxValue", to_json(&d.item_item_max_value_i64)),
+        ("objectType", to_json(&d.object_type)),
+        ("dataFlow", to_json(&d.data_flow)),
     ]
+}
+
+/// A merged `allowedValues` set, sorted: merging keeps it in no fixed order.
+fn sorted<T: Clone + Serialize>(v: &Option<Vec<T>>, cmp: fn(&T, &T) -> Ordering) -> Value {
+    to_json(&v.as_ref().map(|v| {
+        let mut v = v.clone();
+        v.sort_by(cmp);
+        v
+    }))
 }
 
 /// These values always serialize, so the fallback is unreachable.

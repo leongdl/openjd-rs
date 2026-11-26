@@ -97,7 +97,7 @@ fn load_side(
         .chain(side_parameters)
         .cloned()
         .collect();
-    TemplateFile::load(path, &parameters, &args.extensions, &args.environments)
+    crate::job_from_file::load(path, &parameters, &args.extensions, &args.environments)
 }
 
 fn header(args: &DiffArgs) -> String {
