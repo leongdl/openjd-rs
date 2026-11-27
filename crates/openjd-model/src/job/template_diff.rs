@@ -14,14 +14,16 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
+use openjd_expr::ExprValue;
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::error::ModelError;
+use crate::job::create_job::parameters::coerce_to_job_parameter_type;
 use crate::job::diff::{diff_jobs, DiffNode, DiffStatus, DiffTree, FieldChange, Origin};
 use crate::job::Job;
 use crate::template::{EnvironmentTemplate, JobTemplate};
-use crate::types::{JobParameterInputValues, ValidationContext};
+use crate::types::{JobParameterInputValues, JobParameterType, ValidationContext};
 use crate::PathParameterOptions;
 use crate::{
     create_job, merge_job_parameter_definitions, preprocess_job_parameters,
@@ -146,7 +148,7 @@ pub fn diff_templates(
 
 /// For each parameter the new side defines: the old value given; else none
 /// when the new side has a default; else the old job's value, from the old
-/// side's default; else the new value given.
+/// side's default, as given would be; else the new value given.
 fn cross_parameters(
     old: &TemplateInput<'_>,
     old_job: &Job,
@@ -156,19 +158,29 @@ fn cross_parameters(
     let mut values = JobParameterInputValues::new();
     for d in new_definitions {
         let value = match (old.parameters.get(&d.name), &d.default) {
-            (Some(v), _) => Some(v),
+            (Some(v), _) => Some(v.clone()),
             (None, Some(_)) => None,
-            (None, None) => old_job
-                .parameters
-                .get(&d.name)
-                .map(|p| &p.value)
-                .or_else(|| new.parameters.get(&d.name)),
+            (None, None) => match old_job.parameters.get(&d.name) {
+                Some(p) => Some(as_given(&p.value, d.param_type)),
+                None => new.parameters.get(&d.name).cloned(),
+            },
         };
         if let Some(v) = value {
-            values.insert(d.name.clone(), v.clone());
+            values.insert(d.name.clone(), v);
         }
     }
     values
+}
+
+/// A job's typed value as a submitter would give it under `param_type`: the
+/// value itself when it coerces, else its string form. Both are needed: a
+/// RANGE_EXPR or a list coerces to STRING only as text, and FLOAT `2.0` to INT
+/// only as a number.
+fn as_given(value: &ExprValue, param_type: JobParameterType) -> ExprValue {
+    match coerce_to_job_parameter_type(value, param_type) {
+        Ok(_) => value.clone(),
+        Err(_) => ExprValue::String(value.as_str_repr().into_owned()),
+    }
 }
 
 /// A change's identity: its node's segments from the root, and the field it

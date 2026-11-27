@@ -652,7 +652,7 @@ impl MergedParameterDefinition {
 }
 
 /// Coerce an `ExprValue` to the target `JobParameterType`.
-pub(super) fn coerce_to_job_parameter_type(
+pub(crate) fn coerce_to_job_parameter_type(
     value: &openjd_expr::ExprValue,
     param_type: JobParameterType,
 ) -> Result<openjd_expr::ExprValue, String> {

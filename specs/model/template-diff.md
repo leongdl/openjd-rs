@@ -45,7 +45,10 @@ that stops reading a changed parameter drops its `resolvedSymTab` entry as the t
 the old values do not give, `mid` takes the new side's default when it has one, so a
 default change the values do not override is the template's. Without a new default, it
 takes the old job's value, from the old side's default, so a template that drops a default
-the old side relied on leaves a new value the parameters'. Failing both, it takes the new
+the old side relied on leaves a new value the parameters'. It gives that value as a
+submitter would: as it is when it coerces to the new type, else as its string form, so a
+retyped parameter builds `mid` from a default exactly as from the same value given
+(RANGE_EXPR `1-3` to STRING as text, FLOAT `2.0` to INT as a number). Failing both, it takes the new
 value, so a template that adds a required parameter still builds `mid`, and the new
 parameter is the template's. A value for a parameter the new side no longer defines is
 dropped, so a removed parameter is the template's.

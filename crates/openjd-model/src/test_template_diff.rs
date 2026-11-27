@@ -464,6 +464,57 @@ fn every_step_let_change_is_reported() {
     assert_eq!(diff(&yaml(1), &yaml(2), &[], &[]).unwrap(), want);
 }
 
+/// A retyped parameter the old side took from its default builds the cross
+/// job as the same value given would: the old job's value when it coerces to
+/// the new type, else its string form.
+#[test]
+fn a_retyped_parameter_from_its_default_builds_the_cross_job() {
+    let yaml = |definition: &str, command: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [EXPR]\nname: Demo\n\
+             parameterDefinitions:\n  - {{name: Q, {definition}}}\n\
+             steps:\n  - name: S\n    script: {{actions: {{onRun: {{command: {command}}}}}}}\n"
+        )
+    };
+    // The old definition, the value it defaults to, the new type and value.
+    let cases = [
+        ("type: RANGE_EXPR, default: \"1-3\"", "1-3", "STRING", "q"),
+        (
+            "type: \"LIST[INT]\", default: [1]",
+            "[1]",
+            "\"LIST[STRING]\"",
+            "[\"q\"]",
+        ),
+        (
+            "type: \"LIST[BOOL]\", default: [true]",
+            "[true]",
+            "\"LIST[STRING]\"",
+            "[\"q\"]",
+        ),
+    ];
+    for (definition, value, new_type, new_value) in cases {
+        let old = yaml(definition, "c");
+        let new = yaml(&format!("type: {new_type}"), "d");
+        let new_params = [("Q", new_value)];
+        let from_default = diff(&old, &new, &[], &new_params).unwrap();
+        let given = diff(&old, &new, &[("Q", value)], &new_params).unwrap();
+        assert!(
+            from_default.contains("command: \"c\" -> \"d\" [template]")
+                && !from_default.contains("cross:"),
+            "{definition}:\n{from_default}"
+        );
+        assert_eq!(from_default, given, "{definition}");
+    }
+    // The string form alone would refuse this: "2.0" is not an INT, 2.0 is.
+    let old = yaml("type: FLOAT, default: \"2.0\"", "c");
+    let new = yaml("type: INT", "d");
+    let shown = diff(&old, &new, &[], &[("Q", "5")]).unwrap();
+    assert!(
+        shown.contains("command: \"c\" -> \"d\" [template]") && !shown.contains("cross:"),
+        "{shown}"
+    );
+}
+
 #[test]
 fn a_side_that_does_not_build_is_named() {
     let bad = edited(BASE, &[("default: low}", "allowedValues: [low]}")]);
