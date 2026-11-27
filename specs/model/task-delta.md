@@ -95,8 +95,12 @@ values.
 
 A box's `INT` values are a `RangeExpr`, which holds at most `MAX_RANGE_EXPR_CHUNKS` runs,
 so a result with more is `Fallback(RangeTooComplex)`, as are values no range expression
-holds (`i64::MIN`). Results are built as runs, merging each into the previous one when
-they continue one progression, and the delta stops building past the cap. Subtracting a
+holds (`i64::MIN`). Results are built as pieces, merging each into the previous one when
+they continue one progression, and then put in canonical form, which can regroup values
+across pieces into fewer runs; the cap applies to the canonical form. Pieces inside one
+canonical run merge into one and every other piece crosses a boundary between runs, so a
+result of `c` runs has fewer than `2c` pieces, and the delta stops building past twice the
+cap. Subtracting a
 progression whose step is `m > 1` times the other's leaves the values between its values:
 for `m = 2` one progression (`1-200000` minus `1-200000:2` is `2-200000:2`); for `m > 2`,
 `m - 1` interleaved progressions, which no range expression holds, so each gap is a run

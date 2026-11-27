@@ -484,19 +484,39 @@ fn int_runs(range: &TaskParamRange<i64>) -> Option<Vec<IntRange>> {
     }
 }
 
-/// Runs as a range: a range expression, or an empty list, which no range
-/// expression is.
-fn int_range(runs: Vec<IntRange>) -> Option<TaskParamRange<i64>> {
-    if runs.is_empty() {
+/// The most pieces `intersect` and `subtract` build. The canonical form
+/// regroups values across pieces, but pieces inside one of its runs merge
+/// into one and every other piece crosses a boundary between its runs, so a
+/// result of `c` canonical runs has fewer than `2c` pieces: this bound never
+/// stops a result whose canonical form fits [`MAX_RANGE_EXPR_CHUNKS`].
+const MAX_PIECES: usize = 2 * MAX_RANGE_EXPR_CHUNKS;
+
+/// Pieces canonicalized per `from_ranges` call: at most two runs each, so a
+/// batch and the two carried runs stay within the cap.
+const CANONICAL_BATCH: usize = MAX_RANGE_EXPR_CHUNKS / 2 - 2;
+
+/// Ascending pieces as a range: a range expression, or an empty list, which
+/// no range expression is; `None` past [`MAX_RANGE_EXPR_CHUNKS`] canonical
+/// runs. Canonicalizes in batches, re-reading the last two runs with the next
+/// batch: every earlier run of a prefix's canonical form is a run of the
+/// whole's (specs/model/parameter-space.md, Prefixes).
+fn int_range(pieces: Vec<IntRange>) -> Option<TaskParamRange<i64>> {
+    if pieces.is_empty() {
         return Some(TaskParamRange::List(Vec::new()));
+    }
+    let mut runs: Vec<IntRange> = Vec::new();
+    for batch in pieces.chunks(CANONICAL_BATCH) {
+        let mut input = runs.split_off(runs.len().saturating_sub(2));
+        input.extend_from_slice(batch);
+        runs.extend_from_slice(RangeExpr::from_ranges(input).ok()?.ranges());
     }
     RangeExpr::from_ranges(runs)
         .ok()
         .map(TaskParamRange::RangeExpr)
 }
 
-/// The values both run lists have, as ascending runs; `None` past
-/// [`MAX_RANGE_EXPR_CHUNKS`] runs.
+/// The values both run lists have, as ascending pieces; `None` past
+/// [`MAX_PIECES`] pieces.
 fn intersect(a: &[IntRange], b: &[IntRange]) -> Option<Vec<IntRange>> {
     let mut out = Vec::new();
     let (mut i, mut j) = (0, 0);
@@ -513,8 +533,8 @@ fn intersect(a: &[IntRange], b: &[IntRange]) -> Option<Vec<IntRange>> {
     Some(out)
 }
 
-/// The values of `a` that `b` lacks, as ascending runs; `None` past
-/// [`MAX_RANGE_EXPR_CHUNKS`] runs, so a fragmented result is never built.
+/// The values of `a` that `b` lacks, as ascending pieces; `None` past
+/// [`MAX_PIECES`] pieces, so a fragmented result is never built.
 fn subtract(a: &[IntRange], b: &[IntRange]) -> Option<Vec<IntRange>> {
     let mut out = Vec::new();
     let mut j = 0;
@@ -571,7 +591,7 @@ fn push_gaps(out: &mut Vec<IntRange>, step: i64, common: &IntRange) -> Option<()
 
 /// Append the run `start..=end` unless it is empty, merging it into the last
 /// run when the two continue one progression; `None` past
-/// [`MAX_RANGE_EXPR_CHUNKS`] runs.
+/// [`MAX_PIECES`] pieces.
 fn push_run(out: &mut Vec<IntRange>, start: i64, end: i64, step: i64) -> Option<()> {
     if start > end {
         return Some(());
@@ -583,7 +603,7 @@ fn push_run(out: &mut Vec<IntRange>, start: i64, end: i64, step: i64) -> Option<
             return Some(());
         }
     }
-    if out.len() >= MAX_RANGE_EXPR_CHUNKS {
+    if out.len() >= MAX_PIECES {
         return None;
     }
     out.push(run);

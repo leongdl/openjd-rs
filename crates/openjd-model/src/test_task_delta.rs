@@ -656,6 +656,31 @@ fn pieces_that_continue_one_progression_merge() {
     assert_eq!(d.removed[0].to_string(), "N=1-399997:4");
 }
 
+/// Pieces past `MAX_RANGE_EXPR_CHUNKS` whose canonical form regroups values
+/// across pieces to fit the cap are a product. Each block of `a` is 2 runs
+/// and each result 2 runs a block, but the pieces of the subtractions number
+/// more, so 20000 blocks give 40000 runs and more than 50000 pieces.
+#[test]
+fn pieces_that_regroup_into_the_run_cap_are_a_product() {
+    let blocks = |runs: &[(i64, i64, i64)]| {
+        (0..20_000_i64)
+            .flat_map(|j| {
+                runs.iter()
+                    .map(move |(s, e, step)| format!("{}-{}:{step}", s + 100 * j, e + 100 * j))
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let a = blocks(&[(5, 12, 1), (16, 24, 4)]);
+    let b = blocks(&[(10, 28, 2), (34, 58, 6)]);
+    assert!(check_ints(&a, &b));
+    assert!(check_ints(&b, &a));
+    // Past the cap after regrouping, with pieces between the cap and twice
+    // it, and past twice it: still a fallback.
+    assert!(!check_ints("1-90000", "1-90000:3"));
+    assert!(!check_ints("1-300000", "1-300000:3"));
+}
+
 /// Steps whose lcm does not fit an `i64` meet once, a one-value run.
 #[test]
 fn coprime_steps_past_i64_meet_in_one_value() {
