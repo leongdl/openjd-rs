@@ -465,8 +465,8 @@ fn every_step_let_change_is_reported() {
 }
 
 /// A retyped parameter the old side took from its default builds the cross
-/// job as the same value given would: the old job's value when it coerces to
-/// the new type, else its string form.
+/// job as the same value given would: the default as written, else the old
+/// job's value when that coerces to the new type.
 #[test]
 fn a_retyped_parameter_from_its_default_builds_the_cross_job() {
     let yaml = |definition: &str, command: &str| {
@@ -515,6 +515,32 @@ fn a_retyped_parameter_from_its_default_builds_the_cross_job() {
     );
 }
 
+/// A retyped PATH parameter the old side took from its default builds the
+/// cross job from the default as written, as `Q=3` given would, not from the
+/// path the old job resolved it to.
+#[test]
+fn a_retyped_path_parameter_from_its_default_builds_the_cross_job() {
+    let yaml = |definition: &str, command: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [EXPR]\nname: Demo\n\
+             parameterDefinitions:\n  - {{name: Q, {definition}}}\n\
+             steps:\n  - name: S\n    script: {{actions: {{onRun: {{command: {command}}}}}}}\n"
+        )
+    };
+    let old = yaml("type: PATH, default: \"3\"", "c");
+    for (new_type, new_value) in [("INT", "4"), ("FLOAT", "4.5"), ("RANGE_EXPR", "1-4")] {
+        let new = yaml(&format!("type: {new_type}"), "d");
+        let new_params = [("Q", new_value)];
+        let from_default = diff(&old, &new, &[], &new_params).unwrap();
+        let given = diff(&old, &new, &[("Q", "3")], &new_params).unwrap();
+        assert!(
+            from_default.contains("command: \"c\" -> \"d\" [template]")
+                && !from_default.contains("cross:"),
+            "{new_type}:\n{from_default}"
+        );
+        assert_eq!(from_default, given, "{new_type}");
+    }
+}
 #[test]
 fn a_side_that_does_not_build_is_named() {
     let bad = edited(BASE, &[("default: low}", "allowedValues: [low]}")]);

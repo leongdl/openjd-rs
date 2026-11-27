@@ -44,13 +44,15 @@ that stops reading a changed parameter drops its `resolvedSymTab` entry as the t
 `mid`'s values are, for each parameter the new side defines, the old value given. For one
 the old values do not give, `mid` takes the new side's default when it has one, so a
 default change the values do not override is the template's. Without a new default, it
-takes the old job's value, from the old side's default, so a template that drops a default
-the old side relied on leaves a new value the parameters'. It gives that value as a
-submitter would: as it is when it coerces to the new type, else as its string form, so a
-retyped parameter builds `mid` from a default exactly as from the same value given
-(RANGE_EXPR `1-3` to STRING as text, FLOAT `2.0` to INT as a number). Failing both, it takes the new
-value, so a template that adds a required parameter still builds `mid`, and the new
-parameter is the template's. A value for a parameter the new side no longer defines is
+takes the old side's input for it, so a template that drops a default the old side relied
+on leaves a new value the parameters'. That input is the old job's value when the type is
+unchanged, so a PATH keeps the path it resolved to. For a retyped parameter it is the old
+default as written, the text a submitter would give, so `mid` builds from a default exactly
+as from the same value given (PATH `3` to INT as `3`, not as the resolved path); when that
+text does not coerce to the new type, it is the old job's value (FLOAT `2.0` to INT as a
+number). For a parameter the old side does not define, it takes the new value, so a
+template that adds a required parameter still builds `mid`, and the new parameter is the
+template's. A value for a parameter the new side no longer defines is
 dropped, so a removed parameter is the template's.
 
 When `mid` still does not build, such as for an old value the new template's

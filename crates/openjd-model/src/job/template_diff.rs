@@ -113,7 +113,13 @@ pub fn diff_templates(
     let new_definitions = merge_job_parameter_definitions(new.template, new.environments)
         .map_err(TemplateDiffError::New)?;
     let mut tree = diff_jobs(&old_job, &new_job);
-    let cross = new.build_with(&cross_parameters(old, &old_job, new, &new_definitions));
+    let cross = new.build_with(&cross_parameters(
+        old,
+        &old_job,
+        &old_definitions,
+        new,
+        &new_definitions,
+    ));
     let cross_build_error = match cross {
         Ok(mid) => {
             let template = keys(&diff_jobs(&old_job, &mid));
@@ -147,22 +153,27 @@ pub fn diff_templates(
 }
 
 /// For each parameter the new side defines: the old value given; else none
-/// when the new side has a default; else the old job's value, from the old
-/// side's default, as given would be; else the new value given.
+/// when the new side has a default; else, for one the old side took from its
+/// default, [`from_default`]; else the new value given.
 fn cross_parameters(
     old: &TemplateInput<'_>,
     old_job: &Job,
+    old_definitions: &[MergedParameterDefinition],
     new: &TemplateInput<'_>,
     new_definitions: &[MergedParameterDefinition],
 ) -> JobParameterInputValues {
     let mut values = JobParameterInputValues::new();
     for d in new_definitions {
+        let old_default = old_definitions
+            .iter()
+            .find(|o| o.name == d.name)
+            .and_then(|o| Some((o.param_type, o.default.as_deref()?)));
         let value = match (old.parameters.get(&d.name), &d.default) {
             (Some(v), _) => Some(v.clone()),
             (None, Some(_)) => None,
-            (None, None) => match old_job.parameters.get(&d.name) {
-                Some(p) => Some(as_given(&p.value, d.param_type)),
-                None => new.parameters.get(&d.name).cloned(),
+            (None, None) => match (old_job.parameters.get(&d.name), old_default) {
+                (Some(p), Some(default)) => Some(from_default(&p.value, default, d.param_type)),
+                _ => new.parameters.get(&d.name).cloned(),
             },
         };
         if let Some(v) = value {
@@ -172,14 +183,23 @@ fn cross_parameters(
     values
 }
 
-/// A job's typed value as a submitter would give it under `param_type`: the
-/// value itself when it coerces, else its string form. Both are needed: a
-/// RANGE_EXPR or a list coerces to STRING only as text, and FLOAT `2.0` to INT
-/// only as a number.
-fn as_given(value: &ExprValue, param_type: JobParameterType) -> ExprValue {
-    match coerce_to_job_parameter_type(value, param_type) {
-        Ok(_) => value.clone(),
-        Err(_) => ExprValue::String(value.as_str_repr().into_owned()),
+/// The old side's input for a parameter it took from its default, under
+/// `param_type`. Unretyped, the old job's value, so a PATH keeps the path it
+/// resolved to. Retyped, the default as written, as a submitter would give
+/// it, else the old job's value when that coerces (FLOAT `2.0` to INT).
+fn from_default(
+    value: &ExprValue,
+    (old_type, default): (JobParameterType, &str),
+    param_type: JobParameterType,
+) -> ExprValue {
+    let written = ExprValue::String(default.to_owned());
+    let typed = old_type == param_type
+        || (coerce_to_job_parameter_type(&written, param_type).is_err()
+            && coerce_to_job_parameter_type(value, param_type).is_ok());
+    if typed {
+        value.clone()
+    } else {
+        written
     }
 }
 
