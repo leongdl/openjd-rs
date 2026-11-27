@@ -12,7 +12,7 @@
 //! jobs cannot show. `specs/model/template-diff.md` gives the semantics.
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -240,9 +240,19 @@ type Side<'s, 'a> = (&'s TemplateInput<'a>, &'s [MergedParameterDefinition]);
 /// `parameterDefinitions[NAME]`, and a step's `let`, on its `steps[NAME]`
 /// node. Each has origin `Template`, and makes its node `Modified`.
 fn template_layer(old: Side<'_, '_>, new: Side<'_, '_>, root: &mut DiffNode) {
+    // Look-ups by name keep the layer linear in the definitions and steps.
+    let new_definitions: HashMap<&str, &MergedParameterDefinition> =
+        new.1.iter().map(|b| (b.name.as_str(), b)).collect();
+    let new_steps: HashMap<&str, _> = new
+        .0
+        .template
+        .steps
+        .iter()
+        .map(|b| (b.name.as_str(), b))
+        .collect();
     let mut nodes = Vec::new();
     for a in old.1 {
-        let Some(b) = new.1.iter().find(|b| b.name == a.name) else {
+        let Some(b) = new_definitions.get(a.name.as_str()) else {
             continue;
         };
         let mut node = DiffNode::new(
@@ -262,8 +272,14 @@ fn template_layer(old: Side<'_, '_>, new: Side<'_, '_>, root: &mut DiffNode) {
     }
     let mut changed = !nodes.is_empty();
     root.children.splice(0..0, nodes);
+    let mut index: HashMap<String, usize> = root
+        .children
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.segment.clone(), i))
+        .collect();
     for a in &old.0.template.steps {
-        let Some(b) = new.0.template.steps.iter().find(|b| b.name == a.name) else {
+        let Some(b) = new_steps.get(a.name.as_str()) else {
             continue;
         };
         if a.let_bindings == b.let_bindings {
@@ -271,11 +287,12 @@ fn template_layer(old: Side<'_, '_>, new: Side<'_, '_>, root: &mut DiffNode) {
         }
         // An unchanged job has no children, so the step's node may be missing.
         let segment = format!("steps[{}]", a.name);
-        if !root.children.iter().any(|c| c.segment == segment) {
+        let i = *index.entry(segment).or_insert_with_key(|segment| {
             root.children
                 .push(DiffNode::new(segment.clone(), DiffStatus::Unchanged));
-        }
-        let Some(node) = root.children.iter_mut().find(|c| c.segment == segment) else {
+            root.children.len() - 1
+        });
+        let Some(node) = root.children.get_mut(i) else {
             continue;
         };
         node.status = DiffStatus::Modified;
@@ -386,12 +403,16 @@ fn definition_fields(
 }
 
 /// A merged `allowedValues` set, sorted and without duplicates: merging keeps
-/// it in no fixed order, and keeps a FLOAT list's duplicates.
-fn sorted<T: Clone + Serialize>(v: &Option<Vec<T>>, cmp: fn(&T, &T) -> Ordering) -> Value {
+/// it in no fixed order, and keeps a FLOAT list's duplicates. Duplicates are
+/// found with `==`, as validation compares values, so -0.0 and 0.0 are one.
+fn sorted<T: Clone + PartialEq + Serialize>(
+    v: &Option<Vec<T>>,
+    cmp: fn(&T, &T) -> Ordering,
+) -> Value {
     to_json(&v.as_ref().map(|v| {
         let mut v = v.clone();
         v.sort_by(cmp);
-        v.dedup_by(|a, b| cmp(a, b) == Ordering::Equal);
+        v.dedup();
         v
     }))
 }

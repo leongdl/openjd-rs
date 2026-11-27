@@ -77,7 +77,7 @@ The definitions compared are each side's `merge_job_parameter_definitions`, so a
 environment template's count, with the `description` of the last template that gives one.
 `allowedValues` compare as sorted sets without duplicates: validation checks a value's
 membership only, and their order only changes how a `DROPDOWN_LIST` presents the choices,
-which is `userInterface`'s concern. So `[a, b]` edited to `[b, a]` is not reported. A definition is compared
+which is `userInterface`'s concern. So `[a, b]` edited to `[b, a]` is not reported. Values are duplicates when validation counts them equal, so FLOAT `-0.0` and `0.0` are one value. A definition is compared
 when both sides define its name; one added or removed shows as its `parameters[NAME]` node. A field is `null` when unset. Its type, name and value are
 in the job. `userInterface` is not compared, since it changes only how a submitter
 presents the parameter. A template-scope field that resolves to the same value, such as a

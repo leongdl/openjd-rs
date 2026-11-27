@@ -309,6 +309,17 @@ fn definition_fields() {
             "type: FLOAT, default: 1, allowedValues: [1, 2, 2]",
             "",
         ),
+        // Validation compares FLOAT values with `==`, so -0.0 and 0.0 are one value.
+        (
+            "type: FLOAT, default: 0, allowedValues: [0.0, -0.0]",
+            "type: FLOAT, default: 0, allowedValues: [0.0]",
+            "",
+        ),
+        (
+            "type: \"LIST[FLOAT]\", default: [0], item: {allowedValues: [0.0, -0.0]}",
+            "type: \"LIST[FLOAT]\", default: [0], item: {allowedValues: [0.0]}",
+            "",
+        ),
         // allowedValues are a set; order only changes how a submitter lists them.
         (
             "type: STRING, default: a, allowedValues: [a, b]",
@@ -428,6 +439,29 @@ fn a_step_let_joins_the_step_node_the_job_diff_made() {
         "~ steps[S]\n  let: null -> [\"x = 1\"] [template]\n  ~ script\n    ~ onRun\n      \
          command: \"a\" -> \"b\" [template]\n"
     );
+}
+
+/// Every step's `let` change is reported, in step order, when many steps
+/// change.
+#[test]
+fn every_step_let_change_is_reported() {
+    let n = 2000;
+    let yaml = |x: u32| {
+        let mut y = "specificationVersion: jobtemplate-2023-09\nextensions: [EXPR]\nname: Demo\n\
+                     steps:\n"
+            .to_string();
+        for i in 0..n {
+            y.push_str(&format!(
+                "  - name: S{i}\n    let: [\"x = {x}\"]\n    \
+                 script: {{actions: {{onRun: {{command: c}}}}}}\n"
+            ));
+        }
+        y
+    };
+    let want: String = (0..n)
+        .map(|i| format!("~ steps[S{i}]\n  let: [\"x = 1\"] -> [\"x = 2\"] [template]\n"))
+        .collect();
+    assert_eq!(diff(&yaml(1), &yaml(2), &[], &[]).unwrap(), want);
 }
 
 #[test]
