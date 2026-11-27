@@ -185,8 +185,9 @@ fn cross_parameters(
 
 /// The old side's input for a parameter it took from its default, under
 /// `param_type`. Unretyped, the old job's value, so a PATH keeps the path it
-/// resolved to. Retyped, the default as written, as a submitter would give
-/// it, else the old job's value when that coerces (FLOAT `2.0` to INT).
+/// resolved to. Retyped, the default as the model stores it (normalized, so
+/// BOOL `yes` is `true`), else the old job's value when that coerces (FLOAT
+/// `2.0` to INT).
 fn from_default(
     value: &ExprValue,
     (old_type, default): (JobParameterType, &str),

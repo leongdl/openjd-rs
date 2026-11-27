@@ -465,8 +465,8 @@ fn every_step_let_change_is_reported() {
 }
 
 /// A retyped parameter the old side took from its default builds the cross
-/// job as the same value given would: the default as written, else the old
-/// job's value when that coerces to the new type.
+/// job from the default as the model stores it, else the old job's value when
+/// that coerces to the new type.
 #[test]
 fn a_retyped_parameter_from_its_default_builds_the_cross_job() {
     let yaml = |definition: &str, command: &str| {
@@ -516,7 +516,7 @@ fn a_retyped_parameter_from_its_default_builds_the_cross_job() {
 }
 
 /// A retyped PATH parameter the old side took from its default builds the
-/// cross job from the default as written, as `Q=3` given would, not from the
+/// cross job from the default as stored, as `Q=3` given would, not from the
 /// path the old job resolved it to.
 #[test]
 fn a_retyped_path_parameter_from_its_default_builds_the_cross_job() {
@@ -541,6 +541,41 @@ fn a_retyped_path_parameter_from_its_default_builds_the_cross_job() {
         assert_eq!(from_default, given, "{new_type}");
     }
 }
+
+/// The cross job takes a default as the model stores it, so BOOL `"1"` is
+/// `true`, which INT refuses: the cross build fails and every change the jobs
+/// show is `Both`, though `Q=1` given builds it.
+#[test]
+fn a_retyped_default_is_taken_as_the_model_stores_it() {
+    let yaml = |definition: &str, command: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [EXPR]\nname: Demo\n\
+             parameterDefinitions:\n  - {{name: Q, {definition}}}\n\
+             steps:\n  - name: S\n    script: {{actions: {{onRun: {{command: {command}}}}}}}\n"
+        )
+    };
+    let old = yaml("type: BOOL, default: \"1\"", "c");
+    let new = yaml("type: INT", "d");
+    let new_params = [("Q", "5")];
+    let want = r#"~ parameterDefinitions[Q]
+  default: "true" -> null [template]
+~ parameters[Q]
+  type: "BOOL" -> "INT" [both]
+  value: "true" -> "5" [both]
+~ steps[S]
+  ~ script
+    ~ onRun
+      command: "c" -> "d" [both]
+cross: Validation error: Parameter 'Q': Value 'true' is not a valid integer or integer string.
+"#;
+    assert_eq!(diff(&old, &new, &[], &new_params).unwrap(), want);
+    let given = diff(&old, &new, &[("Q", "1")], &new_params).unwrap();
+    assert!(
+        given.contains("command: \"c\" -> \"d\" [template]") && !given.contains("cross:"),
+        "{given}"
+    );
+}
+
 #[test]
 fn a_side_that_does_not_build_is_named() {
     let bad = edited(BASE, &[("default: low}", "allowedValues: [low]}")]);

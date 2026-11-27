@@ -47,10 +47,11 @@ default change the values do not override is the template's. Without a new defau
 takes the old side's input for it, so a template that drops a default the old side relied
 on leaves a new value the parameters'. That input is the old job's value when the type is
 unchanged, so a PATH keeps the path it resolved to. For a retyped parameter it is the old
-default as written, the text a submitter would give, so `mid` builds from a default exactly
-as from the same value given (PATH `3` to INT as `3`, not as the resolved path); when that
-text does not coerce to the new type, it is the old job's value (FLOAT `2.0` to INT as a
-number). For a parameter the old side does not define, it takes the new value, so a
+default as the model stores it (PATH `3` to INT as `3`, not as the resolved path), or the
+old job's value when that text does not coerce to the new type (FLOAT `2.0` to INT as a
+number). The model stores a default normalized, such as BOOL `yes` as `true`, so a retype
+can treat a default differently from the same text given; when neither coerces to the new
+type, `mid` does not build and every change the jobs show is `Both`, as below. For a parameter the old side does not define, it takes the new value, so a
 template that adds a required parameter still builds `mid`, and the new parameter is the
 template's. A value for a parameter the new side no longer defines is
 dropped, so a removed parameter is the template's.
